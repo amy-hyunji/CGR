@@ -25,5 +25,7 @@
     "wandb_log": true,
     "wandb_project": "toy_genre",
     "wandb_run_name": "kilt_nq_toy",
-    "check_val_every_n_epoch": 3
+    "check_val_every_n_epoch": 3,
+    "contextualized_emb_num": "243246",
+    "contextualized_file": "dataset/kilt_nq/tokId_emb.pickle"
 }

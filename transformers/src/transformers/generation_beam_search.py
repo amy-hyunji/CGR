@@ -454,6 +454,7 @@ class ConstrainedBeamSearchScorer(BeamScorer):
         next_tokens: torch.LongTensor,
         next_indices: torch.LongTensor,
         scores_for_all_vocab: torch.FloatTensor,
+        eos_token_id_list: List[int],
         pad_token_id: Optional[int] = None,
         eos_token_id: Optional[int] = None,
     ) -> Tuple[torch.Tensor]:
@@ -532,7 +533,8 @@ class ConstrainedBeamSearchScorer(BeamScorer):
             ):
                 batch_beam_idx = batch_idx * self.group_size + next_index
                 # add to generated hypotheses if end of sentence
-                if (eos_token_id is not None) and (next_token.item() == eos_token_id):
+                # if (eos_token_id is not None) and (next_token.item() == eos_token_id):
+                if (eos_token_id_list is not None) and (next_token.item() in eos_token_id_list):
 
                     # if beam_token does not belong to top num_beams tokens, it should not be added
                     is_beam_token_worse_than_top_num_beams = beam_token_rank >= self.group_size
@@ -729,6 +731,7 @@ class ConstrainedBeamSearchScorer(BeamScorer):
         final_beam_tokens: torch.LongTensor,
         final_beam_indices: torch.LongTensor,
         max_length: int,
+        eos_token_id_list: List[int] = None,
         pad_token_id: Optional[int] = None,
         eos_token_id: Optional[int] = None,
     ) -> Tuple[torch.LongTensor]:
@@ -793,6 +796,7 @@ class ConstrainedBeamSearchScorer(BeamScorer):
             decoded.fill_(pad_token_id)
 
         # fill with hypotheses and eos_token_id if the latter fits in
+        assert eos_token_id == 1, "Group Id for eos is 1!"
         for i, hypo in enumerate(best):
             decoded[i, : sent_lengths[i]] = hypo
             if sent_lengths[i] < sent_max_len:

@@ -1,5 +1,6 @@
 import os
 import torch
+import pickle
 import pandas as pd
 
 from torch.utils.data import Dataset
@@ -17,8 +18,9 @@ class GENREDataset(Dataset):
         else:
             raise NotImplementedError(f"Inappropriate split type: {split}")
 
-        assert data_path.endswith(".csv"), "Only pandas file is possible!"
-        self.dataset = pd.read_csv(os.path.join(self.hparams.dataset, data_path))
+        assert data_path.endswith(".pickle"), "Only pickle file is possible!"
+        data_dict = pickle.load(open(os.path.join(self.hparams.dataset, data_path), "rb")) # key - input, output, output_tokid, output_tokemb
+        self.dataset = pd.DataFrame(data_dict)
         self.len = len(self.dataset)
         if torch.cuda.current_device() == 0:
             print(
@@ -46,20 +48,21 @@ class GENREDataset(Dataset):
         target_emb = batch["output_tokemb"]  # load from file
         if len(target) > self.hparams.max_output_length:
             target = target[: self.hparams.max_output_length]
-            att = [1] * len(target)
+            att = [1] * len(self.hparams.max_output_length)
             target_emb = target_emb[: self.hparams.max_output_length]
         else:
             _leftover = self.hparams.max_output_length - len(target)
-            target = target + [0] * _leftover
             att = [1] * len(target) + [0] * _leftover
-            target_emb = target_emb + [tokid2emb[0]] * _leftover
+            target = target + [0] * _leftover
+            target_emb = target_emb + [self.tokid2emb[0]] * _leftover
         assert (
             len(target) == self.hparams.max_output_length
             and len(att) == self.hparams.max_output_length
             and len(target_emb) == self.hparams.max_output_length
-        )
+        ), print(f"length of target: {len(target)}\nlength of attention:  {len(att)}\nlength of target_emb: {len(target_emb)}")
         target_idx = torch.tensor([target])
         att = torch.tensor([att])
+        target_emb = torch.tensor(target_emb)
         target = {"input_ids": target_idx, "attention_mask": att}
 
         if idx == 0 and torch.cuda.current_device() == 0:

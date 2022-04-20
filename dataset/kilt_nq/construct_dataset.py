@@ -1,9 +1,10 @@
+import json
 import pickle
 import pandas as pd
 
-corpus = list(pd.read_csv('/mnt/entailment/toy_GENRE/dataset/kilt_nq/nq_toy_corpus.csv')['corpus'])
+corpus = list(pd.read_csv('./nq_toy_corpus.csv')['corpus'])
 corpusId_emb = pickle.load(open('corpusId_emb.pickle', 'rb'))
-df = pd.read_csv('/mnt/entailment/toy_GENRE/dataset/kilt_nq/nq_toy_dev.csv')
+df = pd.read_csv('./nq_toy_dev.csv')
 
 save_dict = {'input': [], 'output': [], 'output_tokid': [], 'output_tokemb': []}
 for _input, _output in zip(df['input'], df['output']):
@@ -15,5 +16,6 @@ for _input, _output in zip(df['input'], df['output']):
    save_dict['output'].append(_output)
    save_dict['output_tokid'].append(output_tok)
    save_dict['output_tokemb'].append(output_emb)
-df = pd.DataFrame(save_dict)
-df.to_csv('contextualized_nq_toy_dev.csv')
+
+with open("contextualized_nq_toy_dev.pickle", "wb") as f:
+    pickle.dump(save_dict, f)

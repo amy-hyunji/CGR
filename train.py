@@ -109,6 +109,9 @@ if __name__ == "__main__":
         val_beam_size=hparam.val_beam_size,
         contextualized_emb_num=hparam.contextualized_emb_num,  # new
         contextualized_file=hparam.contextualized_file,  # new - tokId_emb.pickle
+        groupId2tokIdList=hparam.groupId2tokIdList,  # new - tokGroupId_tokIdList.pickle 
+        tokId2groupId=hparam.tokId2groupId,  # new - tokId_tokGroupId.pickle 
+        tokId2tokText=hparam.tokId2tokText,  # new - tokId_tokText.pickle 
     )
     args = argparse.Namespace(**args_dict)
     assert not (args.do_train and args.do_test), "Choose between train|test"

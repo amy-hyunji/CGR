@@ -6,6 +6,7 @@ import copy
 import torch
 import string
 import pickle
+import numpy 
 import numpy as np
 import pytorch_lightning as pl
 import torch.distributed as dist
@@ -63,14 +64,34 @@ class T5FineTuner(pl.LightningModule):
             self.test_em_score_list = []
             self.test_recall_score_list = []
 
-        self.trie_dict = pickle.load(open(self.hparams.prefix_tree_file, "rb"))
+        ### REMEMBER!!! Values in trie_dict is "GroupID" not "tokId"
+        self.trie_dict = pickle.load(open(self.hparams.prefix_tree_file, "rb")) 
         self.contextualized_tokid2emb = pickle.load(
             open(self.hparams.contextualized_file, "rb")
         )
         assert (
             len(self.contextualized_tokid2emb.keys())
-            == self.hparams.contextualized_emb_num
-        )
+            == int(self.hparams.contextualized_emb_num)
+        ), f"contextualized_emb_num: {self.hparams.contextualized_emb_num} and length of keys: {len(self.contextualized_tokid2emb.keys())}"
+        self.groupId2tokIdList = pickle.load(open(self.hparams.groupId2tokIdList, "rb"))
+        self.tokId2groupId = pickle.load(open(self.hparams.tokId2groupId, 'rb'))
+        self.tokId2tokText= pickle.load(open(self.hparams.tokId2tokText, 'rb'))
+        self.first_possible_tokens = self._get_first_possible_tokens()
+        self.eos_list = list(self.groupId2tokIdList[1])
+
+    def _get_tokIdList_from_groupIdList(self, groupIdList):
+        tokIdList = []
+        for groupId in groupIdList:
+            tokIdList.extend(self.groupId2tokIdList[groupId])
+        return list(set(tokIdList))
+
+    def _get_groupId_from_tokId(self, tokId):
+        return self.tokId2groupId[tokId]
+
+    def _get_first_possible_tokens(self):
+        assert list(self.trie_dict.keys()) == [-1]
+        possible_GroupList = list(self.trie_dict[-1].keys())
+        return self._get_tokIdList_from_groupIdList(possible_GroupList)
 
     def _get_dataset(self, split):
         dataset = GENREDataset(
@@ -117,10 +138,20 @@ class T5FineTuner(pl.LightningModule):
     def lmap(self, f, x):
         return list(map(f, x))
 
-    def ids_to_text(self, generated_ids):
+    def ids_to_text(self, _generated_ids):
+        print(f"_generated_ids: {_generated_ids[0]}")
+        print(f"_generated_ids: {_generated_ids[1]}")
+        generated_ids = []
+        for _ids in _generated_ids:
+            _ids = copy.deepcopy(_ids)
+            _ids = _ids.detach().cpu().numpy()
+            _text = [self.tokId2tokText[_id] for _id in _ids]
+            generated_ids.append(self.tokenizer.convert_tokens_to_ids(_text))
+        #print(f"generated_ids: {generated_ids}")
         gen_text = self.tokenizer.batch_decode(
             generated_ids, skip_special_tokens=True, clean_up_tokenization_spaces=True
         )
+        #print(f"gen_text: {gen_text}")
         return self.lmap(str.strip, gen_text)
 
     def normalize_answer(self, s):
@@ -151,7 +182,7 @@ class T5FineTuner(pl.LightningModule):
             input_ids,
             attention_mask=attention_mask,
             decoder_input_ids=None,
-            decoder_inputs_embs=decoder_inputs_embs,
+            decoder_inputs_embeds=decoder_inputs_embs,
             decoder_attention_mask=decoder_attention_mask,
             labels=lm_labels,
         )
@@ -184,15 +215,31 @@ class T5FineTuner(pl.LightningModule):
         return loss
 
     def get(self, batch_id, input_ids):
-        return self._get_from_trie(input_ids, self.trie_dict)
-
-    def _get_from_trie(self, input_ids, trie_dict):
-        if len(input_ids) == 0:
-            return list(trie_dict.keys())
-        elif input_ids[0] in trie_dict:
-            return self._get_from_trie(input_ids[1:], trie_dict[input_ids[0]])
+        # starts with pad token & groupId for pad token is -1
+        assert input_ids[0] == 0
+        if len(input_ids) == 1: 
+            return self.first_possible_tokens 
         else:
-            return []
+            return self._get_from_trie(input_ids[1:],  self.trie_dict[-1])
+
+    """
+    input_ids가 들어오면, 해당 tokId가 속한 groupId 찾고, 그걸 가지고 trie_dict 넘어간 다음
+    해당 subtree의 key들(groupId) 를 모은 tokId return
+    """
+    def _get_from_trie(self, input_ids, trie_dict):
+        #print(f"input_ids: {input_ids}")
+        if len(input_ids) == 0:
+            possible_GroupList = list(trie_dict.keys())
+            #print(f"[1] possible_GroupList: {possible_GroupList}")
+            tokIdList = self._get_tokIdList_from_groupIdList(possible_GroupList)
+            #print(f"[1] tokIdList: {tokIdList}")
+            return tokIdList 
+        else:
+            curGroupId = self._get_groupId_from_tokId(input_ids[0])
+            if curGroupId in list(trie_dict.keys()):
+                return self._get_from_trie(input_ids[1:], trie_dict[curGroupId]) 
+            else:
+                return []
 
     def _calculate_recall(self, pred, gt):
         assert len(pred) == self.hparams.val_beam_size

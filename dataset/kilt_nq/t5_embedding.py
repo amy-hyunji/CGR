@@ -10,7 +10,11 @@ from tqdm import tqdm
 model = T5EncoderModel.from_pretrained('t5-base').cuda()
 tokenizer = T5Tokenizer.from_pretrained('t5-base')
 
-corpus_file = pd.read_csv("./nq_toy_corpus.csv")
+### Change to corpus file you want to use ###
+corpus_file = pd.read_csv("./nq_toy_corpus.csv") 
+#############################################
+
+
 corpus_num = len(corpus_file["corpus"])
 corpusId_corpus_dict = {} # {corpusId: corpus}
 corpusId_emb_dict= {} # {corpusId: {tok: {emb}}}

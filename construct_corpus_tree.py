@@ -18,6 +18,7 @@ def ids_to_text(generated_ids, tokenizer):
 ### Parameters to change ###
 corpusId_emb = pickle.load(open("./dataset/kilt_nq/corpusId_emb.pickle", "rb"))
 tokId_tokGroupId = pickle.load(open("./dataset/kilt_nq/tokId_tokGroupId.pickle", "rb"))
+corpusId_tokGroupList_path = "corpusId_tokGroupList.pickle"
 output_path = "./dataset/kilt_nq/nq_toy_prefix_tree.pickle"
 ############################
 
@@ -49,5 +50,5 @@ with open(output_path, "wb") as f:
     pickle.dump(constrained_dict, f)
 print(f'Saved tree in {output_path}')
 
-with open("corpusId_tokGroupList.pickle", "wb") as f:
+with open(corpusId_tokGroupList_path, "wb") as f:
     pickle.dump(corpusId_tokGroupList, f)

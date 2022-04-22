@@ -1494,7 +1494,12 @@ class T5ForConditionalGeneration(T5PreTrainedModel):
         print(f"Loading from local!! Using New one")
         self.model_dim = config.d_model
 
-        self.shared = nn.Embedding(config.vocab_size, config.d_model)
+        if config.freeze_vocab_emb:
+            print("!! Freezing Vocab Embedding and loading from *vocab_emb.pickle*")
+            emb = pickle.load(open("vocab_emb.pickle", "rb"))
+            self.shared = nn.Embedding.from_pretrained(emb.weight, freeze=True)
+        else:
+            self.shared = nn.Embedding(config.vocab_size, config.d_model)
         self.dec_shared, self.lm_head = self.set_lm_head(config.contextualized_file) 
 
         encoder_config = copy.deepcopy(config)

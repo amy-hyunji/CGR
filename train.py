@@ -107,6 +107,8 @@ if __name__ == "__main__":
         do_test=hparam.do_test,
         test_model_path=hparam.test_model_path,
         val_beam_size=hparam.val_beam_size,
+        freeze_encoder=hparam.freeze_encoder,
+        freeze_vocab_emb=hparam.freeze_vocab_emb,
         contextualized_emb_num=hparam.contextualized_emb_num,  # new
         contextualized_file=hparam.contextualized_file,  # new - tokId_emb.pickle
         groupId2tokIdList=hparam.groupId2tokIdList,  # new - tokGroupId_tokIdList.pickle 

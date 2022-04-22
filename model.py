@@ -37,6 +37,7 @@ class T5FineTuner(pl.LightningModule):
             config.update(
                 {"contextualized_file": self.hparams.contextualized_file}
             )  # tokId_emb.pickle
+            config.update({"freeze_vocab_emb": self.hparams.freeze_vocab_emb})
             self.model = T5ForConditionalGeneration.from_pretrained(
                 self.hparams.model_name_or_path, config=config
             )
@@ -63,6 +64,13 @@ class T5FineTuner(pl.LightningModule):
             self.test_pred_list = []
             self.test_em_score_list = []
             self.test_recall_score_list = []
+
+        if self.hparams.freeze_encoder:
+            if self.print:
+                print(f"@@@ Freeze Encoder!")
+                encoder = self.model.get_encoder()
+                for n, p in encoder.named_parameters():
+                    p.requires_grad=False
 
         ### REMEMBER!!! Values in trie_dict is "GroupID" not "tokId"
         self.trie_dict = pickle.load(open(self.hparams.prefix_tree_file, "rb")) 

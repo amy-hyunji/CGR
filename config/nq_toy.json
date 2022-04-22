@@ -8,10 +8,10 @@
     "lr_scheduler": "exponential",
     "accelerator": "ddp",
     "num_train_epochs": 150,
-    "train_batch_size": 128,
+    "train_batch_size": 12,
     "eval_batch_size": 10,
     "gradient_accumulation_steps": 1,
-    "n_gpu": 2,
+    "n_gpu": 1,
     "num_workers": 0,
     "resume_from_checkpoint": null,
     "train_file": "contextualized_nq_toy_train.pickle",
@@ -30,5 +30,7 @@
     "contextualized_file": "dataset/kilt_nq/tokId_emb.pickle",
     "groupId2tokIdList": "dataset/kilt_nq/tokGroupId_tokIdList.pickle",
     "tokId2groupId": "dataset/kilt_nq/tokId_tokGroupId.pickle",
-    "tokId2tokText": "dataset/kilt_nq/tokId_tokText.pickle"
+    "tokId2tokText": "dataset/kilt_nq/tokId_tokText.pickle",
+    "freeze_encoder": true, 
+    "freeze_vocab_emb": true
 }

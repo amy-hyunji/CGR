@@ -935,6 +935,8 @@ class T5Stack(T5PreTrainedModel):
         if inputs_embeds is None:
             assert self.embed_tokens is not None, "You have to initialize the model with valid token embeddings"
             if type(self.embed_tokens)==dict:
+                if not self.is_decoder:
+                    assert False, "Only Decoder is allowed to have dict() for embed_tokens"
                 _input_ids = copy.deepcopy(input_ids)
                 _input_ids = _input_ids.detach().cpu().numpy()
                 input_embeds = []
@@ -943,6 +945,8 @@ class T5Stack(T5PreTrainedModel):
                     input_embeds.append(_input_embeds)
                 inputs_embeds = torch.tensor(input_embeds).to(input_ids.device)
             else:
+                if self.is_decoder: 
+                    assert False, "Decoder should have dict() for embed_tokens"
                 inputs_embeds = self.embed_tokens(input_ids)
 
         batch_size, seq_length = input_shape

@@ -190,7 +190,7 @@ class T5FineTuner(pl.LightningModule):
             input_ids,
             attention_mask=attention_mask,
             decoder_input_ids=None,
-            decoder_inputs_embeds=decoder_inputs_embs,
+            #decoder_inputs_embeds=decoder_inputs_embs,
             decoder_attention_mask=decoder_attention_mask,
             labels=lm_labels,
         )

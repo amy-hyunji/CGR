@@ -254,12 +254,12 @@ class T5FineTuner(pl.LightningModule):
         _correct = 0
         for elem in pred:
             if self.normalize_answer(elem) == self.normalize_answer(gt):
-                return 1
+                return 100
         return 0
 
     def _calculate_em(self, pred, gt):
         if self.normalize_answer(pred) == self.normalize_answer(gt):
-            return 1
+            return 100
         else:
             return 0
 

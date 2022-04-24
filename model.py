@@ -61,7 +61,9 @@ class T5FineTuner(pl.LightningModule):
                 print(f"@@@ Loading Model from {self.hparams.test_model_path}")
             self.test_input_list = []
             self.test_gt_list = []
+            self.test_gt_tok_list = []
             self.test_pred_list = []
+            self.test_pred_tok_list = []
             self.test_em_score_list = []
             self.test_recall_score_list = []
 
@@ -304,6 +306,12 @@ class T5FineTuner(pl.LightningModule):
             ]
             for i in range(inum)
         ]
+        generated_ids = [
+            _generated_ids[
+               i * self.hparams.val_beam_size : (i+1) * self.hparams.val_beam_size
+            ]
+            for i in range(inum)
+        ]
 
         em_list, recall_list = self.calculate_scores(
             generated_text, batch["output"], batch["input"]
@@ -318,7 +326,9 @@ class T5FineTuner(pl.LightningModule):
             return {
                 "input": list(batch["input"]),
                 "gt": list(batch["output"]),
+                "gt_tok": list(batch["target_ids"]),
                 "pred": list(generated_text),
+                "pred_tok": list(generated_ids),
                 "em": list(em_list),
                 "recall": list(recall_list),
             }
@@ -359,7 +369,9 @@ class T5FineTuner(pl.LightningModule):
         ret_dict = self._val_step(batch, return_elem=True)
         self.test_input_list.extend(ret_dict["input"])
         self.test_gt_list.extend(ret_dict["gt"])
+        self.test_gt_tok_list.extend(ret_dict["gt_tok"])
         self.test_pred_list.extend(ret_dict["pred"])
+        self.test_pred_tok_list.extend(ret_dict["pred_tok"])
         self.test_em_score_list.extend(ret_dict["em"])
         self.test_recall_score_list.extend(ret_dict["recall"])
 
@@ -380,10 +392,12 @@ class T5FineTuner(pl.LightningModule):
         os.makedirs(self.hparams.output_dir, exist_ok=True)
         _input = self.gather_list(self.test_input_list)
         _gt = self.gather_list(self.test_gt_list)
+        _gt_tok = self.gather_list(self.test_gt_tok_list)
         _pred = self.gather_list(self.test_pred_list)
+        _pred_tok = self.gather_list(self.test_pred_tok_list)
         _em = self.gather_list(self.test_em_score_list)
         _recall = self.gather_list(self.test_recall_score_list)
-        assert len(_input) == len(_gt) == len(_pred) == len(_em) == len(_recall)
+        assert len(_input) == len(_gt) == len(_pred) == len(_em) == len(_recall) == len(_gt_tok) == len(_pred_tok)
         if self.print:
             with open(
                 os.path.join(
@@ -396,7 +410,9 @@ class T5FineTuner(pl.LightningModule):
                     {
                         "input": _input,
                         "gt": _gt,
+                        "gt_tok": _gt_tok,
                         "pred": _pred,
+                        "pred_tok": _pred_tok,
                         "em": _em,
                         "recall": _recall,
                     },

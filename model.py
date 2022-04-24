@@ -304,7 +304,7 @@ class T5FineTuner(pl.LightningModule):
         generated_ids = [
             _generated_ids[
                i * self.hparams.val_beam_size : (i+1) * self.hparams.val_beam_size
-            ]
+            ].detach().cpu().numpy().tolist()
             for i in range(inum)
         ]
 
@@ -321,7 +321,7 @@ class T5FineTuner(pl.LightningModule):
             return {
                 "input": list(batch["input"]),
                 "gt": list(batch["output"]),
-                "gt_tok": list(batch["target_ids"]),
+                "gt_tok": list(batch["target_ids"].detach().cpu().numpy().tolist())),
                 "pred": list(generated_text),
                 "pred_tok": list(generated_ids),
                 "em": list(em_list),

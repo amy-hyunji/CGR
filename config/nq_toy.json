@@ -31,6 +31,7 @@
     "groupId2tokIdList": "dataset/kilt_nq/tokGroupId_tokIdList.pickle",
     "tokId2groupId": "dataset/kilt_nq/tokId_tokGroupId.pickle",
     "tokId2tokText": "dataset/kilt_nq/tokId_tokText.pickle",
+    "nodeId_tokIdList": "dataset/kilt_nq/nodeId_tokIdList.pickle",
     "freeze_encoder": true, 
     "freeze_vocab_emb": true
 }

@@ -321,7 +321,7 @@ class T5FineTuner(pl.LightningModule):
             return {
                 "input": list(batch["input"]),
                 "gt": list(batch["output"]),
-                "gt_tok": list(batch["target_ids"].detach().cpu().numpy().tolist())),
+                "gt_tok": list(batch["target_ids"].detach().cpu().numpy().tolist()),
                 "pred": list(generated_text),
                 "pred_tok": list(generated_ids),
                 "em": list(em_list),

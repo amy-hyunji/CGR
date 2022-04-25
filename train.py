@@ -60,7 +60,6 @@ def main(args, train_params):
 
 
 if __name__ == "__main__":
-    os.environ["CUDA_VISIBLE_DEVICES"]="2"
     parser = ArgumentParser()
     parser.add_argument("--config", default=None, required=True, type=str)
     arg_ = parser.parse_args()

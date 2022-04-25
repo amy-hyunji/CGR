@@ -26,7 +26,7 @@
     "wandb_project": "toy_genre",
     "wandb_run_name": "kilt_nq_toy",
     "check_val_every_n_epoch": 1,
-    "contextualized_emb_num": "103060",
+    "contextualized_emb_num": "206023",
     "contextualized_file": "dataset/kilt_nq/tokId_emb.pickle",
     "groupId2tokIdList": "dataset/kilt_nq/tokGroupId_tokIdList.pickle",
     "tokId2groupId": "dataset/kilt_nq/tokId_tokGroupId.pickle",

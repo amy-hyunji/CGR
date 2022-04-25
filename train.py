@@ -16,8 +16,8 @@ from pytorch_lightning.plugins import DDPPlugin, DeepSpeedPlugin
 
 from model import T5FineTuner
 
-from knockknock import slack_sender
-from slack import get_webhook_url, get_channel
+#from knockknock import slack_sender
+#from slack import get_webhook_url, get_channel
 
 
 def set_seed(seed):
@@ -28,7 +28,7 @@ def set_seed(seed):
         torch.cuda.manual_seed_all(seed)
 
 
-@slack_sender(webhook_url=get_webhook_url(), channel=get_channel())
+#@slack_sender(webhook_url=get_webhook_url(), channel=get_channel())
 def main(args, train_params):
     sys.setrecursionlimit(10000)
     set_seed(args.seed)

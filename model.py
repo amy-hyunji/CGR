@@ -52,7 +52,7 @@ class T5FineTuner(pl.LightningModule):
 
         # If in testing mode, load ckpt for inference
         if self.hparams.do_test:
-            raise NotImplementedError("Test Code is not implemented yet!")
+            #raise NotImplementedError("Test Code is not implemented yet!")
             self.model = T5ForConditionalGeneration.from_pretrained(
                 self.hparams.test_model_path
             )
@@ -83,25 +83,41 @@ class T5FineTuner(pl.LightningModule):
             len(self.contextualized_tokid2emb.keys())
             == int(self.hparams.contextualized_emb_num)
         ), f"contextualized_emb_num: {self.hparams.contextualized_emb_num} and length of keys: {len(self.contextualized_tokid2emb.keys())}"
+        
         self.groupId2tokIdList = pickle.load(open(self.hparams.groupId2tokIdList, "rb"))
+        self.nodeId_tokIdList = pickle.load(open(self.hparams.nodeId_tokIdList, "rb"))
         self.tokId2groupId = pickle.load(open(self.hparams.tokId2groupId, 'rb'))
         self.tokId2tokText= pickle.load(open(self.hparams.tokId2tokText, 'rb'))
         self.first_possible_tokens = self._get_first_possible_tokens()
         self.eos_list = list(self.groupId2tokIdList[1])
 
-    def _get_tokIdList_from_groupIdList(self, groupIdList):
-        tokIdList = []
-        for groupId in groupIdList:
-            tokIdList.extend(self.groupId2tokIdList[groupId])
-        return list(set(tokIdList))
+    def _get_tokIdList_from_groupIdList(self, candidate):
+        # for groupId tree
+        if self.hparams.groupId_tree:
+            groupIdList = candidate
+            tokIdList = []
+            for groupId in groupIdList:
+                tokIdList.extend(self.groupId2tokIdList[groupId])
+            return list(set(tokIdList))
+        # for nodeId tree
+        nodeId = candidate
+        return self.nodeId_tokIdList[nodeId]
 
     def _get_groupId_from_tokId(self, tokId):
         return self.tokId2groupId[tokId]
 
     def _get_first_possible_tokens(self):
-        assert list(self.trie_dict.keys()) == [-1]
-        possible_GroupList = list(self.trie_dict[-1].keys())
-        return self._get_tokIdList_from_groupIdList(possible_GroupList)
+        # for gruopId tree
+        if self.hparams.groupId_tree:
+            assert list(self.trie_dict.keys()) == [-2, -1]
+            possible_GroupList = list(self.trie_dict[-1].keys())
+            if possible_GroupList[0] == -2:
+                possible_GroupList = possible_GroupList[1:]
+            assert -2 not in possible_GroupList, "possible_GroupList contains -2"
+            return self._get_tokIdList_from_groupIdList(possible_GroupList)
+        # for nodeId tree
+        nodeId = self.trie_dict[-1][-2]
+        return self._get_tokIdList_from_groupIdList(nodeId)
 
     def _get_dataset(self, split):
         dataset = GENREDataset(
@@ -239,11 +255,21 @@ class T5FineTuner(pl.LightningModule):
     def _get_from_trie(self, input_ids, trie_dict):
         #print(f"input_ids: {input_ids}")
         if len(input_ids) == 0:
-            possible_GroupList = list(trie_dict.keys())
-            #print(f"[1] possible_GroupList: {possible_GroupList}")
-            tokIdList = self._get_tokIdList_from_groupIdList(possible_GroupList)
-            #print(f"[1] tokIdList: {tokIdList}")
-            return tokIdList 
+            # for groupId tree
+            if self.hparams.groupId_tree:
+                possible_GroupList = list(trie_dict.keys())
+                if possible_GroupList[0] == -2:
+                    possible_GroupList = possible_GroupList[1:]
+                assert -2 not in possible_GroupList, "possible_GroupList contains -2"
+                #print(f"[1] possible_GroupList: {possible_GroupList}")
+                tokIdList = self._get_tokIdList_from_groupIdList(possible_GroupList)
+                #print(f"[1] tokIdList: {tokIdList}")
+                return tokIdList
+
+            # for nodeId tree
+            nodeId = trie_dict[-2]
+            tokIdList = self._get_tokIdList_from_groupIdList(nodeId)
+            return tokIdList
         else:
             curGroupId = self._get_groupId_from_tokId(input_ids[0])
             if curGroupId in list(trie_dict.keys()):
@@ -484,3 +510,4 @@ class T5FineTuner(pl.LightningModule):
         )
         self.model.save_pretrained(save_path)
         self.tokenizer.save_pretrained(save_path)
+        

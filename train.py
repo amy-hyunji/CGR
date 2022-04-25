@@ -1,3 +1,4 @@
+import os
 import sys
 import json
 import torch
@@ -15,8 +16,8 @@ from pytorch_lightning.plugins import DDPPlugin, DeepSpeedPlugin
 
 from model import T5FineTuner
 
-from knockknock import slack_sender
-from slack import get_webhook_url, get_channel
+#from knockknock import slack_sender
+#from slack import get_webhook_url, get_channel
 
 
 def set_seed(seed):
@@ -27,7 +28,7 @@ def set_seed(seed):
         torch.cuda.manual_seed_all(seed)
 
 
-@slack_sender(webhook_url=get_webhook_url(), channel=get_channel())
+#@slack_sender(webhook_url=get_webhook_url(), channel=get_channel())
 def main(args, train_params):
     sys.setrecursionlimit(10000)
     set_seed(args.seed)
@@ -59,6 +60,7 @@ def main(args, train_params):
 
 
 if __name__ == "__main__":
+    os.environ["CUDA_VISIBLE_DEVICES"]="2"
     parser = ArgumentParser()
     parser.add_argument("--config", default=None, required=True, type=str)
     arg_ = parser.parse_args()
@@ -114,9 +116,13 @@ if __name__ == "__main__":
         groupId2tokIdList=hparam.groupId2tokIdList,  # new - tokGroupId_tokIdList.pickle 
         tokId2groupId=hparam.tokId2groupId,  # new - tokId_tokGroupId.pickle 
         tokId2tokText=hparam.tokId2tokText,  # new - tokId_tokText.pickle 
+        nodeId_tokIdList=hparam.nodeId_tokIdList,  # new - nodeId_tokIdList.pickle
+        groupId_tree=hparam.groupId_tree, # new
+        nodeId_tree=hparam.nodeId_tree, # new
     )
     args = argparse.Namespace(**args_dict)
     assert not (args.do_train and args.do_test), "Choose between train|test"
+    assert not (args.groupId_tree and args.nodeId_tree), "Choose between groupId|nodeId"
 
     if torch.cuda.current_device() == 0:
         print("#" * 80)

@@ -13,7 +13,7 @@ import torch.distributed as dist
 
 from data import GENREDataset
 
-from transformers import T5Config, T5Tokenizer, T5ForConditionalGeneration, Adafactor
+from transformers import T5Config, T5Tokenizer, T5ForConditionalGeneration, BertTokenizer, Adafactor
 from torch.utils.data import DataLoader
 from itertools import chain
 
@@ -44,8 +44,20 @@ class T5FineTuner(pl.LightningModule):
             self.tokenizer = T5Tokenizer.from_pretrained(
                 self.hparams.model_name_or_path
             )
+            if self.hparams.embedding_model == "t5":
+                self.dec_tok = T5Tokenizer.from_pretrained(
+                    "t5-base"
+                )
+            elif self.hparams.embedding_model == "bert":
+                self.dec_tok = BertTokenizer.from_pretrained(
+                    "bert-base-cased"
+                )
+            else:
+                raise NotImplementedError('Embedding from t5-base or bert-base is only allowed!')
+            
             if self.print:
                 print(f"@@@ Loading Model from {self.hparams.model_name_or_path}")
+                print(f'@@@ Loading decoder embedding: {self.hparams.embedding_model}')
 
             self.em_score_list = []
             self.recall_score_list = []
@@ -109,15 +121,19 @@ class T5FineTuner(pl.LightningModule):
     def _get_first_possible_tokens(self):
         # for gruopId tree
         if self.hparams.groupId_tree:
+            assert not self.hparams.nodeId_tree
             assert list(self.trie_dict.keys()) == [-2, -1]
             possible_GroupList = list(self.trie_dict[-1].keys())
             if possible_GroupList[0] == -2:
                 possible_GroupList = possible_GroupList[1:]
             assert -2 not in possible_GroupList, "possible_GroupList contains -2"
             return self._get_tokIdList_from_groupIdList(possible_GroupList)
-        # for nodeId tree
-        nodeId = self.trie_dict[-1][-2]
-        return self._get_tokIdList_from_groupIdList(nodeId)
+        if self.hparams.nodeId_tree:
+            assert not self.hparams.groupId_tree 
+            # for nodeId tree
+            nodeId = self.trie_dict[-1][-2]
+            return self._get_tokIdList_from_groupIdList(nodeId)
+        raise NotImplementedError('Either groupId_tree or nodeId_tree should be True!')
 
     def _get_dataset(self, split):
         dataset = GENREDataset(
@@ -172,9 +188,9 @@ class T5FineTuner(pl.LightningModule):
             _ids = copy.deepcopy(_ids)
             _ids = _ids.detach().cpu().numpy()
             _text = [self.tokId2tokText[_id] for _id in _ids]
-            generated_ids.append(self.tokenizer.convert_tokens_to_ids(_text))
+            generated_ids.append(self.dec_tok.convert_tokens_to_ids(_text))
         #print(f"generated_ids: {generated_ids}")
-        gen_text = self.tokenizer.batch_decode(
+        gen_text = self.dec_tok.batch_decode(
             generated_ids, skip_special_tokens=True, clean_up_tokenization_spaces=True
         )
         #print(f"gen_text: {gen_text}")
@@ -202,13 +218,11 @@ class T5FineTuner(pl.LightningModule):
         attention_mask,
         lm_labels,
         decoder_attention_mask,
-        decoder_inputs_embs,
     ):
         return self.model(
             input_ids,
             attention_mask=attention_mask,
             decoder_input_ids=None,
-            #decoder_inputs_embeds=decoder_inputs_embs,
             decoder_attention_mask=decoder_attention_mask,
             labels=lm_labels,
         )
@@ -222,7 +236,6 @@ class T5FineTuner(pl.LightningModule):
             attention_mask=batch["source_mask"],
             lm_labels=lm_labels,
             decoder_attention_mask=batch["target_mask"],
-            decoder_inputs_embs=batch["target_embs"],
         )
         loss = outputs[0]
         return loss

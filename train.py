@@ -118,10 +118,13 @@ if __name__ == "__main__":
         nodeId_tokIdList=hparam.nodeId_tokIdList,  # new - nodeId_tokIdList.pickle
         groupId_tree=hparam.groupId_tree, # new
         nodeId_tree=hparam.nodeId_tree, # new
+        embedding_model=hparam.embedding_model # new - model used to extract embedding
     )
     args = argparse.Namespace(**args_dict)
     assert not (args.do_train and args.do_test), "Choose between train|test"
     assert not (args.groupId_tree and args.nodeId_tree), "Choose between groupId|nodeId: groupId for previous version and nodeId for new one"
+    assert args.embedding_model in ["t5", "bert"]
+    assert args.model_name_or_path in ['t5-base']
 
     if torch.cuda.current_device() == 0:
         print("#" * 80)

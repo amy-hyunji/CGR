@@ -1,3 +1,4 @@
+import os
 import sys
 import pickle 
 import pandas as pd
@@ -24,12 +25,14 @@ def insert_tokId(nodeId, tokId):
         nodeId_tokIdList[nodeId].append(tokId)
 
 ### Parameters to change ###
-corpusId_emb = pickle.load(open("./dataset/kilt_nq/corpusId_emb.pickle", "rb"))
-tokId_tokGroupId = pickle.load(open("./dataset/kilt_nq/tokId_tokGroupId.pickle", "rb"))
-corpusId_tokGroupList_path = "corpusId_tokGroupList.pickle"
-output_path = "./dataset/kilt_nq/nq_toy_prefix_tree.pickle"
-nodeId_tokIdList_path = "./dataset/kilt_nq/nodeId_tokIdList.pickle"
+basedir = "./dataset/kilt_nq/bert-base-cased-emb"
 ############################
+
+corpusId_emb = pickle.load(open(os.path.join(basedir, "corpusId_emb.pickle"), "rb"))
+tokId_tokGroupId = pickle.load(open(os.path.join(basedir, "tokId_tokGroupId.pickle"), "rb"))
+corpusId_tokGroupList_path = os.path.join(basedir, "corpusId_tokGroupList.pickle")
+output_path = os.path.join(basedir, "nq_toy_prefix_tree.pickle")
+nodeId_tokIdList_path = os.path.join(basedir, "nodeId_tokIdList.pickle")
 
 sys.setrecursionlimit(900000000)
 

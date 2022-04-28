@@ -4,14 +4,16 @@ import pandas as pd
 from transformers import AutoTokenizer, AutoModel, T5EncoderModel, T5Tokenizer
 from tqdm import tqdm
 
-#model = AutoModel.from_pretrained("bert-base-uncased").cuda()
-#tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased")
-
-model = T5EncoderModel.from_pretrained('t5-base').cuda()
-tokenizer = T5Tokenizer.from_pretrained('t5-base')
+bert_model = AutoModel.from_pretrained("bert-base-cased").cuda()
+bert_tokenizer = AutoTokenizer.from_pretrained("bert-base-cased")
+t5_model = T5EncoderModel.from_pretrained('t5-base').cuda()
+t5_tokenizer = T5Tokenizer.from_pretrained("t5-base")
 
 ### Change to corpus file you want to use ###
 corpus_file = pd.read_csv("./nq_toy_corpus.csv") 
+save_path = "bert-base-cased-emb"
+#emb_model = "t5"
+emb_model = "bert"
 #############################################
 
 
@@ -24,14 +26,14 @@ tok_Idlist_dict = {} # {tok_text: [Idlist of the tok]}
 tok_Id_dict = {} # {Id: tok_text}
 
 # tokId = 0 -> <pad> token 
-_tok = tokenizer("<pad>", return_tensors='pt', add_special_tokens=False)
+_tok = t5_tokenizer("<pad>", return_tensors='pt', add_special_tokens=False)
 _input_ids = _tok['input_ids'].cuda()
-_tok_decode = tokenizer.convert_ids_to_tokens(_input_ids[0])
+_tok_decode = t5_tokenizer.convert_ids_to_tokens(_input_ids[0])
 assert len(_tok_decode) == 1
 tok_Idlist_dict[_tok_decode[0]] = [0]
 tok_Id_dict[0] = _tok_decode[0] 
 _attention_mask = _tok['attention_mask'].cuda()
-model_ret = model(input_ids=_input_ids, attention_mask=_attention_mask, return_dict=True)
+model_ret = t5_model(input_ids=_input_ids, attention_mask=_attention_mask, return_dict=True)
 last_hidden_state = model_ret['last_hidden_state'][0]
 last_hidden_state = last_hidden_state.detach().cpu().numpy()
 _input_ids = _input_ids.detach().cpu().numpy()
@@ -40,15 +42,15 @@ assert _input_ids[0][0] == 0
 tokId_emb[0] = last_hidden_state[0]
 
 # tokId = 1 -> </s> token
-_tok = tokenizer("</s>", return_tensors='pt', add_special_tokens=False)
+_tok = t5_tokenizer("</s>", return_tensors='pt', add_special_tokens=False)
 _input_ids = _tok['input_ids'].cuda()
-_tok_decode = tokenizer.convert_ids_to_tokens(_input_ids[0])
+_tok_decode = t5_tokenizer.convert_ids_to_tokens(_input_ids[0])
 assert _tok_decode[0] == "</s>"
 assert len(_tok_decode) == 1
 tok_Idlist_dict[_tok_decode[0]] = [1]
 tok_Id_dict[1] = _tok_decode[0] 
 _attention_mask = _tok['attention_mask'].cuda()
-model_ret = model(input_ids=_input_ids, attention_mask=_attention_mask, return_dict=True)
+model_ret = t5_model(input_ids=_input_ids, attention_mask=_attention_mask, return_dict=True)
 last_hidden_state = model_ret['last_hidden_state'][0]
 last_hidden_state = last_hidden_state.detach().cpu().numpy()
 _input_ids = _input_ids.detach().cpu().numpy()
@@ -58,6 +60,15 @@ tokId_emb[1] = last_hidden_state[0]
 
 total_tok_num = 0
 tokId = 2
+
+if emb_model == "t5":
+   tokenizer = t5_tokenizer
+   model = t5_model 
+elif emb_model == "bert":
+   tokenizer = bert_tokenizer
+   model = bert_model
+else:
+   raise NotImplementedError('Check the embedding model! Should be t5 or bert')
 
 for corpusId in tqdm(range(corpus_num)):
    elem = corpus_file["corpus"][corpusId]
@@ -131,32 +142,33 @@ for tokText, tokIdList in tok_Idlist_dict.items():
 둘 다 0부터 시작하고 tokenId의 0은 <pad> 이고 groupId의 0은 <pad>, 1은 </s>
 + corpus tree는 GroupId로 만들어진다! 
 """
+os.makedirs(save_path, exist_ok=True)
 
-with open("tokGroupId_tok.pickle", "wb") as f:
+with open(os.path.join(save_path, "tokGroupId_tok.pickle"), "wb") as f:
    pickle.dump(tokGroupId_tok_dict, f)
 
-with open("tokId_tokGroupId.pickle", "wb") as f:
+with open(os.path.join(save_path, "tokId_tokGroupId.pickle"), "wb") as f:
    pickle.dump(tokId_tokGroupId, f)
 
-with open("tokGroupId_tokIdList.pickle", "wb") as f:
+with open(os.path.join(save_path,"tokGroupId_tokIdList.pickle"), "wb") as f:
    pickle.dump(tokGroupId_tokIdList, f)
 
-with open("tokText_TokIdList.pickle", "wb") as f:
+with open(os.path.join(save_path, "tokText_TokIdList.pickle"), "wb") as f:
    pickle.dump(tok_Idlist_dict, f)
 
-with open("tokId_tokText.pickle", "wb") as f:
+with open(os.path.join(save_path, "tokId_tokText.pickle"), "wb") as f:
    pickle.dump(tok_Id_dict, f)
 
-with open("corpusId_corpus.pickle", "wb") as f:
+with open(os.path.join(save_path, "corpusId_corpus.pickle"), "wb") as f:
    pickle.dump(corpusId_corpus_dict, f)
 
-with open("corpusId_emb.pickle", "wb") as f:
+with open(os.path.join(save_path, "corpusId_emb.pickle"), "wb") as f:
    pickle.dump(corpusId_emb_dict, f)
 
-with open('tokId_emb.pickle', 'wb') as f:
+with open(os.path.join(save_path, 'tokId_emb.pickle'), 'wb') as f:
    pickle.dump(tokId_emb, f)
 
-with open('tokId_corpus.pickle', 'wb') as f:
+with open(os.path.join(save_path, 'tokId_corpus.pickle'), 'wb') as f:
    pickle.dump(tokId_corpus, f)
 
 print("DONE!!")

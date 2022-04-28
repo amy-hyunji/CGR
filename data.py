@@ -45,24 +45,19 @@ class GENREDataset(Dataset):
             return_tensors="pt",
         )
         target = batch["output_tokid"]  # load from file
-        target_emb = batch["output_tokemb"]  # load from file
         if len(target) > self.hparams.max_output_length:
             target = target[: self.hparams.max_output_length]
             att = [1] * len(self.hparams.max_output_length)
-            target_emb = target_emb[: self.hparams.max_output_length]
         else:
             _leftover = self.hparams.max_output_length - len(target)
             att = [1] * len(target) + [0] * _leftover
             target = target + [0] * _leftover
-            target_emb = target_emb + [self.tokid2emb[0]] * _leftover
         assert (
             len(target) == self.hparams.max_output_length
             and len(att) == self.hparams.max_output_length
-            and len(target_emb) == self.hparams.max_output_length
-        ), print(f"length of target: {len(target)}\nlength of attention:  {len(att)}\nlength of target_emb: {len(target_emb)}")
+        ), print(f"length of target: {len(target)}\nlength of attention:  {len(att)}")
         target_idx = torch.tensor([target])
         att = torch.tensor([att])
-        target_emb = torch.tensor(target_emb)
         target = {"input_ids": target_idx, "attention_mask": att}
 
         if idx == 0 and torch.cuda.current_device() == 0:
@@ -71,10 +66,10 @@ class GENREDataset(Dataset):
             print(f"output: {output_}")
             print(f"=" * 80)
 
-        return source, target, target_emb, input_, output_
+        return source, target, input_, output_
 
     def __getitem__(self, idx):
-        source, target, target_emb, input_, output_ = self.convert_to_features(
+        source, target, input_, output_ = self.convert_to_features(
             self.dataset.iloc[idx], idx
         )
         source_ids = source["input_ids"].squeeze()
@@ -85,7 +80,6 @@ class GENREDataset(Dataset):
         return {
             "source_ids": source_ids,
             "target_ids": target_ids,
-            "target_embs": target_emb,
             "source_mask": src_mask,
             "target_mask": target_mask,
             "input": input_,

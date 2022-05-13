@@ -250,7 +250,7 @@ class BeamSearchScorer(BeamScorer):
             ):
                 batch_beam_idx = batch_idx * self.group_size + next_index
                 # add to generated hypotheses if end of sentence
-                if (eos_token_id is not None) and (next_token.item() == eos_token_id):
+                if (eos_token_id is not None) and (next_token.item() == eos_token_id) and (next_score.item() != -np.inf):
                     # if beam_token does not belong to top num_beams tokens, it should not be added
                     is_beam_token_worse_than_top_num_beams = beam_token_rank >= self.group_size
                     if is_beam_token_worse_than_top_num_beams:

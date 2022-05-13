@@ -102,23 +102,46 @@ class T5FineTuner(pl.LightningModule):
         self.tokId2tokText= pickle.load(open(self.hparams.tokId2tokText, 'rb'))
         self.first_possible_tokens = self._get_first_possible_tokens()
         self.eos_list = list(self.groupId2tokIdList[1])
+        self.first_beam_dict = {}
 
-    def _get_tokIdList_from_groupIdList(self, candidate):
+    def _flush_frist_beam_dict(self):
+        self.first_beam_dict = {}
+
+    def _get_max_tokId_from_tokIdList(self, tokIdList, score):
+        tokIdList = sorted(tokIdList)
+        idx = score[tokIdList].detach().cpu().numpy().argmax()
+        max_tokId = tokIdList[idx]
+        return max_tokId
+
+    def _get_tokIdList_from_groupIdList(self, candidate, score):
         # for groupId tree
         if self.hparams.groupId_tree:
             groupIdList = candidate
             tokIdList = []
-            for groupId in groupIdList:
-                tokIdList.extend(self.groupId2tokIdList[groupId])
-            return list(set(tokIdList))
+            
+            # for groupId Tree with max beam search
+            if self.hparams.max_beam_search:
+                for groupId in groupIdList:
+                    max_tokId = self._get_max_tokId_from_tokIdList(self.groupId2tokIdList[groupId], score)
+                    tokIdList.append(max_tokId)
+                return list(set(tokIdList))
+            # for normal groupId Tree
+            if not self.hparams.max_beam_search:
+                for groupId in groupIdList:
+                    tokIdList.extend(self.groupId2tokIdList[groupId])
+                return list(set(tokIdList))
+
         # for nodeId tree
-        nodeId = candidate
-        return self.nodeId_tokIdList[nodeId]
+        if self.hparams.nodeId_tree:
+            assert not self.hparams.groupId_tree 
+            nodeId = candidate
+            return self.nodeId_tokIdList[nodeId]
+        raise NotImplementedError('Either groupId_tree or nodeId_tree should be True!')
 
     def _get_groupId_from_tokId(self, tokId):
         return self.tokId2groupId[tokId]
 
-    def _get_first_possible_tokens(self):
+    def _get_first_possible_tokens(self, batch_id, score):
         # for gruopId tree
         if self.hparams.groupId_tree:
             assert not self.hparams.nodeId_tree
@@ -127,12 +150,18 @@ class T5FineTuner(pl.LightningModule):
             if possible_GroupList[0] == -2:
                 possible_GroupList = possible_GroupList[1:]
             assert -2 not in possible_GroupList, "possible_GroupList contains -2"
-            return self._get_tokIdList_from_groupIdList(possible_GroupList)
+
+            if batch_id in self.first_beam_dict.keys():
+                return self.first_beam_dict[batch_id]
+
+            self.first_beam_dict[batch_id] = self._get_tokIdList_from_groupIdList(possible_GroupList, score)
+            return self.first_beam_dict[batch_id]
+
+        # for nodeId tree
         if self.hparams.nodeId_tree:
             assert not self.hparams.groupId_tree 
-            # for nodeId tree
             nodeId = self.trie_dict[-1][-2]
-            return self._get_tokIdList_from_groupIdList(nodeId)
+            return self._get_tokIdList_from_groupIdList(nodeId, score)
         raise NotImplementedError('Either groupId_tree or nodeId_tree should be True!')
 
     def _get_dataset(self, split):
@@ -253,19 +282,19 @@ class T5FineTuner(pl.LightningModule):
         )
         return loss
 
-    def get(self, batch_id, input_ids):
+    def get(self, batch_id, input_ids, score):
         # starts with pad token & groupId for pad token is -1
         assert input_ids[0] == 0
         if len(input_ids) == 1: 
-            return self.first_possible_tokens 
+            return self.first_possible_tokens(batch_id, score)
         else:
-            return self._get_from_trie(input_ids[1:],  self.trie_dict[-1])
+            return self._get_from_trie(input_ids[1:],  self.trie_dict[-1], score)
 
     """
     input_ids가 들어오면, 해당 tokId가 속한 groupId 찾고, 그걸 가지고 trie_dict 넘어간 다음
     해당 subtree의 key들(groupId) 를 모은 tokId return
     """
-    def _get_from_trie(self, input_ids, trie_dict):
+    def _get_from_trie(self, input_ids, trie_dict, score):
         #print(f"input_ids: {input_ids}")
         if len(input_ids) == 0:
             # for groupId tree
@@ -275,18 +304,21 @@ class T5FineTuner(pl.LightningModule):
                     possible_GroupList = possible_GroupList[1:]
                 assert -2 not in possible_GroupList, "possible_GroupList contains -2"
                 #print(f"[1] possible_GroupList: {possible_GroupList}")
-                tokIdList = self._get_tokIdList_from_groupIdList(possible_GroupList)
+                tokIdList = self._get_tokIdList_from_groupIdList(possible_GroupList, score)
                 #print(f"[1] tokIdList: {tokIdList}")
                 return tokIdList
 
             # for nodeId tree
-            nodeId = trie_dict[-2]
-            tokIdList = self._get_tokIdList_from_groupIdList(nodeId)
-            return tokIdList
+            if self.hparams.nodeId_tree:
+                assert not self.hparams.groupId_tree 
+                nodeId = trie_dict[-2]
+                tokIdList = self._get_tokIdList_from_groupIdList(nodeId, score)
+                return tokIdList            
+            raise NotImplementedError('Either groupId_tree or nodeId_tree should be True!')
         else:
             curGroupId = self._get_groupId_from_tokId(input_ids[0])
             if curGroupId in list(trie_dict.keys()):
-                return self._get_from_trie(input_ids[1:], trie_dict[curGroupId]) 
+                return self._get_from_trie(input_ids[1:], trie_dict[curGroupId], score) 
             else:
                 return []
 
@@ -330,8 +362,8 @@ class T5FineTuner(pl.LightningModule):
             max_length=self.hparams.max_output_length,
             num_beams=self.hparams.val_beam_size,
             num_return_sequences=self.hparams.val_beam_size,
-            prefix_allowed_tokens_fn=lambda batch_id, sent: self.get(
-                batch_id, sent.tolist()
+            prefix_allowed_tokens_fn=lambda batch_id, sent, scores: self.get(
+                batch_id, sent.tolist(), scores
             ),
             early_stopping=True,
         )

@@ -118,7 +118,8 @@ if __name__ == "__main__":
         nodeId_tokIdList=hparam.nodeId_tokIdList,  # new - nodeId_tokIdList.pickle
         groupId_tree=hparam.groupId_tree, # new
         nodeId_tree=hparam.nodeId_tree, # new
-        embedding_model=hparam.embedding_model # new - model used to extract embedding
+        embedding_model=hparam.embedding_model, # new - model used to extract embedding
+        max_beam_search=hparam.max_beam_search # new - select a token which has maximum score in groupId
     )
     args = argparse.Namespace(**args_dict)
     assert not (args.do_train and args.do_test), "Choose between train|test"

@@ -147,12 +147,8 @@ class T5FineTuner(pl.LightningModule):
             if possible_GroupList[0] == -2:
                 possible_GroupList = possible_GroupList[1:]
             assert -2 not in possible_GroupList, "possible_GroupList contains -2"
-
-            if batch_id in self.first_beam_dict.keys():
-                return self.first_beam_dict[batch_id]
-
-            self.first_beam_dict[batch_id] = self._get_tokIdList_from_groupIdList(possible_GroupList, score)
-            return self.first_beam_dict[batch_id]
+            
+            return self._get_tokIdList_from_groupIdList(possible_GroupList, score)
 
         # for nodeId tree
         if self.hparams.nodeId_tree:

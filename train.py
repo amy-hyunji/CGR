@@ -123,7 +123,6 @@ if __name__ == "__main__":
     args = argparse.Namespace(**args_dict)
     assert not (args.do_train and args.do_test), "Choose between train|test"
     assert not (args.groupId_tree and args.nodeId_tree), "Choose between groupId|nodeId: groupId for previous version and nodeId for new one"
-    assert args.embedding_model in ["t5", "bert"]
     assert args.model_name_or_path in ['t5-base']
 
     if torch.cuda.current_device() == 0:

@@ -13,7 +13,7 @@ import torch.distributed as dist
 
 from data import GENREDataset
 
-from transformers import T5Config, T5Tokenizer, T5ForConditionalGeneration, BertTokenizer, Adafactor
+from transformers import T5Config, T5Tokenizer, T5ForConditionalGeneration, BertTokenizer, AutoTokenizer, Adafactor
 from torch.utils.data import DataLoader
 from itertools import chain
 
@@ -44,16 +44,7 @@ class T5FineTuner(pl.LightningModule):
             self.tokenizer = T5Tokenizer.from_pretrained(
                 self.hparams.model_name_or_path
             )
-            if self.hparams.embedding_model == "t5":
-                self.dec_tok = T5Tokenizer.from_pretrained(
-                    "t5-base"
-                )
-            elif self.hparams.embedding_model == "bert":
-                self.dec_tok = BertTokenizer.from_pretrained(
-                    "bert-base-cased"
-                )
-            else:
-                raise NotImplementedError('Embedding from t5-base or bert-base is only allowed!')
+
             
             if self.print:
                 print(f"@@@ Loading Model from {self.hparams.model_name_or_path}")
@@ -85,6 +76,12 @@ class T5FineTuner(pl.LightningModule):
                 encoder = self.model.get_encoder()
                 for n, p in encoder.named_parameters():
                     p.requires_grad=False
+
+         
+         #### Tokenizer for generation step!
+        self.dec_tok = AutoTokenizer.from_pretrained(
+            self.hparams.embedding_model
+        )
 
         ### REMEMBER!!! Values in trie_dict is "GroupID" not "tokId"
         self.trie_dict = pickle.load(open(self.hparams.prefix_tree_file, "rb")) 

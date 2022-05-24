@@ -100,7 +100,7 @@ class T5FineTuner(pl.LightningModule):
         self.nodeId_tokIdList = pickle.load(open(self.hparams.nodeId_tokIdList, "rb"))
         self.tokId2groupId = pickle.load(open(self.hparams.tokId2groupId, 'rb'))
         self.tokId2tokText= pickle.load(open(self.hparams.tokId2tokText, 'rb'))
-        self.first_possible_tokens = self._get_first_possible_tokens()
+        self.first_possible_tokens = self._get_first_possible_tokens
         self.eos_list = list(self.groupId2tokIdList[1])
         self.first_beam_dict = {}
 
@@ -150,12 +150,8 @@ class T5FineTuner(pl.LightningModule):
             if possible_GroupList[0] == -2:
                 possible_GroupList = possible_GroupList[1:]
             assert -2 not in possible_GroupList, "possible_GroupList contains -2"
-
-            if batch_id in self.first_beam_dict.keys():
-                return self.first_beam_dict[batch_id]
-
-            self.first_beam_dict[batch_id] = self._get_tokIdList_from_groupIdList(possible_GroupList, score)
-            return self.first_beam_dict[batch_id]
+            
+            return self._get_tokIdList_from_groupIdList(possible_GroupList, score)
 
         # for nodeId tree
         if self.hparams.nodeId_tree:

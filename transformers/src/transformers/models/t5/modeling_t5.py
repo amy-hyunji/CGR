@@ -442,9 +442,9 @@ class T5Attention(nn.Module):
 
     def forward(
         self,
-        hidden_states,
-        mask=None,
-        key_value_states=None,
+        hidden_states, # decoder_hidden_states
+        mask=None, # encoder_attention_mask,
+        key_value_states=None, # encoder_hidden_states
         position_bias=None,
         past_key_value=None,
         layer_head_mask=None,
@@ -597,9 +597,9 @@ class T5LayerCrossAttention(nn.Module):
 
     def forward(
         self,
-        hidden_states,
-        key_value_states,
-        attention_mask=None,
+        hidden_states, # decoder_hidden_states
+        key_value_states, # encoder_hidden_states
+        attention_mask=None, # encoder_attention_mask,
         position_bias=None,
         layer_head_mask=None,
         past_key_value=None,
@@ -975,12 +975,34 @@ class T5Stack(T5PreTrainedModel):
 
         # If a 2D or 3D attention mask is provided for the cross-attention
         # we need to make broadcastable to [batch_size, num_heads, seq_length, seq_length]
+
         if self.is_decoder and encoder_hidden_states is not None:
             encoder_batch_size, encoder_sequence_length, _ = encoder_hidden_states.size()
             encoder_hidden_shape = (encoder_batch_size, encoder_sequence_length)
             if encoder_attention_mask is None:
                 encoder_attention_mask = torch.ones(encoder_hidden_shape, device=inputs_embeds.device)
+
             encoder_extended_attention_mask = self.invert_attention_mask(encoder_attention_mask)
+
+            dec_input_ids_len = extended_attention_mask.shape[-1]
+            d_len = extended_attention_mask.shape[-2]
+            q_len = encoder_extended_attention_mask.shape[-1]
+            batch_size = extended_attention_mask.shape[0]
+
+            new_encoder_extended_attention_mask = torch.zeros((batch_size,1,d_len,q_len), device=inputs_embeds.device)
+            assert extended_attention_mask.shape[0] == encoder_extended_attention_mask.shape[0]
+
+            for i in range(len(encoder_attention_mask)):
+                mask_len = encoder_attention_mask[i].sum()
+
+                prefix = encoder_extended_attention_mask[i,0,0,:mask_len].expand((d_len,-1))
+                mid = extended_attention_mask[i,0].expand((d_len,-1))
+                suffix = encoder_extended_attention_mask[i,0,0,mask_len+dec_input_ids_len:].expand((d_len,-1))
+
+                new_encoder_extended_attention_mask[i,0] = torch.cat((prefix, mid, suffix), dim=1)
+
+            encoder_extended_attention_mask = new_encoder_extended_attention_mask
+
         else:
             encoder_extended_attention_mask = None
 
@@ -1025,7 +1047,7 @@ class T5Stack(T5PreTrainedModel):
             if output_hidden_states:
                 # pass: output_hidden_states == False
                 all_hidden_states = all_hidden_states + (hidden_states,)
-
+            
             if self.gradient_checkpointing and self.training:
                 # pass  
                 if use_cache:
@@ -1518,6 +1540,8 @@ class T5ForConditionalGeneration(T5PreTrainedModel):
         decoder_config.num_layers = config.num_decoder_layers
         self.decoder = T5Stack(decoder_config, self.dec_shared)
 
+        # Appending last hidden state
+        self.append_last_hidden_state = config.append_last_hidden_state
 
         # Initialize weights and apply final processing
         self.post_init()
@@ -1644,15 +1668,20 @@ class T5ForConditionalGeneration(T5PreTrainedModel):
                 hidden_states=encoder_outputs[1] if len(encoder_outputs) > 1 else None,
                 attentions=encoder_outputs[2] if len(encoder_outputs) > 2 else None,
             )
-
-        hidden_states = encoder_outputs[0]
-
+            
         if self.model_parallel:
             torch.cuda.set_device(self.decoder.first_device)
 
         if labels is not None and decoder_input_ids is None and decoder_inputs_embeds is None:
             # get decoder inputs from shifting lm labels to the right
             decoder_input_ids = self._shift_right(labels)
+
+        if self.append_last_hidden_state:
+            for i in range(len(attention_mask)):
+                mask_len = attention_mask[i].sum()
+                encoder_outputs.last_hidden_state[i, mask_len:mask_len+30] = self.lm_head[decoder_input_ids[i]]
+
+        hidden_states = encoder_outputs[0]
 
         # Set device for model parallelism
         if self.model_parallel:
@@ -1666,6 +1695,8 @@ class T5ForConditionalGeneration(T5PreTrainedModel):
                 decoder_attention_mask = decoder_attention_mask.to(self.decoder.first_device)
 
         # Decode
+        if self.append_last_hidden_state:
+            decoder_input_ids = torch.zeros(decoder_input_ids.shape, device=decoder_input_ids.device)
         decoder_outputs = self.decoder(
             input_ids=decoder_input_ids,
             attention_mask=decoder_attention_mask,
@@ -1700,7 +1731,7 @@ class T5ForConditionalGeneration(T5PreTrainedModel):
         # labels => [bs,  output_token 개수]
         if self.lm_head.get_device() != sequence_output.get_device():
             self.lm_head = self.lm_head.to(sequence_output.device)
-        lm_logits = torch.einsum("bod,cd->boc", sequence_output, self.lm_head) 
+        lm_logits = torch.einsum("bod,cd->boc", sequence_output, self.lm_head)
 
         loss = None
         if labels is not None:

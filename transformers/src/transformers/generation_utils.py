@@ -2169,10 +2169,10 @@ class GenerationMixin:
         beam_scores = torch.zeros((batch_size, num_beams), dtype=torch.float, device=input_ids.device)
         beam_scores[:, 1:] = -1e9
         beam_scores = beam_scores.view((batch_size * num_beams,))
+        add_hidden_state = torch.tensor([], dtype=torch.float, device=input_ids.device)
 
         this_peer_finished = False  # used by synced_gpus only
         while True:
-
             if synced_gpus:
                 # Under synced_gpus the `forward` call must continue until all gpus complete their sequence.
                 # The following logic allows an early break if all peers finished generating their sequence
@@ -2183,7 +2183,13 @@ class GenerationMixin:
                 if this_peer_finished_flag.item() == 0.0:
                     break
 
-            model_inputs = self.prepare_inputs_for_generation(input_ids, **model_kwargs)
+            # input_ids: (10, 1)
+            if self.config.append_last_hidden_state:
+                dec_input_ids = torch.zeros(input_ids.shape, dtype=torch.long, device=input_ids.device)
+                model_inputs = self.prepare_inputs_for_generation(dec_input_ids, **model_kwargs)
+            else:
+                input_ids = torch.zeros(input_ids.shape, dtype=torch.long, device=input_ids.device)
+                model_inputs = self.prepare_inputs_for_generation(input_ids, **model_kwargs)
 
             outputs = self(
                 **model_inputs,

@@ -60,6 +60,7 @@ def main(args, train_params):
 
 
 if __name__ == "__main__":
+    os.environ["CUDA_VISIBLE_DEVICES"]="1"
     parser = ArgumentParser()
     parser.add_argument("--config", default=None, required=True, type=str)
     arg_ = parser.parse_args()
@@ -119,7 +120,8 @@ if __name__ == "__main__":
         groupId_tree=hparam.groupId_tree, # new
         nodeId_tree=hparam.nodeId_tree, # new
         embedding_model=hparam.embedding_model, # new - model used to extract embedding
-        max_beam_search=hparam.max_beam_search # new - select a token which has maximum score in groupId
+        max_beam_search=hparam.max_beam_search, # new - select a token which has maximum score in groupId
+        append_last_hidden_state=hparam.append_last_hidden_state
     )
     args = argparse.Namespace(**args_dict)
     assert not (args.do_train and args.do_test), "Choose between train|test"

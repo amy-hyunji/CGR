@@ -38,6 +38,7 @@ class T5FineTuner(pl.LightningModule):
                 {"contextualized_file": self.hparams.contextualized_file}
             )  # tokId_emb.pickle
             config.update({"freeze_vocab_emb": self.hparams.freeze_vocab_emb})
+            config.update({"append_last_hidden_state": True})
             self.model = T5ForConditionalGeneration.from_pretrained(
                 self.hparams.model_name_or_path, config=config
             )
@@ -65,10 +66,32 @@ class T5FineTuner(pl.LightningModule):
         # If in testing mode, load ckpt for inference
         if self.hparams.do_test:
             #raise NotImplementedError("Test Code is not implemented yet!")
+            config = T5Config.from_pretrained(self.hparams.test_model_path)
+            config.update(
+                {"contextualized_emb_num": self.hparams.contextualized_emb_num}
+            )
+            config.update(
+                {"contextualized_file": self.hparams.contextualized_file}
+            )  # tokId_emb.pickle
+            config.update({"freeze_vocab_emb": self.hparams.freeze_vocab_emb})
+            config.update({"append_last_hidden_state": self.hparams.append_last_hidden_state})
             self.model = T5ForConditionalGeneration.from_pretrained(
+                self.hparams.test_model_path, config=config
+            )
+            self.tokenizer = T5Tokenizer.from_pretrained(
                 self.hparams.test_model_path
             )
-            self.tokenizer = T5Tokenizer.from_pretrained(self.hparams.test_model_path)
+            if self.hparams.embedding_model == "t5":
+                self.dec_tok = T5Tokenizer.from_pretrained(
+                    "t5-base"
+                )
+            elif self.hparams.embedding_model == "bert":
+                self.dec_tok = BertTokenizer.from_pretrained(
+                    "bert-base-cased"
+                )
+            else:
+                raise NotImplementedError('Embedding from t5-base or bert-base is only allowed!')
+
             if self.print:
                 print(f"@@@ Loading Model from {self.hparams.test_model_path}")
             self.test_input_list = []

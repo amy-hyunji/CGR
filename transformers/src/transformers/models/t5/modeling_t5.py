@@ -834,11 +834,13 @@ class T5PreTrainedModel(PreTrainedModel):
 
 
 class T5Stack(T5PreTrainedModel):
-    def __init__(self, config, embed_tokens=None):
+    def __init__(self, config, embed_tokens=None, enc_embed_tokens=None):
         super().__init__(config)
 
+        self.enc_embed_tokens = enc_embed_tokens
         self.embed_tokens = embed_tokens
         self.is_decoder = config.is_decoder
+        self.append_last_hidden_state = config.append_last_hidden_state
 
         self.block = nn.ModuleList(
             [T5Block(config, has_relative_attention_bias=bool(i == 0)) for i in range(config.num_layers)]
@@ -948,6 +950,11 @@ class T5Stack(T5PreTrainedModel):
                 if self.is_decoder: 
                     assert False, "Decoder should have dict() for embed_tokens"
                 inputs_embeds = self.embed_tokens(input_ids)
+            
+            if self.is_decoder and self.append_last_hidden_state:
+                inputs_embeds = self.enc_embed_tokens(input_ids.type(torch.long))
+                for elem in input_ids:
+                    assert elem.sum() == 0
 
         batch_size, seq_length = input_shape
 
@@ -1002,6 +1009,7 @@ class T5Stack(T5PreTrainedModel):
                 new_encoder_extended_attention_mask[i,0] = torch.cat((prefix, mid, suffix), dim=1)
 
             encoder_extended_attention_mask = new_encoder_extended_attention_mask
+            
 
         else:
             encoder_extended_attention_mask = None
@@ -1526,7 +1534,7 @@ class T5ForConditionalGeneration(T5PreTrainedModel):
             self.shared = nn.Embedding.from_pretrained(emb.weight, freeze=True)
         else:
             self.shared = nn.Embedding(config.vocab_size, config.d_model)
-        self.dec_shared, self.lm_head = self.set_lm_head(config.contextualized_file) 
+        self.dec_shared, self.lm_head = self.set_lm_head(config.contextualized_file)
 
         encoder_config = copy.deepcopy(config)
         encoder_config.is_decoder = False
@@ -1538,7 +1546,7 @@ class T5ForConditionalGeneration(T5PreTrainedModel):
         decoder_config.is_decoder = True
         decoder_config.is_encoder_decoder = False
         decoder_config.num_layers = config.num_decoder_layers
-        self.decoder = T5Stack(decoder_config, self.dec_shared)
+        self.decoder = T5Stack(decoder_config, self.dec_shared, self.shared)
 
         # Appending last hidden state
         self.append_last_hidden_state = config.append_last_hidden_state
@@ -1585,7 +1593,7 @@ class T5ForConditionalGeneration(T5PreTrainedModel):
 
     def set_lm_head(self, file):
         tokid_emb_dict = pickle.load(open(file, "rb"))
-        contextualized_emb_list = list(tokid_emb_dict.values()) 
+        contextualized_emb_list = list(tokid_emb_dict.values())
         """
         for idx_dict in idx_emb_dict.values():
             for emb in idx_dict.values():
@@ -1629,6 +1637,7 @@ class T5ForConditionalGeneration(T5PreTrainedModel):
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
+        input_ids_len: Optional[int] = None,
     ) -> Union[Tuple[torch.FloatTensor], Seq2SeqLMOutput]:
         r"""
         labels (`torch.LongTensor` of shape `(batch_size,)`, *optional*):
@@ -1679,7 +1688,10 @@ class T5ForConditionalGeneration(T5PreTrainedModel):
         if self.append_last_hidden_state:
             for i in range(len(attention_mask)):
                 mask_len = attention_mask[i].sum()
-                encoder_outputs.last_hidden_state[i, mask_len:mask_len+30] = self.lm_head[decoder_input_ids[i]]
+                if input_ids_len is not None:
+                    mask_len += input_ids_len
+                d_len = len(decoder_input_ids[i])
+                encoder_outputs.last_hidden_state[i, mask_len:mask_len+d_len] = self.lm_head[decoder_input_ids[i]]
 
         hidden_states = encoder_outputs[0]
 

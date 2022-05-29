@@ -172,7 +172,7 @@ def construct_node_prefix_tree():
    tree = [set() for i in range(toknum)]
    group_set = {}; token_set = {}
    inv_group_set = {}; inv_token_set = {}
-   nodeid = 1
+   nodeid = 2
 
    for c_id, (corpusid, corpusdict) in enumerate(corpusId_emb_dict.items()):
       tokidlist = list(corpusdict.keys())

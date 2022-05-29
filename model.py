@@ -35,7 +35,7 @@ class T5FineTuner(pl.LightningModule):
                 {"contextualized_emb_num": self.hparams.contextualized_emb_num}
             )
             config.update(
-                {"contextualized_file": self.hparams.contextualized_file}
+                {"contextualized_file": os.path.join(self.hparams.dataset, self.hparams.contextualized_file)}
             )  # tokId_emb.pickle
             config.update({"freeze_vocab_emb": self.hparams.freeze_vocab_emb})
             self.model = T5ForConditionalGeneration.from_pretrained(
@@ -55,13 +55,22 @@ class T5FineTuner(pl.LightningModule):
 
         # If in testing mode, load ckpt for inference
         if self.hparams.do_test:
-            #raise NotImplementedError("Test Code is not implemented yet!")
+            config = T5Config.from_pretrained(self.hparams.test_model_path)
+            config.update(
+                {"contextualized_emb_num": self.hparams.contextualized_emb_num}
+            )
+            config.update(
+                {"contextualized_file": os.path.join(self.hparams.dataset, self.hparams.contextualized_file)}
+            )  # tokId_emb.pickle
+            config.update({"freeze_vocab_emb": self.hparams.freeze_vocab_emb})
+
             self.model = T5ForConditionalGeneration.from_pretrained(
-                self.hparams.test_model_path
+                self.hparams.test_model_path, config=config
             )
             self.tokenizer = T5Tokenizer.from_pretrained(self.hparams.test_model_path)
             if self.print:
-                print(f"@@@ Loading Model from {self.hparams.test_model_path}")
+                print(f"@@@ Loading Test Model from {self.hparams.test_model_path}")
+
             self.test_input_list = []
             self.test_gt_list = []
             self.test_gt_tok_list = []
@@ -84,21 +93,26 @@ class T5FineTuner(pl.LightningModule):
         )
 
         ### REMEMBER!!! Values in trie_dict is "GroupID" not "tokId"
-        self.trie_dict = pickle.load(open(self.hparams.prefix_tree_file, "rb")) 
+        self.group_trie = pickle.load(open(os.path.join(self.hparams.dataset, self.hparams.groupId_tree), "rb"))
+        self.node_trie = pickle.load(open(os.path.join(self.hparams.dataset, self.hparams.nodeId_tree), "rb"))
         self.contextualized_tokid2emb = pickle.load(
-            open(self.hparams.contextualized_file, "rb")
+            open(os.path.join(self.hparams.dataset, self.hparams.contextualized_file), "rb")
         )
         assert (
             len(self.contextualized_tokid2emb.keys())
             == int(self.hparams.contextualized_emb_num)
         ), f"contextualized_emb_num: {self.hparams.contextualized_emb_num} and length of keys: {len(self.contextualized_tokid2emb.keys())}"
         
-        self.groupId2tokIdList = pickle.load(open(self.hparams.groupId2tokIdList, "rb"))
-        self.nodeId_tokIdList = pickle.load(open(self.hparams.nodeId_tokIdList, "rb"))
-        self.tokId2groupId = pickle.load(open(self.hparams.tokId2groupId, 'rb'))
-        self.tokId2tokText= pickle.load(open(self.hparams.tokId2tokText, 'rb'))
-        self.first_possible_tokens = self._get_first_possible_tokens
-        self.eos_list = list(self.groupId2tokIdList[1])
+        self.groupId2tokId= pickle.load(open(os.path.join(self.hparams.dataset, self.hparams.groupId2tokIdList), "rb"))
+        self.tokId2groupId = pickle.load(open(os.path.join(self.hparams.dataset, self.hparams.tokId2groupId), 'rb'))
+        self.tokId2tokText = pickle.load(open(os.path.join(self.hparams.dataset, self.hparams.tokId2tokText), 'rb'))
+        nodeId_sup = pickle.load(open(os.path.join(self.hparams.dataset, self.hparams.nodeId_sup), 'rb'))
+        self.nodeId2groupdId = nodeId_sup['group_set']
+        self.nodeId2tokId = nodeId_sup['token_set']
+        self.groupId2nodeId = nodeId_sup['inv_group_set']
+        self.tokId2nodeId = nodeId_sup['inv_token_set']
+        #self.first_possible_tokens = self._get_first_possible_tokens
+        #self.eos_list = list(self.groupId2tokId[1])
         self.first_beam_dict = {}
 
     def _flush_frist_beam_dict(self):
@@ -110,36 +124,56 @@ class T5FineTuner(pl.LightningModule):
         max_tokId = tokIdList[idx]
         return max_tokId
 
-    def _get_tokIdList_from_groupIdList(self, candidate, score):
-        # for groupId tree
-        if self.hparams.groupId_tree:
-            groupIdList = candidate
-            tokIdList = []
-            
-            # for groupId Tree with max beam search
-            if self.hparams.max_beam_search:
-                for groupId in groupIdList:
-                    max_tokId = self._get_max_tokId_from_tokIdList(self.groupId2tokIdList[groupId], score)
-                    tokIdList.append(max_tokId)
-                return list(set(tokIdList))
-            # for normal groupId Tree
-            if not self.hparams.max_beam_search:
-                for groupId in groupIdList:
-                    tokIdList.extend(self.groupId2tokIdList[groupId])
-                return list(set(tokIdList))
+    def _get_tokIdList_from_nodeIdList(self, nodeIdList, score):                        
+        assert self.hparams.tree_type == "nodeId"            
+        tokIdList = []
 
+        if self.hparams.max_beam_search:
+            for nodeId in nodeIdList:
+                max_tokId = self._get_max_tokId_from_tokIdList(list(self.nodeId2tokId[nodeId]), score)
+                tokIdList.append(max_tokId)
+            return list(set(tokIdList))
+        else:                
+            for nodeId in nodeIdList:
+                tokIdList.extend(list(self.nodeId2tokId[nodeId]))                
+            return list(set(tokIdList))
+
+    def _get_tokIdList_from_groupIdList(self, groupIdList, score):
+        assert self.hparams.tree_type == "groupId"
+        tokIdList = []
+        
+        # for groupId Tree with max beam search
+        if self.hparams.max_beam_search:
+            for groupId in groupIdList:
+                max_tokId = self._get_max_tokId_from_tokIdList(self.groupId2tokId[groupId], score)
+                tokIdList.append(max_tokId)
+            return list(set(tokIdList))
+        # for normal groupId Tree
+        else:
+            for groupId in groupIdList:
+                tokIdList.extend(self.groupId2tokId[groupId])
+            return list(set(tokIdList))
+
+        """
         # for nodeId tree
         if self.hparams.nodeId_tree:
             assert not self.hparams.groupId_tree 
             nodeId = candidate
             return self.nodeId_tokIdList[nodeId]
         raise NotImplementedError('Either groupId_tree or nodeId_tree should be True!')
+        """
+
+    def _get_nodeId_from_tokId(self, tokId):
+        nodeId = list(self.tokId2nodeId[tokId])
+        assert len(nodeId) == 1
+        return nodeId[0] 
 
     def _get_groupId_from_tokId(self, tokId):
         return self.tokId2groupId[tokId]
 
+    """
     def _get_first_possible_tokens(self, batch_id, score):
-        # for gruopId tree
+        # for groupId tree
         if self.hparams.groupId_tree:
             assert not self.hparams.nodeId_tree
             assert list(self.trie_dict.keys()) == [-2, -1]
@@ -156,6 +190,7 @@ class T5FineTuner(pl.LightningModule):
             nodeId = self.trie_dict[-1][-2]
             return self._get_tokIdList_from_groupIdList(nodeId, score)
         raise NotImplementedError('Either groupId_tree or nodeId_tree should be True!')
+    """
 
     def _get_dataset(self, split):
         dataset = GENREDataset(
@@ -203,8 +238,6 @@ class T5FineTuner(pl.LightningModule):
         return list(map(f, x))
 
     def ids_to_text(self, _generated_ids):
-        print(f"_generated_ids: {_generated_ids[0]}")
-        print(f"_generated_ids: {_generated_ids[1]}")
         generated_ids = []
         for _ids in _generated_ids:
             _ids = copy.deepcopy(_ids)
@@ -275,13 +308,23 @@ class T5FineTuner(pl.LightningModule):
         )
         return loss
 
-    def get(self, batch_id, input_ids, score):
+    def get(self, batch_id, input_ids, score, trie_dict=None):
         # starts with pad token & groupId for pad token is -1
         assert input_ids[0] == 0
+        if trie_dict is None:
+            if tree_type == "groupId":
+                trie_dict = self.group_trie
+            elif tree_type == "nodeId":
+                trie_dict = self.node_trie
+            else:
+                assert False
+        return self._get_from_trie(input_ids, trie_dict, score)
+        '''
         if len(input_ids) == 1: 
             return self.first_possible_tokens(batch_id, score)
         else:
-            return self._get_from_trie(input_ids[1:],  self.trie_dict[-1], score)
+            return self._get_from_trie(input_ids[1:],  trie_dict[-1], score)
+        '''
 
     """
     input_ids가 들어오면, 해당 tokId가 속한 groupId 찾고, 그걸 가지고 trie_dict 넘어간 다음
@@ -289,31 +332,34 @@ class T5FineTuner(pl.LightningModule):
     """
     def _get_from_trie(self, input_ids, trie_dict, score):
         #print(f"input_ids: {input_ids}")
-        if len(input_ids) == 0:
-            # for groupId tree
-            if self.hparams.groupId_tree:
+        if self.hparams.tree_type == "groupId":
+            if len(input_ids) == 0:
                 possible_GroupList = list(trie_dict.keys())
-                if possible_GroupList[0] == -2:
-                    possible_GroupList = possible_GroupList[1:]
-                assert -2 not in possible_GroupList, "possible_GroupList contains -2"
-                #print(f"[1] possible_GroupList: {possible_GroupList}")
                 tokIdList = self._get_tokIdList_from_groupIdList(possible_GroupList, score)
-                #print(f"[1] tokIdList: {tokIdList}")
                 return tokIdList
-
-            # for nodeId tree
-            if self.hparams.nodeId_tree:
-                assert not self.hparams.groupId_tree 
-                nodeId = trie_dict[-2]
-                tokIdList = self._get_tokIdList_from_groupIdList(nodeId, score)
-                return tokIdList            
-            raise NotImplementedError('Either groupId_tree or nodeId_tree should be True!')
-        else:
-            curGroupId = self._get_groupId_from_tokId(input_ids[0])
-            if curGroupId in list(trie_dict.keys()):
-                return self._get_from_trie(input_ids[1:], trie_dict[curGroupId], score) 
             else:
+                curGroupId = self._get_groupId_from_tokId(input_ids[0])
+                if curGroupId in list(trie_dict.keys()):
+                    return self._get_from_trie(input_ids[1:], trie_dict[curGroupId], score) 
+                else:
+                    return []
+        elif self.hparams.tree_type == "nodeId":
+            #print(f'input_ids: {input_ids}')
+            #input()
+            if input_ids[-1] == 1:
                 return []
+            else:
+                cur_nId = self._get_nodeId_from_tokId(input_ids[-1])
+                #print(f'node: {cur_nId}')
+                nodeId = list(trie_dict[cur_nId])
+                #print(f'next_possible_node: {nodeId}')
+                tokIdList = self._get_tokIdList_from_nodeIdList(nodeId, score)
+                #print(f"tokIdList: {tokIdList}")
+                #input()
+                return tokIdList            
+        else:
+            raise NotImplementedError('tree type should be either groupId_tree or nodeId_tree!')
+
 
     def _calculate_recall(self, pred, gt):
         assert len(pred) == self.hparams.val_beam_size
@@ -399,6 +445,217 @@ class T5FineTuner(pl.LightningModule):
         else:
             return em_list, recall_list
 
+    def _remove_zero(self, ids):
+        if ids.count(0) == 1: 
+            return ids
+        for i, id in enumerate(ids):
+            if i != 0 and id == 0:   
+                return ids[:i] 
+        assert False
+
+    def _remove_prev_from_trie(self, trie, ids_list):
+        temp_list = []
+        for elem in ids_list:
+            if elem in temp_list:
+                continue
+            else:
+                temp_list.append(elem)
+        ids_list = temp_list
+
+        for i in range(len(ids_list)):
+            ids_list[i][0] = 0
+            ids_list[i] = self._remove_zero(ids_list[i])
+
+        if self.hparams.tree_type == "groupId":
+            for ids in ids_list:
+                cur_dict = trie
+                for i in range(len(ids)-1):
+                    cur_dict = cur_dict[ids[i]]
+
+                cur_dict.pop(ids[-1])
+                """
+                if len(cur_dict.keys()) == 1:
+                    assert int(list(cur_dict.keys())[0]) == -2
+                    cur_dict.pop(-2)
+                """
+                for i in range(len(ids)-1):
+                    idx = -2-i 
+                    _ids = int(ids[idx])
+                    cur_dict = trie 
+                    for j in range(len(ids)+idx):
+                        cur_dict = cur_dict[int(ids[j])] 
+                    if len(cur_dict[_ids]) == 0:
+                        cur_dict.pop(_ids)
+                        """
+                        if len(cur_dict.keys()) == 1:
+                            assert int(list(cur_dict.keys())[0]) == -2
+                            cur_dict.pop(-2)
+                        """
+        elif self.hparams.tree_type == "nodeId":
+            for ids in ids_list:             
+                c_nodeid = ids[-1]
+                n_nodeid = list(trie[c_nodeid])[0]
+                if len(trie[n_nodeid]) == 0:
+                    trie[c_nodeid].remove(n_nodeid)
+                for r_id in range(len(ids)-1):
+                    c_nodeid = ids[-1-r_id]
+                    p_nodeid = ids[-2-r_id]
+                    if len(trie[c_nodeid]) == 0:
+                        trie[p_nodeid].remove(c_nodeid)
+        else:
+            assert False
+
+        return trie 
+
+    def _find_unique_path(self, seq, trie):
+
+        _ids = seq.tolist()
+        _ids = [int(elem) for elem in _ids]
+        
+        generated_ids = []
+        if _ids[-1] == 0:
+            for el in range(len(_ids)):
+                if el != 0 and _ids[el] == 0:
+                    continue
+                else:
+                    generated_ids.append(_ids[el])
+        else:
+            generated_ids = _ids 
+
+        assert generated_ids[-1] != 0
+        generated_ids = generated_ids[:-1]
+        
+        cur_dict = trie 
+        for i in range(len(generated_ids) - 1):
+            cur_dict = cur_dict[int(generated_ids[i])]
+
+        if len(cur_dict[generated_ids[-1]]) == 0:
+            add_list.append(generated_ids)
+        else:
+            cur_dict = cur_dict[int(generated_ids[-1])]
+            # check if it is an unique path
+            keys = list(cur_dict.keys())
+            if len(keys) > 1:
+                print(f"More than 1: {keys}")
+                keys = [keys[0]]
+            while len(cur_dict[keys[0]]) != 0:
+                generated_ids.append(keys[0])
+                cur_dict = cur_dict[keys[0]]
+                keys = list(cur_dict.keys())
+                if len(keys) > 1:
+                    print(f"More than 1: {keys}")
+                    keys = [keys[0]]
+            generated_ids.append(1)
+
+        return generated_ids
+
+    def _test_step(self, batch, return_elem=False):
+        if self.hparams.tree_type == "groupId":
+            _trie_dict = copy.deepcopy(self.group_trie)
+        elif self.hparams.tree_type == "nodeId":
+            raise NotImplementedError('Bug Exists for NodeID')
+            _trie_dict = copy.deepcopy(self.node_trie)
+        else:
+            assert False
+        
+        unique_pred = []; unique_ids = []
+
+        _idx = 0 
+        while len(unique_pred) < self.hparams.val_beam_size:
+            _idx += 1
+            print(f'#'*50)
+            print(unique_pred)
+            print(f'#'*50)
+            
+            _generated_ids = self.model.generate(
+                batch["source_ids"],
+                attention_mask=batch["source_mask"],
+                use_cache=True,
+                decoder_attention_mask=batch["target_mask"],
+                max_length=self.hparams.max_output_length,
+                num_beams=self.hparams.val_beam_size,
+                num_return_sequences=self.hparams.val_beam_size,
+                prefix_allowed_tokens_fn=lambda batch_id, sent, scores: self.get(
+                    batch_id, sent.tolist(), scores, trie_dict=_trie_dict
+                ),
+                early_stopping=True,
+            )
+            _generated_text = self.ids_to_text(_generated_ids)
+
+            inum = len(_generated_ids) // self.hparams.val_beam_size
+            assert inum == len(batch["output"])
+            generated_text = [
+                _generated_text[
+                    i * self.hparams.val_beam_size : (i + 1) * self.hparams.val_beam_size
+                ]
+                for i in range(inum)
+            ]
+            generated_ids = [
+                _generated_ids[
+                    i * self.hparams.val_beam_size : (i+1) * self.hparams.val_beam_size
+                ].detach().cpu().numpy().tolist()
+                for i in range(inum)
+            ]
+
+            """ 
+            for b_texts, b_ids in zip(generated_text, generated_ids):
+                for _text, _ids in zip(b_texts, b_ids):
+                    g_ids = [self.tokId2groupId[el] for el in _ids]
+            """
+
+            _upper_ids = []
+            for batch_text, batch_ids in zip(generated_text, generated_ids):
+                ### iterate over batch (val_beam_size)
+                for _text, _ids in zip(batch_text, batch_ids):
+                    if _text not in unique_pred:
+                        unique_pred.append(_text)
+                        unique_ids.append(_ids)
+                        #_ids[0] = -1 
+                        #print(f'text: {_text}\nids: {_ids}\n')
+                        # change ids -> group ids   
+                        if self.hparams.tree_type == "groupId":
+                            _upper_ids.append([self.tokId2groupId[el] for el in _ids]) 
+                        elif self.hparams.tree_type == "nodeId":
+                            temp = []
+                            for el in _ids[:-1]:
+                                assert len(self.tokId2nodeId[el]) == 1, self.tokId2nodeId[el]
+                                temp.append(list(self.tokId2nodeId[el])[0])
+                            # find the end token
+                            prev_nId = temp[-1]
+                            assert prev_nId+1 in list(self.tokId2nodeId[1]) 
+                            temp.append(prev_nId+1)
+                            _upper_ids.append(temp)
+                            #_upper_ids.append([list(self.tokId2nodeId[el])[0] for el in _ids]) 
+                        else:
+                            assert False
+            # remove from _trie_dict
+            _trie_dict = self._remove_prev_from_trie(_trie_dict, _upper_ids)
+
+        print(f"## UNIQUE PRED: {unique_pred[:self.hparams.val_beam_size]}")
+        em_list, recall_list = self.calculate_scores(
+            [unique_pred[:self.hparams.val_beam_size]], batch["output"], batch["input"]
+        )
+
+        if return_elem:
+            assert (
+                len(list(batch["input"]))
+                == len(list(generated_text))
+                == len(list(em_list))
+            )
+            return {
+                "input": list(batch["input"]),
+                "gt": list(batch["output"]),
+                "gt_tok": list(batch["target_ids"].detach().cpu().numpy().tolist()),
+                "pred": list(unique_pred),
+                "pred_tok": list(unique_ids),
+                "em": list(em_list),
+                "recall": list(recall_list),
+            }
+        else:
+            return em_list, recall_list
+
+
+
     def validation_step(self, batch, batch_idx):
         em_score, recall_score = self._val_step(batch)
         self.em_score_list.extend(list(em_score))
@@ -430,7 +687,7 @@ class T5FineTuner(pl.LightningModule):
         return
 
     def test_step(self, batch, batch_idx):
-        ret_dict = self._val_step(batch, return_elem=True)
+        ret_dict = self._test_step(batch, return_elem=True)
         self.test_input_list.extend(ret_dict["input"])
         self.test_gt_list.extend(ret_dict["gt"])
         self.test_gt_tok_list.extend(ret_dict["gt_tok"])

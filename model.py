@@ -659,13 +659,15 @@ class T5FineTuner(pl.LightningModule):
                 len(list(batch["input"]))
                 == len(list(generated_text))
                 == len(list(em_list))
+                == len(list([unique_pred]))
+                == len(list([unique_ids]))
             )
             return {
                 "input": list(batch["input"]),
                 "gt": list(batch["output"]),
                 "gt_tok": list(batch["target_ids"].detach().cpu().numpy().tolist()),
-                "pred": list(unique_pred),
-                "pred_tok": list(unique_ids),
+                "pred": list([unique_pred]),
+                "pred_tok": list([unique_ids]),
                 "em": list(em_list),
                 "recall": list(recall_list),
             }

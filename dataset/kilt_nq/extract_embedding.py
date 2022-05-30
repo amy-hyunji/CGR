@@ -101,6 +101,11 @@ def construct_corpus():
          tokId_corpus[tokId] = [corpusId, tok_pos]
          tokId_emb[tokId] = _emb
          tokId += 1
+         
+         # Add EOS Token 
+         if tok_pos == len(_tok_decode)-1:
+            _tok_dict[1] = tokId_emb[1]
+            tokId_corpus[1] = [corpusId, tok_pos+1]
 
       corpusId_corpus_dict[corpusId] = elem
       corpusId_emb_dict[corpusId] = _tok_dict 

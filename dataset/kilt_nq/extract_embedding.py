@@ -32,8 +32,8 @@ def dump(fname, file):
    with open(os.path.join(args.save_path, fname), "wb") as f:
       pickle.dump(file, f)
 
-def encode_sp(sen, model, tokenizer, add_sp):
-   _tok = tokenizer(sen, return_tensors='pt', add_special_tokens=add_sp)
+def encode_sp(sen, model, tokenizer):
+   _tok = tokenizer(sen, return_tensors='pt', add_special_tokens=False)
    _input_ids = _tok['input_ids'].cuda()
    _attention_mask = _tok["attention_mask"].cuda()
    _tok_decode = tokenizer.convert_ids_to_tokens(_input_ids[0])
@@ -53,7 +53,7 @@ def construct_sp():
    t5_tokenizer = T5Tokenizer.from_pretrained("t5-base")
 
    # tokId = 0 -> <pad> token 
-   _tok_decode, _input_ids, last_hidden_state = encode_sp("<pad>", t5_model, t5_tokenizer, add_sp=False)
+   _tok_decode, _input_ids, last_hidden_state = encode_sp("<pad>", t5_model, t5_tokenizer)
    assert len(_tok_decode) == 1
    tok_Idlist_dict[_tok_decode[0]] = [0]
    tok_Id_dict[0] = _tok_decode[0] 
@@ -61,7 +61,7 @@ def construct_sp():
    tokId_emb[0] = last_hidden_state[0]
 
    # tokId = 1 -> </s> token
-   _tok_decode, _input_ids, last_hidden_state = encode_sp("</s>", t5_model, t5_tokenizer, add_sp=False)
+   _tok_decode, _input_ids, last_hidden_state = encode_sp("</s>", t5_model, t5_tokenizer)
    assert _tok_decode[0] == "</s>"
    assert len(_tok_decode) == 1
    tok_Idlist_dict[_tok_decode[0]] = [1]
@@ -85,7 +85,7 @@ def construct_corpus():
 
    for corpusId in tqdm(range(corpus_num)):
       elem = corpus_file["corpus"][corpusId]
-      _tok_decode, _input_ids, last_hidden_state = encode_sp(elem, model, tokenizer, add_sp=True)
+      _tok_decode, _input_ids, last_hidden_state = encode_sp(elem, model, tokenizer)
       
       _tok_dict = {}
       assert len(_input_ids[0])==len(last_hidden_state)==len(_tok_decode)

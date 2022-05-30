@@ -344,6 +344,14 @@ class T5FineTuner(pl.LightningModule):
                 else:
                     return []
         elif self.hparams.tree_type == "nodeId":
+            if input_ids[-1] == 1:
+                return []
+            else:
+                NodeId = self._get_nodeId_from_tokId(input_ids[-1])
+                next_nId_List = list(trie_dict[NodeId])
+                tokIdList = self._get_tokIdList_from_nodeIdList(next_nId_List, score)
+                return tokIdList
+            '''
             #print(f'input_ids: {input_ids}')
             #input()
             if input_ids[-1] == 1:
@@ -356,7 +364,8 @@ class T5FineTuner(pl.LightningModule):
                 tokIdList = self._get_tokIdList_from_nodeIdList(nodeId, score)
                 #print(f"tokIdList: {tokIdList}")
                 #input()
-                return tokIdList            
+                return tokIdList
+            '''      
         else:
             raise NotImplementedError('tree type should be either groupId_tree or nodeId_tree!')
 
@@ -492,7 +501,7 @@ class T5FineTuner(pl.LightningModule):
                             cur_dict.pop(-2)
                         """
         elif self.hparams.tree_type == "nodeId":
-            for ids in ids_list:             
+            for ids in ids_list:
                 c_nodeid = ids[-1]
                 n_nodeid = list(trie[c_nodeid])[0]
                 if len(trie[n_nodeid]) == 0:
@@ -553,7 +562,7 @@ class T5FineTuner(pl.LightningModule):
         if self.hparams.tree_type == "groupId":
             _trie_dict = copy.deepcopy(self.group_trie)
         elif self.hparams.tree_type == "nodeId":
-            raise NotImplementedError('Bug Exists for NodeID')
+            #raise NotImplementedError('Bug Exists for NodeID')
             _trie_dict = copy.deepcopy(self.node_trie)
         else:
             assert False
@@ -617,13 +626,22 @@ class T5FineTuner(pl.LightningModule):
                             _upper_ids.append([self.tokId2groupId[el] for el in _ids]) 
                         elif self.hparams.tree_type == "nodeId":
                             temp = []
-                            for el in _ids[:-1]:
+                            eos_pos = (np.array(_ids) == 1).nonzero()[0][0]
+                            for el in _ids[:eos_pos]:
                                 assert len(self.tokId2nodeId[el]) == 1, self.tokId2nodeId[el]
                                 temp.append(list(self.tokId2nodeId[el])[0])
+
                             # find the end token
+                            cur_nId = temp[-1]
+                            next_nId = _trie_dict[cur_nId]
+                            end_nId = list(next_nId.intersection(self.tokId2nodeId[1]))
+                            assert len(end_nId) == 1
+                            temp.append(end_nId[0])
+                            '''
                             prev_nId = temp[-1]
-                            assert prev_nId+1 in list(self.tokId2nodeId[1]) 
+                            assert prev_nId+1 in self.tokId2nodeId[1]
                             temp.append(prev_nId+1)
+                            '''
                             _upper_ids.append(temp)
                             #_upper_ids.append([list(self.tokId2nodeId[el])[0] for el in _ids]) 
                         else:

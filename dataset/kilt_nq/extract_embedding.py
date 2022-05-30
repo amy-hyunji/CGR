@@ -73,7 +73,7 @@ def construct_sp():
 def construct_corpus():
    corpusId_corpus_dict = {} # {corpusId: corpus} 
    corpusId_emb_dict = {} # {corpusId: {tok: {emb}}}
-   tokId_corpus = {} # {tokid: [corpusId, tok_pos]}
+   tokId_corpus = {} # {tokid: corpusText}
 
    if args.emb_path == "t5-base" or args.emb_path == "t5-large":
       model = T5EncoderModel.from_pretrained(args.emb_path).cuda()
@@ -98,14 +98,13 @@ def construct_corpus():
          else:
             tok_Idlist_dict[_text].append(tokId)
          _tok_dict[tokId] = _emb
-         tokId_corpus[tokId] = [corpusId, tok_pos]
+         tokId_corpus[tokId] = elem 
          tokId_emb[tokId] = _emb
          tokId += 1
          
          # Add EOS Token 
          if tok_pos == len(_tok_decode)-1:
             _tok_dict[1] = tokId_emb[1]
-            tokId_corpus[1] = [corpusId, tok_pos+1]
 
       corpusId_corpus_dict[corpusId] = elem
       corpusId_emb_dict[corpusId] = _tok_dict 
@@ -284,6 +283,7 @@ if __name__ == "__main__":
    dump("tokGroupId_tokIdList.pickle", tokGroupId_tokIdList)
    dump("tokId_tokGroupId.pickle", tokId_tokGroupId)
    dump("tokId_tokText.pickle", tok_Id_dict)
+   dump("tokId_corpus.pickle", tokId_corpus)
    dump("groupId_tree.pickle", group_tree)
    dump("nodeId_tree.pickle", node_tree)
    dump("nodeId_sup_set.pickle", node_sup_set)
@@ -296,7 +296,6 @@ if __name__ == "__main__":
    dump("tokText_TokIdList.pickle", tok_Idlist_dict)
    dump("corpusId_corpus.pickle", corpusId_corpus_dict)
    dump("corpusId_emb.pickle", corpusId_emb_dict)
-   dump("tokId_corpus.pickle", tokId_corpus)
    """
 
    print("DONE!!")

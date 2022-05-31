@@ -111,7 +111,6 @@ class T5FineTuner(pl.LightningModule):
         self.nodeId2tokId = nodeId_sup['token_set']
         self.groupId2nodeId = nodeId_sup['inv_group_set']
         self.tokId2nodeId = nodeId_sup['inv_token_set']
-        #self.first_possible_tokens = self._get_first_possible_tokens
         #self.eos_list = list(self.groupId2tokId[1])
         self.first_beam_dict = {}
 
@@ -154,15 +153,6 @@ class T5FineTuner(pl.LightningModule):
                 tokIdList.extend(self.groupId2tokId[groupId])
             return list(set(tokIdList))
 
-        """
-        # for nodeId tree
-        if self.hparams.nodeId_tree:
-            assert not self.hparams.groupId_tree 
-            nodeId = candidate
-            return self.nodeId_tokIdList[nodeId]
-        raise NotImplementedError('Either groupId_tree or nodeId_tree should be True!')
-        """
-
     def _get_nodeId_from_tokId(self, tokId):
         nodeId = list(self.tokId2nodeId[tokId])
         assert len(nodeId) == 1
@@ -170,31 +160,6 @@ class T5FineTuner(pl.LightningModule):
 
     def _get_groupId_from_tokId(self, tokId):
         return self.tokId2groupId[tokId]
-
-    """
-    def _get_first_possible_tokens(self, batch_id, score):
-        # for groupId tree
-        if self.hparams.groupId_tree:
-            assert not self.hparams.nodeId_tree
-            assert list(self.trie_dict.keys()) == [-2, -1]
-            possible_GroupList = list(self.trie_dict[-1].keys())
-            if possible_GroupList[0] == -2:
-                possible_GroupList = possible_GroupList[1:]
-            assert -2 not in possible_GroupList, "possible_GroupList contains -2"
-
-            if batch_id in self.first_beam_dict.keys():
-                return self.first_beam_dict[batch_id]
-
-            self.first_beam_dict[batch_id] = self._get_tokIdList_from_groupIdList(possible_GroupList, score)
-            return self.first_beam_dict[batch_id]
-
-        # for nodeId tree
-        if self.hparams.nodeId_tree:
-            assert not self.hparams.groupId_tree 
-            nodeId = self.trie_dict[-1][-2]
-            return self._get_tokIdList_from_groupIdList(nodeId, score)
-        raise NotImplementedError('Either groupId_tree or nodeId_tree should be True!')
-    """
 
     def _get_dataset(self, split):
         dataset = GENREDataset(
@@ -322,24 +287,26 @@ class T5FineTuner(pl.LightningModule):
                 trie_dict = self.node_trie
             else:
                 assert False
-        return self._get_from_trie(input_ids, trie_dict, score)
-        '''
-        if len(input_ids) == 1: 
-            return self.first_possible_tokens(batch_id, score)
-        else:
-            return self._get_from_trie(input_ids[1:],  trie_dict[-1], score)
-        '''
+
+        is_first_token = (len(input_ids)==1)
+        return self._get_from_trie(input_ids, trie_dict, score, is_first_token=is_first_token, batch_id=batch_id)
 
     """
     input_ids가 들어오면, 해당 tokId가 속한 groupId 찾고, 그걸 가지고 trie_dict 넘어간 다음
     해당 subtree의 key들(groupId) 를 모은 tokId return
     """
-    def _get_from_trie(self, input_ids, trie_dict, score):
+    def _get_from_trie(self, input_ids, trie_dict, score, is_first_token=False, batch_id=None):
+        if (is_first_token == True) and (batch_id is not None) and (batch_id in self.first_beam_dict.keys()):
+            return self.first_beam_dict[batch_id]
+
         #print(f"input_ids: {input_ids}")
         if self.hparams.tree_type == "groupId":
             if len(input_ids) == 0:
                 possible_GroupList = list(trie_dict.keys())
                 tokIdList = self._get_tokIdList_from_groupIdList(possible_GroupList, score)
+
+                if (is_first_token == True) and (batch_id is not None):
+                    self.first_beam_dict[batch_id] = tokIdList
                 return tokIdList
             else:
                 curGroupId = self._get_groupId_from_tokId(input_ids[0])
@@ -354,22 +321,10 @@ class T5FineTuner(pl.LightningModule):
                 NodeId = self._get_nodeId_from_tokId(input_ids[-1])
                 next_nId_List = list(trie_dict[NodeId])
                 tokIdList = self._get_tokIdList_from_nodeIdList(next_nId_List, score)
+                
+                if (is_first_token == True) and (batch_id is not None):
+                    self.first_beam_dict[batch_id] = tokIdList
                 return tokIdList
-            '''
-            #print(f'input_ids: {input_ids}')
-            #input()
-            if input_ids[-1] == 1:
-                return []
-            else:
-                cur_nId = self._get_nodeId_from_tokId(input_ids[-1])
-                #print(f'node: {cur_nId}')
-                nodeId = list(trie_dict[cur_nId])
-                #print(f'next_possible_node: {nodeId}')
-                tokIdList = self._get_tokIdList_from_nodeIdList(nodeId, score)
-                #print(f"tokIdList: {tokIdList}")
-                #input()
-                return tokIdList
-            '''      
         else:
             raise NotImplementedError('tree type should be either groupId_tree or nodeId_tree!')
 
@@ -642,11 +597,6 @@ class T5FineTuner(pl.LightningModule):
                             end_nId = list(next_nId.intersection(self.tokId2nodeId[1]))
                             assert len(end_nId) == 1
                             temp.append(end_nId[0])
-                            '''
-                            prev_nId = temp[-1]
-                            assert prev_nId+1 in self.tokId2nodeId[1]
-                            temp.append(prev_nId+1)
-                            '''
                             _upper_ids.append(temp)
                             #_upper_ids.append([list(self.tokId2nodeId[el])[0] for el in _ids]) 
                         else:
@@ -654,6 +604,7 @@ class T5FineTuner(pl.LightningModule):
             # remove from _trie_dict
             _trie_dict = self._remove_prev_from_trie(_trie_dict, _upper_ids)
 
+        self._flush_frist_beam_dict()
         print(f"## UNIQUE PRED: {unique_pred[:self.hparams.val_beam_size]}")
         em_list, recall_list = self.calculate_scores(
             [unique_pred[:self.hparams.val_beam_size]], batch["output"], batch["input"]

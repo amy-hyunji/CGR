@@ -111,7 +111,7 @@ def construct_corpus():
 
    print(f'total_tok_num: {total_tok_num}')
    print(f'tokId: {tokId}')
-   return corpusId_corpus_dict, corpusId_emb_dict 
+   return corpusId_corpus_dict, corpusId_emb_dict, tokId_corpus 
 
 def construct_dataset(split):
    if split == "train":
@@ -257,7 +257,7 @@ if __name__ == "__main__":
    # add pad and </s>
    tok_Idlist_dict, tok_Id_dict, tokId_emb = construct_sp()
    # add the rest 
-   corpusId_corpus_dict, corpusId_emb_dict = construct_corpus()
+   corpusId_corpus_dict, corpusId_emb_dict, tokId_corpus = construct_corpus()
 
    # Grouping
    tokGroupId_tok_dict, tokId_tokGroupId, tokGroupId_tokIdList = construct_group()

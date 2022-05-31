@@ -25,7 +25,7 @@ def insert_tokId(nodeId, tokId):
         nodeId_tokIdList[nodeId].append(tokId)
 
 ### Parameters to change ###
-basedir = "./dataset/kilt_nq/bert-base-cased-emb"
+basedir = "./dataset/kilt_nq/t5-base-emb/"
 ############################
 
 corpusId_emb = pickle.load(open(os.path.join(basedir, "corpusId_emb.pickle"), "rb"))

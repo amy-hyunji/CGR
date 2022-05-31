@@ -29,6 +29,7 @@ class GENREDataset(Dataset):
 
         self.tokenizer = tokenizer
         self.tokid2emb = tokid2emb
+        self.source_dict = {}
 
     def __len__(self):
         return self.len
@@ -37,14 +38,20 @@ class GENREDataset(Dataset):
         input_ = batch["input"]
         output_ = batch["output"]
 
-        source = self.tokenizer.batch_encode_plus(
-            [input_],
-            max_length=self.hparams.max_input_length,
-            padding="max_length",
-            truncation=True,
-            return_tensors="pt",
-        )
+        if input_ not in self.source_dict.keys():
+            source = self.tokenizer.batch_encode_plus(
+                [input_],
+                max_length=self.hparams.max_input_length,
+                padding="max_length",
+                truncation=True,
+                return_tensors="pt",
+            )
+            self.source_dict[input_] = source 
+        else:
+            source = self.source_dict[input_]
+
         target = batch["output_tokid"]  # load from file
+        
         if len(target) > self.hparams.max_output_length:
             target = target[: self.hparams.max_output_length]
             att = [1] * len(self.hparams.max_output_length)
@@ -56,6 +63,7 @@ class GENREDataset(Dataset):
             len(target) == self.hparams.max_output_length
             and len(att) == self.hparams.max_output_length
         ), print(f"length of target: {len(target)}\nlength of attention:  {len(att)}")
+        
         target_idx = torch.tensor([target])
         att = torch.tensor([att])
         target = {"input_ids": target_idx, "attention_mask": att}

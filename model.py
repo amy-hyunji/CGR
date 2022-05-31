@@ -8,25 +8,323 @@ import string
 import pickle
 import numpy 
 import numpy as np
+import torch.nn as nn
 import pytorch_lightning as pl
 import torch.distributed as dist
 
 from data import GENREDataset
 
-from transformers import T5Config, T5Tokenizer, T5ForConditionalGeneration, BertTokenizer, Adafactor
+from transformers import T5Config, T5Tokenizer, T5Model, T5ForConditionalGeneration, BertTokenizer, Adafactor
 from torch.utils.data import DataLoader
 from itertools import chain
 
+class T5BaseClass(pl.LightningModule):
+    def __init__(self):
+        super(T5BaseClass, self).__init__()
+        
+        if torch.cuda.current_device() == 0:
+            self.print = True 
+        else:
+            self.print = False 
 
-class T5FineTuner(pl.LightningModule):
+    def _get_dataset(self, split):
+        dataset = GENREDataset(
+            tokenizer=self.tokenizer,
+            split=split,
+            hparams=self.hparams,
+            tokid2emb=self.contextualized_tokid2emb 
+        )
+        return dataset
+
+    def train_dataloader(self):
+        train_dataset = self._get_dataset(split="train")
+        dataloader = DataLoader(
+            train_dataset,
+            shuffle=True,
+            batch_size=self.hparams.train_batch_size,
+            drop_last=True,
+            num_workers=self.hparams.num_workers,
+        )
+        return dataloader
+
+    def val_dataloader(self):
+        val_dataset = self._get_dataset(split="validation")
+        dataloader = DataLoader(
+            val_dataset,
+            shuffle=False,
+            batch_size=self.hparams.eval_batch_size,
+            drop_last=True,
+            num_workers=self.hparams.num_workers,
+        )
+        return dataloader
+
+    def test_dataloader(self):
+        test_dataset = self._get_dataset(split="test")
+        dataloader = DataLoader(
+            test_dataset,
+            shuffle=False,
+            batch_size=self.hparams.eval_batch_size,
+            drop_last=False,
+            num_workers=self.hparams.num_workers,
+        )
+        return dataloader
+
+    def _gather_object(self, obj):
+        if self.print:
+            print(f"## Gathering list from {self.hparams.n_gpu} process!")
+        gathered = [None for _ in range(self.hparams.n_gpu)]
+        dist.all_gather_object(gathered, obj)
+        return gathered
+
+    def gather_list(self, obj):
+        gathered = self._gather_object(obj)
+        output = []
+        output = list(chain(*gathered))
+        return output
+
+    def configure_optimizers(self):
+        model = self.model
+        no_decay = ["bias", "LayerNorm.weight"]
+        optimizer_grouped_parameters = [
+            {
+                "params": [
+                    p
+                    for n, p in model.named_parameters()
+                    if not any(nd in n for nd in no_decay)
+                ],
+                "weight_decay": self.hparams.weight_decay,
+            },
+            {
+                "params": [
+                    p
+                    for n, p in model.named_parameters()
+                    if any(nd in n for nd in no_decay)
+                ],
+                "weight_decay": 0.0,
+            },
+        ]
+
+        optimizer = Adafactor(
+            optimizer_grouped_parameters,
+            lr=self.hparams.learning_rate,
+            warmup_init=False,
+            scale_parameter=False,
+            relative_step=False,
+        )
+        self.opt = optimizer
+
+        if self.hparams.lr_scheduler == "constant":
+            return [optimizer]
+        elif self.hparams.lr_scheduler == "exponential":
+            len_data = len(self.train_dataloader())
+            denominator = self.hparams.n_gpu
+            steps_per_epoch = (
+                (len_data // denominator) + 1
+            ) // self.hparams.gradient_accumulation_steps
+            scheduler = torch.optim.lr_scheduler.OneCycleLR(
+                optimizer,
+                max_lr=self.hparams.learning_rate,
+                steps_per_epoch=steps_per_epoch,
+                pct_start=0.1,
+                epochs=self.hparams.num_train_epochs,
+                anneal_strategy="linear",
+                cycle_momentum=False,
+            )
+            return [optimizer], [
+                {"scheduler": scheduler, "interval": "step", "name": "learning_rate"}
+            ]
+        else:
+            raise NotImplementedError("Choose lr_schduler from (constant|exponential)")
+
+    def on_save_checkpoint(self, checkpoint):
+        save_path = os.path.join(
+            self.hparams.output_dir, f"best_tfmr_{self.current_epoch}"
+        )
+        self.model.save_pretrained(save_path)
+        self.tokenizer.save_pretrained(save_path)
+        
+    def normalize_answer(self, s):
+        def remove_articles(text):
+            return re.sub(r"\b(a|an|the)\b", " ", text)
+
+        def white_space_fix(text):
+            return " ".join(text.split())
+
+        def remove_punc(text):
+            exclude = set(string.punctuation)
+            return "".join(ch for ch in text if ch not in exclude)
+
+        def lower(text):
+            return text.lower()
+
+        return white_space_fix(remove_articles(remove_punc(lower(s))))
+
+    def _calculate_recall(self, pred, gt):
+        assert len(pred) == self.hparams.val_beam_size
+        _correct = 0
+        for elem in pred:
+            if self.normalize_answer(elem) == self.normalize_answer(gt):
+                return 100
+        return 0
+
+    def _calculate_em(self, pred, gt):
+        if self.normalize_answer(pred) == self.normalize_answer(gt):
+            return 100
+        else:
+            return 0
+
+class T5BiEncoder(T5BaseClass):
+    def __init__(self, args):
+        super(T5BiEncoder, self).__init__()
+        self.save_hyperparameters(args)
+
+        if self.hparams.do_train:
+            self.model = T5Model.from_pretrained(self.hparams.model_name_or_path)
+            self.tokenizer = T5Tokenizer.from_pretrained(self.hparams.model_name_or_path)
+            if self.print:
+                print(f'@@@ In Training Mode...')
+                print(f'@@@ Loading Model from {self.hparams.model_name_or_path}')
+            self.em_score_list = []
+            self.recall_score_list = []
+
+        if self.hparams.do_test:
+            assert False, "Test Code is Not Implemented Yet"
+            self.model = T5Model.from_pretrained(self.hparams.test_model_path)
+            if self.print:
+                print(f'@@@ In Test Mode ...')
+                print(f'@@@ Loading Model from {self.hparams.test_model_path}')
+
+        self.contextualized_tokid2emb = pickle.load(open(self.hparams.contextualized_file, "rb"))
+        self.contextualized_tensor = torch.tensor(list(self.contextualized_tokid2emb.values())).to(self.device)
+        self.contextualized_token = list(self.contextualized_tokid2emb.keys())
+        self.tokId2corpus = pickle.load(open(self.hparams.tokId2corpus, "rb"))
+
+        self.loss_fct = nn.CrossEntropyLoss()
+        self.decoder_input_ids, self.decoder_attention_mask = self.get_decoder_input()
+
+    def get_decoder_input(self):
+        _tok = self.tokenizer("</s>", return_tensors='pt', add_special_tokens=False)
+        _input_ids = _tok['input_ids'].to(self.device)
+        _attention_mask = _tok['attention_mask'].to(self.device)
+        return _input_ids, _attention_mask
+
+    def forward(self, input_ids, attention_mask=None):
+        bs = input_ids.shape[0]
+        d_input = torch.cat([self.decoder_input_ids]*bs, 0).to(self.device)
+        d_att = torch.cat([self.decoder_attention_mask]*bs, 0).to(self.device)
+
+        outputs = self.model(input_ids, 
+                        attention_mask=attention_mask,
+                        decoder_input_ids=d_input, 
+                        decoder_attention_mask=d_att
+                        )
+        return outputs 
+
+    def _get_embedding(self, batch):
+        query_input_ids = batch['source_ids']
+        query_attention_mask = batch['source_mask']
+        key_input_ids = batch['target_ids'].detach().cpu().numpy()
+
+        query_outputs = self(
+            input_ids=query_input_ids,
+            attention_mask=query_attention_mask,
+        )
+        query_output = query_outputs.last_hidden_state[:, 0]
+
+        key_outputs = torch.cat([torch.tensor(self.contextualized_tokid2emb[key_input_id[0]]).unsqueeze(0) for key_input_id in key_input_ids], 0) 
+
+        return query_output, key_outputs
+
+    def _calculate_similarity(self, batch):
+        z1, z2 = self._get_embedding(batch)
+        z1 = z1.to(self.device)
+        z2 = z2.to(self.device)
+        sim = torch.inner(z1, z2)
+        return sim
+
+    def _common_step(self, batch):
+        _sim = self._calculate_similarity(batch)
+        labels = torch.arange(_sim.size(0)).long().to(self.device)
+        loss = self.loss_fct(_sim, labels)
+        return loss
+
+    def training_step(self, batch, batch_idx):
+        loss = self._common_step(batch)
+        self.log(
+            "train loss",
+            loss, 
+            on_step=True,
+            on_epoch=True,
+            prog_bar=False,
+            logger=True,
+            sync_dist=True,
+        )
+        return loss 
+
+    def _calculate_score(self, indices, batch):
+        em_list = []; recall_list = []
+        for idx, (_indice_list, _output, _input) in enumerate(zip(indices, batch['output'], batch['input'])):
+            _predict = []
+            for _indice in _indice_list:
+                tokId = self.contextualized_token[_indice]
+                if tokId == 0 or tokId == 1:
+                    _predict.append(None)
+                else:
+                    _predict.append(self.tokId2corpus[tokId])
+            em_list.append(self._calculate_em(_predict[0], _output))
+            recall_list.append(self._calculate_recall(_predict, _output))
+            if self.print and idx == 0:
+                print(f"$" * 50)
+                print(f"query: {_input}\ngt: {_output}\npredict: {_predict}")
+                print(f"em: {em_list[-1]} // recall: {recall_list[-1]}")
+                print(f"$" * 50)
+                print(" ")
+        return em_list, recall_list
+
+    def validation_step(self, batch, batch_idx):
+        query_output, _ = self._get_embedding(batch)
+        scores = torch.inner(query_output.to(self.device), self.contextualized_tensor.to(self.device)) # [# of query, # of corpus] 
+        top_scores = torch.topk(scores, self.hparams.val_beam_size)
+        indices = top_scores.indices # [# of query, self.hparams.val_beam_size]
+        assert len(indices) == len(batch['output'])
+
+        em_score, recall_score = self._calculate_score(indices, batch)
+        self.em_score_list.extend(list(em_score))
+        self.recall_score_list.extend(list(recall_score))
+
+    def validation_epoch_end(self, outputs):
+        avg_em = np.mean(np.array(self.em_score_list))
+        avg_recall = np.mean(np.array(self.recall_score_list))
+        self.em_score_list = []
+        self.recall_score_list = []
+        self.log(
+            "val em",
+            avg_em,
+            on_step=False,
+            on_epoch=True,
+            prog_bar=True,
+            logger=True,
+            sync_dist=True,
+        )
+        self.log(
+            "val recall",
+            avg_recall,
+            on_step=False,
+            on_epoch=True,
+            prog_bar=True,
+            logger=True,
+            sync_dist=True,
+        )
+        return
+
+    def test_step(self, batch, batch_idx):
+        assert False
+ 
+
+class T5FineTuner(T5BaseClass):
     def __init__(self, args):
         super(T5FineTuner, self).__init__()
         self.save_hyperparameters(args)
-
-        if torch.cuda.current_device() == 0:
-            self.print = True
-        else:
-            self.print = False
 
         # If in training mode, load ckpt for training
         if self.hparams.do_train:
@@ -104,7 +402,7 @@ class T5FineTuner(pl.LightningModule):
         self.eos_list = list(self.groupId2tokIdList[1])
         self.first_beam_dict = {}
 
-    def _flush_frist_beam_dict(self):
+    def _flush_first_beam_dict(self):
         self.first_beam_dict = {}
 
     def _get_max_tokId_from_tokIdList(self, tokIdList, score):
@@ -164,47 +462,6 @@ class T5FineTuner(pl.LightningModule):
             return self._get_tokIdList_from_groupIdList(nodeId, score)
         raise NotImplementedError('Either groupId_tree or nodeId_tree should be True!')
 
-    def _get_dataset(self, split):
-        dataset = GENREDataset(
-            tokenizer=self.tokenizer,
-            split=split,
-            hparams=self.hparams,
-            tokid2emb=self.contextualized_tokid2emb,
-        )
-        return dataset
-
-    def train_dataloader(self):
-        train_dataset = self._get_dataset(split="train")
-        dataloader = DataLoader(
-            train_dataset,
-            shuffle=True,
-            batch_size=self.hparams.train_batch_size,
-            drop_last=True,
-            num_workers=self.hparams.num_workers,
-        )
-        return dataloader
-
-    def val_dataloader(self):
-        val_dataset = self._get_dataset(split="validation")
-        dataloader = DataLoader(
-            val_dataset,
-            shuffle=False,
-            batch_size=self.hparams.eval_batch_size,
-            drop_last=True,
-            num_workers=self.hparams.num_workers,
-        )
-        return dataloader
-
-    def test_dataloader(self):
-        test_dataset = self._get_dataset(split="test")
-        dataloader = DataLoader(
-            test_dataset,
-            shuffle=False,
-            batch_size=self.hparams.eval_batch_size,
-            drop_last=False,
-            num_workers=self.hparams.num_workers,
-        )
-        return dataloader
 
     def lmap(self, f, x):
         return list(map(f, x))
@@ -225,21 +482,7 @@ class T5FineTuner(pl.LightningModule):
         #print(f"gen_text: {gen_text}")
         return self.lmap(str.strip, gen_text)
 
-    def normalize_answer(self, s):
-        def remove_articles(text):
-            return re.sub(r"\b(a|an|the)\b", " ", text)
 
-        def white_space_fix(text):
-            return " ".join(text.split())
-
-        def remove_punc(text):
-            exclude = set(string.punctuation)
-            return "".join(ch for ch in text if ch not in exclude)
-
-        def lower(text):
-            return text.lower()
-
-        return white_space_fix(remove_articles(remove_punc(lower(s))))
 
     def forward(
         self,
@@ -322,19 +565,7 @@ class T5FineTuner(pl.LightningModule):
             else:
                 return []
 
-    def _calculate_recall(self, pred, gt):
-        assert len(pred) == self.hparams.val_beam_size
-        _correct = 0
-        for elem in pred:
-            if self.normalize_answer(elem) == self.normalize_answer(gt):
-                return 100
-        return 0
 
-    def _calculate_em(self, pred, gt):
-        if self.normalize_answer(pred) == self.normalize_answer(gt):
-            return 100
-        else:
-            return 0
 
     def calculate_scores(self, preds, gt_text, query):
         em_list = []
@@ -367,7 +598,7 @@ class T5FineTuner(pl.LightningModule):
             ),
             early_stopping=True,
         )
-        self._flush_frist_beam_dict()
+        self._flush_first_beam_dict()
         _generated_text = self.ids_to_text(_generated_ids)
 
         inum = len(_generated_ids) // self.hparams.val_beam_size
@@ -447,19 +678,6 @@ class T5FineTuner(pl.LightningModule):
         self.test_em_score_list.extend(ret_dict["em"])
         self.test_recall_score_list.extend(ret_dict["recall"])
 
-    def _gather_object(self, obj):
-        if self.print:
-            print(f"## Gathering list from {self.hparams.n_gpu} process!")
-        gathered = [None for _ in range(self.hparams.n_gpu)]
-        dist.all_gather_object(gathered, obj)
-        return gathered
-
-    def gather_list(self, obj):
-        gathered = self._gather_object(obj)
-        output = []
-        output = list(chain(*gathered))
-        return output
-
     def test_epoch_end(self, outputs):
         os.makedirs(self.hparams.output_dir, exist_ok=True)
         _input = self.gather_list(self.test_input_list)
@@ -496,64 +714,4 @@ class T5FineTuner(pl.LightningModule):
             print(f"EM: {np.array(_em).mean()}")
             print(f"Recall: {np.array(_recall).mean()}")
 
-    def configure_optimizers(self):
-        model = self.model
-        no_decay = ["bias", "LayerNorm.weight"]
-        optimizer_grouped_parameters = [
-            {
-                "params": [
-                    p
-                    for n, p in model.named_parameters()
-                    if not any(nd in n for nd in no_decay)
-                ],
-                "weight_decay": self.hparams.weight_decay,
-            },
-            {
-                "params": [
-                    p
-                    for n, p in model.named_parameters()
-                    if any(nd in n for nd in no_decay)
-                ],
-                "weight_decay": 0.0,
-            },
-        ]
 
-        optimizer = Adafactor(
-            optimizer_grouped_parameters,
-            lr=self.hparams.learning_rate,
-            warmup_init=False,
-            scale_parameter=False,
-            relative_step=False,
-        )
-        self.opt = optimizer
-
-        if self.hparams.lr_scheduler == "constant":
-            return [optimizer]
-        elif self.hparams.lr_scheduler == "exponential":
-            len_data = len(self.train_dataloader())
-            denominator = self.hparams.n_gpu
-            steps_per_epoch = (
-                (len_data // denominator) + 1
-            ) // self.hparams.gradient_accumulation_steps
-            scheduler = torch.optim.lr_scheduler.OneCycleLR(
-                optimizer,
-                max_lr=self.hparams.learning_rate,
-                steps_per_epoch=steps_per_epoch,
-                pct_start=0.1,
-                epochs=self.hparams.num_train_epochs,
-                anneal_strategy="linear",
-                cycle_momentum=False,
-            )
-            return [optimizer], [
-                {"scheduler": scheduler, "interval": "step", "name": "learning_rate"}
-            ]
-        else:
-            raise NotImplementedError("Choose lr_schduler from (constant|exponential)")
-
-    def on_save_checkpoint(self, checkpoint):
-        save_path = os.path.join(
-            self.hparams.output_dir, f"best_tfmr_{self.current_epoch}"
-        )
-        self.model.save_pretrained(save_path)
-        self.tokenizer.save_pretrained(save_path)
-        

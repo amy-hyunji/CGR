@@ -1,0 +1,37 @@
+# The name of experiment
+experiment: bi-contextualized-GENRE 
+
+# The name of job
+name: bi-contextualized-GENRE-job
+
+# The name of vm type
+vm: azure-16gb-v100-1g-eastus-spot 
+
+# The number of GPU devices
+num_devices: 1
+
+# Configure your job!
+job_setting:
+  type: custom
+
+  # Docker config
+  docker:
+    # Docker image you want to use in the job
+    image: friendliai/periflow:sdk
+    # Bash shell command to run the job
+    # NOTE: PeriFlow automatically sets the following environment variables for PyTorch DDP.
+    #   - MASTER_ADDR: Address of rank 0 node.
+    #   - WORLD_SIZE: The total number of GPUs participating in the task.
+    #   - NODE_RANK: Index of the current node.
+    #   - NPROC_PER_NODE: The number of processes in the current node.
+    command: >
+      cd /workspace/pth-lightning && pip install -r requirements.txt && cd transformers && pip install -e . && cd ../ && python train.py --config config/full/nq_toy_base.json 
+  
+  # Path to mount your workspace volume
+  workspace:
+    mount_path: /workspace
+
+# Checkpoint config
+checkpoint:
+  # Path to output checkpoint
+  output_checkpoint_dir: /workspace/ckpt

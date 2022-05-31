@@ -10,11 +10,15 @@ import numpy as np
 import pytorch_lightning as pl
 
 from argparse import ArgumentParser
+from pytorch_lightning import Trainer
 from pytorch_lightning.loggers import WandbLogger
-from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
+from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor, Callback
 from pytorch_lightning.plugins import DDPPlugin, DeepSpeedPlugin
 
-from model import T5FineTuner
+from model import T5BiEncoder, T5FineTuner
+from pathlib import Path
+from typing import Any, Optional, Union
+from pytorch_lightning.utilities.types import STEP_OUTPUT
 
 #from knockknock import slack_sender
 #from slack import get_webhook_url, get_channel
@@ -27,13 +31,59 @@ def set_seed(seed):
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
 
+class PeriFlowCallback(Callback):
+    def on_train_batch_start(self,
+                             trainer: pl.Trainer,
+                             pl_module: pl.LightningModule,
+                             batch: Any,
+                             batch_idx: int,
+                             unused: int = 0) -> None:
+        pf.start_step()
+
+    def on_train_batch_end(self,
+                           trainer: pl.Trainer,
+                           pl_module: pl.LightningModule,
+                           outputs: STEP_OUTPUT,
+                           batch: Any,
+                           batch_idx: int,
+                           unused: int = 0) -> None:
+        loss = float(outputs['loss'])
+        pf.metric({
+            "iteration": trainer.global_step,
+            "loss": loss,
+        })
+        pf.end_step()
+
+class PeriFlowTrainer(Trainer):
+    def save_checkpoint(self,
+                        filepath: Union[str, Path],
+                        weights_only: bool = False,
+                        storage_options: Optional[Any] = None) -> None:
+        super().save_checkpoint(filepath, weights_only=weights_only, storage_options=storage_options)
+        pf.upload_checkpoint()
 
 #@slack_sender(webhook_url=get_webhook_url(), channel=get_channel())
 def main(args, train_params):
     sys.setrecursionlimit(10000)
     set_seed(args.seed)
-    model = T5FineTuner(args)
-    trainer = pl.Trainer(**train_params)
+    if args.bi_encoder:
+        model = T5BiEncoder(args)
+    else:
+        model = T5FineTuner(args)
+
+    if args.periflow:
+        print(f'Using Periflow..')
+        train_params[callbacks] = [periflow_callback, checkpoint_callback]
+        train_params[enable_checkpointing] = isinstance(checkpoint_callback, ModelCheckpoint)
+        
+        pf.init(total_train_steps=args.num_epochs * datamodule.num_steps_per_epoch)
+
+        periflow_callback = PeriFlowCallback()
+        trainer = PeriFlowTrainer(
+            **train_params
+        )
+    else:
+        trainer = pl.Trainer(**train_params)
     if args.do_train:
         if torch.cuda.current_device() == 0:
             now = datetime.datetime.now()
@@ -115,11 +165,14 @@ if __name__ == "__main__":
         groupId2tokIdList=hparam.groupId2tokIdList,  # new - tokGroupId_tokIdList.pickle 
         tokId2groupId=hparam.tokId2groupId,  # new - tokId_tokGroupId.pickle 
         tokId2tokText=hparam.tokId2tokText,  # new - tokId_tokText.pickle 
+        tokId2corpus=hparam.tokId2corpus,  # new - tokId_corpus.pickle 
         nodeId_tokIdList=hparam.nodeId_tokIdList,  # new - nodeId_tokIdList.pickle
         groupId_tree=hparam.groupId_tree, # new
         nodeId_tree=hparam.nodeId_tree, # new
         embedding_model=hparam.embedding_model, # new - model used to extract embedding
-        max_beam_search=hparam.max_beam_search # new - select a token which has maximum score in groupId
+        max_beam_search=hparam.max_beam_search, # new - select a token which has maximum score in groupId
+        bi_encoder=hparam.bi_encoder, # new - bi-encoder Training
+        periflow=hparam.periflow # new - periflow
     )
     args = argparse.Namespace(**args_dict)
     assert not (args.do_train and args.do_test), "Choose between train|test"
@@ -174,5 +227,4 @@ if __name__ == "__main__":
         check_val_every_n_epoch=args.check_val_every_n_epoch,
         callbacks=callbacks,
     )
-
     main(args, train_params)

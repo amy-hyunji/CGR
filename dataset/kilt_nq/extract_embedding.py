@@ -11,9 +11,9 @@ t5_tokenizer = T5Tokenizer.from_pretrained("t5-base")
 
 ### Change to corpus file you want to use ###
 corpus_file = pd.read_csv("./nq_toy_corpus.csv") 
-save_path = "bert-base-cased-emb"
+save_path = "t5-base-emb"
 #emb_model = "t5"
-emb_model = "bert"
+emb_model = "t5"
 #############################################
 
 
@@ -95,13 +95,17 @@ for corpusId in tqdm(range(corpus_num)):
       else:
           tok_Idlist_dict[_text].append(tokId)
       _tok_dict[tokId] = _emb
-      tokId_corpus[tokId] = [corpusId, tok_pos]
+      tokId_corpus[tokId] = elem 
       tokId_emb[tokId] = _emb
       tokId += 1
+     
+      # EOS token
+      if tok_pos == len(_tok_decode)-1:
+         _tok_dict[1] = tokId_emb[1]
 
    corpusId_corpus_dict[corpusId] = elem
    corpusId_emb_dict[corpusId] = _tok_dict 
-
+   
 
 print(f'total_tok_num: {total_tok_num}')
 print(f'tokId: {tokId}')

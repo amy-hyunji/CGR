@@ -316,9 +316,9 @@ class T5FineTuner(pl.LightningModule):
         # starts with pad token & groupId for pad token is -1
         assert input_ids[0] == 0
         if trie_dict is None:
-            if tree_type == "groupId":
+            if self.hparams.tree_type == "groupId":
                 trie_dict = self.group_trie
-            elif tree_type == "nodeId":
+            elif self.hparams.tree_type == "nodeId":
                 trie_dict = self.node_trie
             else:
                 assert False

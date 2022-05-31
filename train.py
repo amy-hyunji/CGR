@@ -102,7 +102,6 @@ if __name__ == "__main__":
         train_file=hparam.train_file,
         dev_file=hparam.dev_file,
         test_file=hparam.test_file,
-        prefix_tree_file=hparam.prefix_tree_file,
         constrained_decoding=True,
         do_train=hparam.do_train,
         do_test=hparam.do_test,
@@ -115,15 +114,16 @@ if __name__ == "__main__":
         groupId2tokIdList=hparam.groupId2tokIdList,  # new - tokGroupId_tokIdList.pickle 
         tokId2groupId=hparam.tokId2groupId,  # new - tokId_tokGroupId.pickle 
         tokId2tokText=hparam.tokId2tokText,  # new - tokId_tokText.pickle 
-        nodeId_tokIdList=hparam.nodeId_tokIdList,  # new - nodeId_tokIdList.pickle
+        tree_type=hparam.tree_type, # new
         groupId_tree=hparam.groupId_tree, # new
         nodeId_tree=hparam.nodeId_tree, # new
+        nodeId_sup=hparam.nodeId_sup, # new
         embedding_model=hparam.embedding_model, # new - model used to extract embedding
         max_beam_search=hparam.max_beam_search # new - select a token which has maximum score in groupId
     )
     args = argparse.Namespace(**args_dict)
+    assert args.tree_type in ['groupId', 'nodeId']
     assert not (args.do_train and args.do_test), "Choose between train|test"
-    assert not (args.groupId_tree and args.nodeId_tree), "Choose between groupId|nodeId: groupId for previous version and nodeId for new one"
     assert args.model_name_or_path in ['t5-base']
 
     if torch.cuda.current_device() == 0:

@@ -181,8 +181,8 @@ def construct_node_prefix_tree():
    for c_id, (corpusid, corpusdict) in enumerate(corpusId_emb_dict.items()):
       tokidlist = list(corpusdict.keys())
       tokgroupidlist = [tokId_tokGroupId[el] for el in tokidlist]
-      tokgroupidlist = [0]+tokgroupidlist + [1,0]
-      tokidlist = [0]+tokidlist + [1,0]
+      tokgroupidlist = [0] + tokgroupidlist + [0]
+      tokidlist = [0] + tokidlist + [0]
 
       cur_nid = 0
       for i in range(len(tokgroupidlist)-1):
@@ -218,7 +218,7 @@ def construct_group_prefix_tree():
       cur_dict = constrained_dict # cur_dict[-2]: the node number
       tokIdList = list(corpusDict.keys())
       tokGroupIdList = [tokId_tokGroupId[el] for el in tokIdList]
-      tokGroupIdList = [0] + tokGroupIdList + [1]
+      tokGroupIdList = [0] + tokGroupIdList
       
       for i in range(len(tokGroupIdList)-1):
          prev = tokGroupIdList[i]

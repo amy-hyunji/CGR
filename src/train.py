@@ -1,13 +1,17 @@
 import os
 import sys
+import math
 import json
 import torch
 import random
+import pickle
 import argparse
 import datetime
 
 import numpy as np
+import pandas as pd
 import pytorch_lightning as pl
+import periflow_sdk as pf
 
 from argparse import ArgumentParser
 from pytorch_lightning import Trainer
@@ -73,17 +77,21 @@ def main(args, train_params):
 
     if args.periflow:
         print(f'Using Periflow..')
-        train_params[callbacks] = [periflow_callback, checkpoint_callback]
-        train_params[enable_checkpointing] = isinstance(checkpoint_callback, ModelCheckpoint)
-        
-        pf.init(total_train_steps=args.num_epochs * datamodule.num_steps_per_epoch)
-
         periflow_callback = PeriFlowCallback()
+        train_params["callbacks"] = [periflow_callback, checkpoint_callback]
+        train_params["enable_checkpointing"] = isinstance(checkpoint_callback, ModelCheckpoint)
+
+        datalen = len(pd.DataFrame(pickle.load(open(os.path.join(args.dataset, args.train_file), "rb"))))
+        num_steps_per_epoch = math.ceil(datalen / args.num_train_epochs)
+        pf.init(total_train_steps=args.num_train_epochs * num_steps_per_epoch)
+
         trainer = PeriFlowTrainer(
             **train_params
         )
+
     else:
         trainer = pl.Trainer(**train_params)
+
     if args.do_train:
         if torch.cuda.current_device() == 0:
             now = datetime.datetime.now()

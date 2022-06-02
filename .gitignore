@@ -6,3 +6,4 @@ dataset/kilt_nq/*.pickle
 slack.py
 *.pickle
 outputs
+dataset/src

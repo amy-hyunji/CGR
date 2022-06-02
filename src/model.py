@@ -2,6 +2,7 @@ import os
 import re
 import sys
 import json
+import uuid
 import copy
 import torch
 import string
@@ -13,10 +14,18 @@ import pytorch_lightning as pl
 import torch.distributed as dist
 
 from data import GENREDataset
+from blob import get_blob_info, upload_directory_to_blob
 
 from transformers import T5Config, T5Tokenizer, T5Model, T5ForConditionalGeneration, BertTokenizer, Adafactor
 from torch.utils.data import DataLoader
 from itertools import chain
+
+from azure.storage.blob import (
+    BlobServiceClient,
+    BlobClient,
+    ContainerClient,
+    __version__,
+)
 
 class T5BaseClass(pl.LightningModule):
     def __init__(self):
@@ -142,7 +151,10 @@ class T5BaseClass(pl.LightningModule):
         )
         self.model.save_pretrained(save_path)
         self.tokenizer.save_pretrained(save_path)
-        
+
+        if self.hparams.periflow:
+            upload_directory_to_blob(save_path, container_name=self.container_name)
+
     def normalize_answer(self, s):
         def remove_articles(text):
             return re.sub(r"\b(a|an|the)\b", " ", text)
@@ -189,6 +201,10 @@ class T5BiEncoder(T5BaseClass):
                 print(f'@@@ Loading Model from {self.hparams.model_name_or_path}')
             self.em_score_list = []
             self.recall_score_list = []
+
+            if self.hparams.periflow:
+                self.connect_str, self.container_name = get_blob_info()
+                self.blob_service_client = BlobServiceClient.from_connection_string(self.connect_str)
 
         if self.hparams.do_test:
             self.model = T5Model.from_pretrained(self.hparams.test_model_path)

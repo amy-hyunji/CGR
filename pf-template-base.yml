@@ -1,8 +1,8 @@
 # The name of experiment
-experiment: bi-contextualized-GENRE 
+experiment: bi-contextualized-GENRE-base 
 
 # The name of job
-name: bi-contextualized-GENRE-job
+name: bi-contextualized-GENRE-base
 
 # The name of vm type
 vm: azure-16gb-v100-1g-eastus-spot 
@@ -25,7 +25,7 @@ job_setting:
     #   - NODE_RANK: Index of the current node.
     #   - NPROC_PER_NODE: The number of processes in the current node.
     command: >
-      cd /workspace/pth-lightning && pip install -r requirements.txt && cd transformers && pip install -e . && cd ../ && python train.py --config config/full/nq_toy_base.json 
+      cd /workspace/src && pip install -r requirements.txt && cd transformers && pip install -e . && cd ../ && python train.py --config config/periflow/nq_toy_base.json
   
   # Path to mount your workspace volume
   workspace:
@@ -35,3 +35,14 @@ job_setting:
 checkpoint:
   # Path to output checkpoint
   output_checkpoint_dir: /workspace/ckpt
+
+data:
+   name: bi_contextualized_with_model 
+   mount_path: /workspace/dataset
+
+plugin:
+   wandb: 
+      credential_id: eee4eb41-2cfe-42fd-b55e-e9ace7ca0288 #edd7e4ba646b4766dd997806149e50cc6fba0906 
+   slack:
+      credential_id: 3d6158f4-2ba8-45c3-b33f-eef440bf13a5 #xoxb-1678060811558-2584137787015-XKvQ2KHLAm0otgusf1aunbCh 
+      channel: U01P1QPCC9J

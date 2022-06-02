@@ -1,5 +1,0 @@
-pandas==1.1.5
-pytorch-lightning==1.5.10
-sentencepiece==0.1.96
-knockknock
-wandb

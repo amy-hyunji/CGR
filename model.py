@@ -163,11 +163,14 @@ class T5BaseClass(pl.LightningModule):
         assert len(pred) == self.hparams.val_beam_size
         _correct = 0
         for elem in pred:
+            if elem is None: continue 
             if self.normalize_answer(elem) == self.normalize_answer(gt):
                 return 100
         return 0
 
     def _calculate_em(self, pred, gt):
+        if pred is None:
+            return 0
         if self.normalize_answer(pred) == self.normalize_answer(gt):
             return 100
         else:
@@ -188,11 +191,18 @@ class T5BiEncoder(T5BaseClass):
             self.recall_score_list = []
 
         if self.hparams.do_test:
-            assert False, "Test Code is Not Implemented Yet"
             self.model = T5Model.from_pretrained(self.hparams.test_model_path)
+            self.tokenizer = T5Tokenizer.from_pretrained(self.hparams.test_model_path)
             if self.print:
                 print(f'@@@ In Test Mode ...')
                 print(f'@@@ Loading Model from {self.hparams.test_model_path}')
+            self.test_input_list = []
+            self.test_gt_list = []
+            self.test_gt_tok_list = []
+            self.test_pred_list = []
+            self.test_pred_tok_list = []
+            self.test_em_score_list = []
+            self.test_recall_score_list = []
 
         self.contextualized_tokid2emb = pickle.load(open(self.hparams.contextualized_file, "rb"))
         self.contextualized_tensor = torch.tensor(list(self.contextualized_tokid2emb.values())).to(self.device)
@@ -262,24 +272,27 @@ class T5BiEncoder(T5BaseClass):
         return loss 
 
     def _calculate_score(self, indices, batch):
-        em_list = []; recall_list = []
+        em_list = []; recall_list = []; pred_list = []; pred_tok_list = []
         for idx, (_indice_list, _output, _input) in enumerate(zip(indices, batch['output'], batch['input'])):
-            _predict = []
+            _predict = []; _pred_idx = []
             for _indice in _indice_list:
                 tokId = self.contextualized_token[_indice]
+                _pred_idx.append(tokId)
                 if tokId == 0 or tokId == 1:
                     _predict.append(None)
                 else:
                     _predict.append(self.tokId2corpus[tokId])
             em_list.append(self._calculate_em(_predict[0], _output))
             recall_list.append(self._calculate_recall(_predict, _output))
+            pred_list.append(_predict)
+            pred_tok_list.append(_pred_idx)
             if self.print and idx == 0:
                 print(f"$" * 50)
                 print(f"query: {_input}\ngt: {_output}\npredict: {_predict}")
                 print(f"em: {em_list[-1]} // recall: {recall_list[-1]}")
                 print(f"$" * 50)
                 print(" ")
-        return em_list, recall_list
+        return em_list, recall_list, pred_list, pred_tok_list
 
     def validation_step(self, batch, batch_idx):
         query_output, _ = self._get_embedding(batch)
@@ -288,7 +301,7 @@ class T5BiEncoder(T5BaseClass):
         indices = top_scores.indices # [# of query, self.hparams.val_beam_size]
         assert len(indices) == len(batch['output'])
 
-        em_score, recall_score = self._calculate_score(indices, batch)
+        em_score, recall_score, _, _ = self._calculate_score(indices, batch)
         self.em_score_list.extend(list(em_score))
         self.recall_score_list.extend(list(recall_score))
 
@@ -318,8 +331,56 @@ class T5BiEncoder(T5BaseClass):
         return
 
     def test_step(self, batch, batch_idx):
-        assert False
+        query_output, _ = self._get_embedding(batch)
+        scores = torch.inner(query_output.to(self.device), self.contextualized_tensor.to(self.device)) # [# of query, # of corpus] 
+        top_scores = torch.topk(scores, self.hparams.val_beam_size)
+        indices = top_scores.indices # [# of query, self.hparams.val_beam_size]
+        assert len(indices) == len(batch['output'])
+
+        em_score, recall_score, pred_list, pred_tok_list = self._calculate_score(indices, batch)
+        self.test_input_list.extend(list(batch["input"]))
+        self.test_gt_list.extend(list(batch["output"]))
+        self.test_gt_tok_list.extend(list(batch["target_ids"].detach().cpu().numpy().tolist()))
+        self.test_pred_list.extend(list(pred_list))
+        self.test_pred_tok_list.extend(list(pred_tok_list))
+        self.test_em_score_list.extend(list(em_score))
+        self.test_recall_score_list.extend(list(recall_score))
  
+    def test_epoch_end(self, outputs):
+        os.makedirs(self.hparams.output_dir, exist_ok=True)
+        _input = self.gather_list(self.test_input_list)
+        _gt = self.gather_list(self.test_gt_list)
+        _gt_tok = self.gather_list(self.test_gt_tok_list)
+        _pred = self.gather_list(self.test_pred_list)
+        _pred_tok = self.gather_list(self.test_pred_tok_list)
+        _em = self.gather_list(self.test_em_score_list)
+        _recall = self.gather_list(self.test_recall_score_list)
+        assert len(_input) == len(_gt) == len(_pred) == len(_em) == len(_recall) == len(_gt_tok) == len(_pred_tok)
+        if self.print:
+            with open(
+                os.path.join(
+                    self.hparams.output_dir,
+                    f"result_beam{self.hparams.val_beam_size}.json",
+                ),
+                "w",
+            ) as f:
+                json.dump(
+                    {
+                        "input": _input,
+                        "gt": _gt,
+                        "gt_tok": _gt_tok,
+                        "pred": _pred,
+                        "pred_tok": _pred_tok,
+                        "em": _em,
+                        "recall": _recall,
+                    },
+                    f,
+                )
+            print(
+                f"Saving in {os.path.join(self.hparams.output_dir)}!\nnumber of elements: {len(_input)}"
+            )
+            print(f"EM: {np.array(_em).mean()}")
+            print(f"Recall: {np.array(_recall).mean()}")
 
 class T5FineTuner(T5BaseClass):
     def __init__(self, args):

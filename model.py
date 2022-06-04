@@ -605,7 +605,7 @@ class T5FineTuner(pl.LightningModule):
             _trie_dict = self._remove_prev_from_trie(_trie_dict, _upper_ids)
 
         self._flush_frist_beam_dict()
-        print(f"## UNIQUE PRED: {unique_pred[:self.hparams.val_beam_size]}")
+        if self.print: print(f"## UNIQUE PRED: {unique_pred[:self.hparams.val_beam_size]}")
         em_list, recall_list = self.calculate_scores(
             [unique_pred[:self.hparams.val_beam_size]], batch["output"], batch["input"]
         )
@@ -699,7 +699,7 @@ class T5FineTuner(pl.LightningModule):
             with open(
                 os.path.join(
                     self.hparams.output_dir,
-                    f"result_beam{self.hparams.val_beam_size}.json",
+                    f"{self.hparams.tree_type}_mbs_{self.hparams.max_beam_search}_result_beam{self.hparams.val_beam_size}.json",
                 ),
                 "w",
             ) as f:

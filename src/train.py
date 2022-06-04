@@ -180,7 +180,8 @@ if __name__ == "__main__":
         embedding_model=hparam.embedding_model, # new - model used to extract embedding
         max_beam_search=hparam.max_beam_search, # new - select a token which has maximum score in groupId
         bi_encoder=hparam.bi_encoder, # new - bi-encoder Training
-        periflow=hparam.periflow # new - periflow
+        periflow=hparam.periflow, # new - periflow
+        limit_val_batches=hparam.limit_val_batches
     )
     args = argparse.Namespace(**args_dict)
     assert not (args.do_train and args.do_test), "Choose between train|test"
@@ -234,5 +235,6 @@ if __name__ == "__main__":
         logger=wandb_logger,
         check_val_every_n_epoch=args.check_val_every_n_epoch,
         callbacks=callbacks,
+        limit_val_batches=args.limit_val_batches
     )
     main(args, train_params)

@@ -32,7 +32,7 @@ def upload_file_to_blob(upload_file_path, target=None):  # file path - >file pat
 def upload_directory_to_blob(
     upload_file_path, target=None, container_name="hyunji"
 ):  # directory name -> directory name
-    print("\nUploading directory to Azure Storage as blob:\n\t" + upload_file_path)
+    print(f"\nUploading directory {upload_file_path} to Azure Storage {target}\n\t") 
     if target is None: target = upload_file_path
     files = os.listdir(upload_file_path)
     for dir in files:

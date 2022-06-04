@@ -152,8 +152,19 @@ class T5BaseClass(pl.LightningModule):
         self.model.save_pretrained(save_path)
         self.tokenizer.save_pretrained(save_path)
 
+        target_path = save_path
         if self.hparams.periflow:
-            upload_directory_to_blob(save_path, container_name=self.container_name)
+            success = False
+            i = 1
+            while not success:
+               try:
+                  upload_directory_to_blob(save_path, target=target_path, container_name=self.container_name)
+                  success = True
+               except:
+                  print(f'Failed on Uploading {target_path}')
+                  _name = "best_tfmr_"*i+f"{self.current_epoch}"
+                  target_path = os.path.join(self.hparams.output_dir, _name)
+                  i += 1
 
     def normalize_answer(self, s):
         def remove_articles(text):
@@ -430,6 +441,10 @@ class T5FineTuner(T5BaseClass):
             else:
                 raise NotImplementedError('Embedding from t5-base or bert-base is only allowed!')
             
+            if self.hparams.periflow:
+                self.connect_str, self.container_name = get_blob_info()
+                self.blob_service_client = BlobServiceClient.from_connection_string(self.connect_str)
+
             if self.print:
                 print(f"@@@ Loading Model from {self.hparams.model_name_or_path}")
                 print(f'@@@ Loading decoder embedding: {self.hparams.embedding_model}')

@@ -4,18 +4,33 @@ import pandas as pd
 from transformers import AutoTokenizer, AutoModel, T5EncoderModel, T5Tokenizer
 from tqdm import tqdm
 
-bert_model = AutoModel.from_pretrained("bert-base-cased").cuda()
-bert_tokenizer = AutoTokenizer.from_pretrained("bert-base-cased")
-t5_model = T5EncoderModel.from_pretrained('t5-base').cuda()
-t5_tokenizer = T5Tokenizer.from_pretrained("t5-base")
 
 ### Change to corpus file you want to use ###
 corpus_file = pd.read_csv("./nq_toy_corpus.csv") 
-save_path = "t5-base-emb"
+save_path = "t5-base-emb-only-first"
 #emb_model = "t5"
-emb_model = "t5"
+emb_model = "/mnt/entailment/bi_contextualized_GENRE/contextualized_GENRE/outputs/nq_toy_only_first/best_tfmr_149"
 #############################################
 
+if emb_model == "t5":
+   t5_model = T5EncoderModel.from_pretrained('t5-base').cuda()
+   t5_tokenizer = T5Tokenizer.from_pretrained("t5-base")
+   tokenizer = t5_tokenizer
+   model = t5_model 
+elif emb_model == "bert":
+   bert_model = AutoModel.from_pretrained("bert-base-cased").cuda()
+   bert_tokenizer = AutoTokenizer.from_pretrained("bert-base-cased")
+   tokenizer = bert_tokenizer
+   model = bert_model
+else:
+   tokenizer = T5Tokenizer.from_pretrained(emb_model)
+   model = T5EncoderModel.from_pretrained(emb_model).cuda()
+   t5_tokenizer = tokenizer 
+   t5_model =  model
+"""
+else:
+   raise NotImplementedError("Check emb_model")
+"""
 
 corpus_num = len(corpus_file["corpus"])
 corpusId_corpus_dict = {} # {corpusId: corpus}
@@ -60,15 +75,6 @@ tokId_emb[1] = last_hidden_state[0]
 
 total_tok_num = 0
 tokId = 2
-
-if emb_model == "t5":
-   tokenizer = t5_tokenizer
-   model = t5_model 
-elif emb_model == "bert":
-   tokenizer = bert_tokenizer
-   model = bert_model
-else:
-   raise NotImplementedError('Check the embedding model! Should be t5 or bert')
 
 for corpusId in tqdm(range(corpus_num)):
    elem = corpus_file["corpus"][corpusId]

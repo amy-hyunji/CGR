@@ -576,7 +576,7 @@ class T5FineTuner(pl.LightningModule):
             for batch_text, batch_ids in zip(generated_text, generated_ids):
                 ### iterate over batch (val_beam_size)
                 for _text, _ids in zip(batch_text, batch_ids):
-                    if _text not in unique_pred:
+                    if _text not in unique_pred and len(unique_pred)<5:
                         unique_pred.append(_text)
                         unique_ids.append(_ids)
                         #_ids[0] = -1 

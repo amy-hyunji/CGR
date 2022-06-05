@@ -1,14 +1,18 @@
 import os
 import sys
+import math
 import json
 import torch
 import random
+import pickle
 import argparse
 import datetime
 
 import numpy as np
+import pandas as pd
 import pytorch_lightning as pl
-
+import periflow_sdk as pf
+ 
 from argparse import ArgumentParser
 from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
@@ -122,6 +126,7 @@ if __name__ == "__main__":
         max_beam_search=hparam.max_beam_search # new - select a token which has maximum score in groupId
     )
     args = argparse.Namespace(**args_dict)
+    if args.do_test: assert args.eval_batch_size== 1
     assert args.tree_type in ['groupId', 'nodeId']
     assert not (args.do_train and args.do_test), "Choose between train|test"
     assert args.model_name_or_path in ['t5-base']

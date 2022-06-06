@@ -1,3 +1,4 @@
+import re
 import os
 import sys
 import math
@@ -96,11 +97,15 @@ def main(args, train_params):
         if torch.cuda.current_device() == 0:
             now = datetime.datetime.now()
             print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] Start Training...")
-        if args.resume_from_checkpoint is None:
-            trainer.fit(model)
+        if args.periflow:
+            trainer.fit(model, ckpt_path=ckpt_path)
+
         else:
-            print(f"@@@ Resume Training from {args.resume_from_checkpoint}")
-            trainer.fit(model, ckpt_path=args.resume_from_checkpoint)
+            if args.resume_from_checkpoint is None:
+                trainer.fit(model)
+            else:
+                print(f"@@@ Resume Training from {args.resume_from_checkpoint}")
+                trainer.fit(model, ckpt_path=args.resume_from_checkpoint)
         now = datetime.datetime.now()
         print(
             f"{torch.cuda.current_device()} // [{now.strftime('%Y-%m-%d %H:%M:%S')}] Done Training..."
@@ -181,6 +186,7 @@ if __name__ == "__main__":
         max_beam_search=hparam.max_beam_search, # new - select a token which has maximum score in groupId
         bi_encoder=hparam.bi_encoder, # new - bi-encoder Training
         periflow=hparam.periflow, # new - periflow
+        periflow_dir=hparam.periflow_dir, # new - directory of periflow
         limit_val_batches=hparam.limit_val_batches
     )
     args = argparse.Namespace(**args_dict)
@@ -195,13 +201,40 @@ if __name__ == "__main__":
         print("#" * 80)
 
     callbacks = []
-    checkpoint_callback = ModelCheckpoint(
-        monitor="val em",
-        mode="max",
-        dirpath=args.output_dir,
-        filename="{epoch:02d}-{val_loss:.2f}",
-        save_top_k=5,
-    )
+    if args.periflow:
+        if args.periflow_dir is not None:
+            # When use PeriFlow with PyTorch Lightning, do not save the checkpoint twice (i.e., save_top_k > 0 && save_last = True)
+            checkpoint_callback = ModelCheckpoint(
+                dirpath=args.periflow_dir,
+                filename="checkpoint-{step:07d}",
+                save_last=False,
+                every_n_epochs=1,
+                save_top_k=1,
+            )
+            pattern = re.compile(r"step=(\d+)")
+            checkpoint_iter = None
+            for ckpt_path in Path(args.periflow_dir).glob("**/*"):
+                step = int(pattern.findall(ckpt_path.name)[0])
+                if checkpoint_iter is None:
+                    checkpoint_iter = step
+                else:
+                    checkpoint_iter = max(checkpoint_iter, step)
+
+            if checkpoint_iter is not None:
+                ckpt_path = checkpoint_callback.format_checkpoint_name(dict(step=checkpoint_iter))
+            else:
+                ckpt_path = None
+        else:
+            checkpoint_callback = Callback()
+            ckpt_path = None
+    else:
+        checkpoint_callback = ModelCheckpoint(
+            monitor="val em",
+            mode="max",
+            dirpath=args.output_dir,
+            filename="{epoch:02d}-{val_loss:.2f}",
+            save_top_k=5,
+        )
     callbacks.append(checkpoint_callback)
 
     if args.lr_scheduler == "constant" and torch.cuda.current_device() == 0:

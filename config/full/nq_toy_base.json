@@ -1,6 +1,6 @@
 {
     "output_dir": "outputs/nq_toy_base",
-    "dataset": "dataset/kilt_nq/test/",
+    "dataset": "dataset/kilt_nq/t5-base-emb/",
     "model": "t5-base",
     "max_input_length": 40,
     "max_output_length": 30,
@@ -13,17 +13,17 @@
     "gradient_accumulation_steps": 1,
     "n_gpu": 1,
     "num_workers": 0,
-    "resume_from_checkpoint": null,
+    "resume_from_checkpoint": "/mnt/entailment/contextualized_GENRE/outputs/nq_toy_base/epoch=101-val_loss=0.00.ckpt",
     "train_file": "contextualized_train.pickle",
     "dev_file": "contextualized_dev.pickle",
     "test_file": "contextualized_test.pickle",
     "do_train": false,
     "do_test": true,
-    "test_model_path": "outputs/nq_toy_base/best_tfmr_8",
+    "test_model_path": "outputs/nq_toy_base/best_tfmr_149",
     "val_beam_size": 5,
     "wandb_log": true,
-    "wandb_project": "toy_genre",
-    "wandb_run_name": "kilt_nq_toy_base",
+    "wandb_project": "toy_genre_full",
+    "wandb_run_name": "t5-base",
     "check_val_every_n_epoch": 3,
     "contextualized_emb_num": "206023",
     "contextualized_file": "tokId_emb.pickle",
@@ -37,5 +37,5 @@
     "freeze_encoder": false,
     "freeze_vocab_emb": false,
     "embedding_model": "t5-base",
-    "max_beam_search": false
+    "max_beam_search": false 
 }

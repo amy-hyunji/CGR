@@ -14,7 +14,7 @@
     "n_gpu": 1,
     "num_workers": 0,
     "resume_from_checkpoint": null,
-    "train_file": "contextualized_train.pickle",
+    "train_file": "contextualized_dev.pickle",
     "dev_file": "contextualized_dev.pickle",
     "test_file": "contextualized_test.pickle",
     "prefix_tree_file": "/workspace/dataset/dataset/kilt_nq/test-t5-base-emb/nq_toy_prefix_tree.pickle",
@@ -40,5 +40,7 @@
     "embedding_model": "t5",
     "max_beam_search": false,
     "bi_encoder": false,
-    "periflow": true 
+    "periflow": true,
+    "periflow_dir": "/workspace/ckpt",
+    "limit_val_batches": 0.2 
 }

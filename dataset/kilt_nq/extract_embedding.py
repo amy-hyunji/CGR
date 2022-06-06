@@ -148,7 +148,7 @@ def bi_construct_dataset(split, first_only=False):
             save_dict['input'].append(_input)
             save_dict['output'].append(_output)
             save_dict['output_tokid'].append([_tok])
-   return save_dict, f"bi_contextualized_first_only_{first_only}.json" 
+   return save_dict, f"bi_contextualized_first_only_{first_only}.pickle" 
 
 
 def construct_group():

@@ -165,7 +165,6 @@ if __name__ == "__main__":
         train_file=hparam.train_file,
         dev_file=hparam.dev_file,
         test_file=hparam.test_file,
-        prefix_tree_file=hparam.prefix_tree_file,
         constrained_decoding=True,
         do_train=hparam.do_train,
         do_test=hparam.do_test,
@@ -179,9 +178,10 @@ if __name__ == "__main__":
         tokId2groupId=hparam.tokId2groupId,  # new - tokId_tokGroupId.pickle 
         tokId2tokText=hparam.tokId2tokText,  # new - tokId_tokText.pickle 
         tokId2corpus=hparam.tokId2corpus,  # new - tokId_corpus.pickle 
-        nodeId_tokIdList=hparam.nodeId_tokIdList,  # new - nodeId_tokIdList.pickle
+        tree_type=hparam.tree_type,  # new - nodeId_tokIdList.pickle
         groupId_tree=hparam.groupId_tree, # new
         nodeId_tree=hparam.nodeId_tree, # new
+        nodeId_sup=hparam.nodeId_sup, # new
         embedding_model=hparam.embedding_model, # new - model used to extract embedding
         max_beam_search=hparam.max_beam_search, # new - select a token which has maximum score in groupId
         bi_encoder=hparam.bi_encoder, # new - bi-encoder Training
@@ -190,9 +190,9 @@ if __name__ == "__main__":
         limit_val_batches=hparam.limit_val_batches
     )
     args = argparse.Namespace(**args_dict)
+    if args.do_test: assert args.eval_batch_size == 1
     assert not (args.do_train and args.do_test), "Choose between train|test"
-    assert not (args.groupId_tree and args.nodeId_tree), "Choose between groupId|nodeId: groupId for previous version and nodeId for new one"
-    assert args.embedding_model in ["t5", "bert"]
+    assert args.tree_type in ["groupId", "nodeId"]
     assert args.model_name_or_path in ['t5-base']
 
     if torch.cuda.current_device() == 0:

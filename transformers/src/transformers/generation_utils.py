@@ -2187,6 +2187,7 @@ class GenerationMixin:
             model_inputs = self.prepare_inputs_for_generation(input_ids, **model_kwargs)
             input_ids_len = input_ids.shape[-1] - 1
 
+            # decoder내에 past token과의 self attention을 막기 위해 past_key_values를 pop
             model_inputs.pop("past_key_values", None)
             assert "past_key_values" not in model_inputs.keys()
 

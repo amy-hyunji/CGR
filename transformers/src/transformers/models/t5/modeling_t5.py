@@ -1686,8 +1686,8 @@ class T5ForConditionalGeneration(T5PreTrainedModel):
             # get decoder inputs from shifting lm labels to the right
             decoder_input_ids = self._shift_right(labels)
 
+        # for train
         if self.append_last_hidden_state and input_ids_len is None:
-            # At test, decoder_input_ids = (batch_size * num_beam, 1)
             # At train, decoder_input_ids = (batch_size, max_output_length(=30))
             new_encoder_hidden_state = []
             new_attention_mask = []
@@ -1697,6 +1697,14 @@ class T5ForConditionalGeneration(T5PreTrainedModel):
                 mask_len = attention_mask[i].sum()
                 dec_ids_len = (decoder_input_ids[i] == 0).nonzero()[1,0]
 
+                # dec_ids 길이만큼 encoder hidden state를 append하고 attention_mask를 1로 고쳐서 append
+                # ex)
+                # dec_ids: [0 10 20 30, 1, 0, 0, ... , 0]
+                # dec_ids_len: 5
+                # encoder hidden state: [encoder_hidden_state ; [0]'s hidden_state], decoder_input_ids: [0], labels: [10]
+                # encoder hidden state: [encoder_hidden_state ; [0, 10]'s hidden_state], decoder_input_ids: [10], labels: [20]
+                # encoder hidden state: [encoder_hidden_state ; [0, 10, 20]'s hidden_state], decoder_input_ids: [20], labels: [30]
+                # encoder hidden state: [encoder_hidden_state ; [0, 10, 20, 30]'s hidden_state], decoder_input_ids: [30], labels: [1]
                 for j in range(dec_ids_len):
                     encoder_outputs.last_hidden_state[i, mask_len+j] = self.lm_head[decoder_input_ids[i,j]]
                     attention_mask[i, mask_len+j] = 1
@@ -1705,28 +1713,21 @@ class T5ForConditionalGeneration(T5PreTrainedModel):
                     new_attention_mask.append(attention_mask[i].clone())
                     new_decoder_inputs_ids.append(decoder_input_ids[i,j:j+1].clone())
                     new_labels.append(labels[i,j].clone())
-                    #if j == dec_ids_len-1:
-                    #    new_labels[-1] = torch.tensor(1, device=labels.device)
 
             encoder_outputs.last_hidden_state = torch.stack(new_encoder_hidden_state)
             attention_mask = torch.stack(new_attention_mask)
             decoder_input_ids = torch.stack(new_decoder_inputs_ids)
             labels = torch.stack(new_labels)
 
+        # for test
         if self.append_last_hidden_state and input_ids_len is not None:
+            # At test, decoder_input_ids = (batch_size * num_beam, 1)
+            # test때는 매 step 마다 encoder hidden state에 decoder_input_ids의 element 1개 append
             assert decoder_input_ids.shape[-1] == 1
             for i in range(len(attention_mask)):
                 mask_len = attention_mask[i].sum()
                 encoder_outputs.last_hidden_state[i, mask_len] = self.lm_head[decoder_input_ids[i,0]]
                 attention_mask[i, mask_len] = 1
-        '''
-        print("shape")
-        print(encoder_outputs.last_hidden_state.shape)
-        print(attention_mask.shape)
-        print(attention_mask[:,:20])
-        print(decoder_input_ids.shape)
-        print(decoder_input_ids)
-        '''
 
         hidden_states = encoder_outputs[0]
 

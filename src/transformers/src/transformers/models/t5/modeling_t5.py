@@ -834,11 +834,12 @@ class T5PreTrainedModel(PreTrainedModel):
 
 
 class T5Stack(T5PreTrainedModel):
-    def __init__(self, config, embed_tokens=None):
+    def __init__(self, config, embed_tokens=None, cond=False):
         super().__init__(config)
 
         self.embed_tokens = embed_tokens
         self.is_decoder = config.is_decoder
+        self.cond = cond 
 
         self.block = nn.ModuleList(
             [T5Block(config, has_relative_attention_bias=bool(i == 0)) for i in range(config.num_layers)]
@@ -932,21 +933,27 @@ class T5Stack(T5PreTrainedModel):
             err_msg_prefix = "decoder_" if self.is_decoder else ""
             raise ValueError(f"You have to specify either {err_msg_prefix}input_ids or {err_msg_prefix}inputs_embeds")
 
-        if inputs_embeds is None:
-            assert self.embed_tokens is not None, "You have to initialize the model with valid token embeddings"
-            if type(self.embed_tokens)==dict:
-                if not self.is_decoder:
-                    assert False, "Only Decoder is allowed to have dict() for embed_tokens"
-                _input_ids = copy.deepcopy(input_ids)
-                _input_ids = _input_ids.detach().cpu().numpy()
-                input_embeds = []
-                for bs in _input_ids: 
-                    _input_embeds = [self.embed_tokens[el] for el in bs]
-                    input_embeds.append(_input_embeds)
-                inputs_embeds = torch.tensor(input_embeds).to(input_ids.device)
-            else:
-                if self.is_decoder: 
-                    assert False, "Decoder should have dict() for embed_tokens"
+
+        if self.cond:
+            if inputs_embeds is None:
+                assert self.embed_tokens is not None, "You have to initialize the model with valid token embeddings"
+                if type(self.embed_tokens)==dict:
+                    if not self.is_decoder:
+                        assert False, "Only Decoder is allowed to have dict() for embed_tokens"
+                    _input_ids = copy.deepcopy(input_ids)
+                    _input_ids = _input_ids.detach().cpu().numpy()
+                    input_embeds = []
+                    for bs in _input_ids: 
+                        _input_embeds = [self.embed_tokens[el] for el in bs]
+                        input_embeds.append(_input_embeds)
+                    inputs_embeds = torch.tensor(input_embeds).to(input_ids.device)
+                else:
+                    if self.is_decoder: 
+                        assert False, "Decoder should have dict() for embed_tokens"
+                    inputs_embeds = self.embed_tokens(input_ids)
+        else:
+            if inputs_embeds is None:
+                assert self.embed_tokens is not None, "You have to initialize the model with valid token embeddings"
                 inputs_embeds = self.embed_tokens(input_ids)
 
         batch_size, seq_length = input_shape
@@ -1511,13 +1518,13 @@ class T5ForConditionalGeneration(T5PreTrainedModel):
         encoder_config.is_decoder = False
         encoder_config.use_cache = False
         encoder_config.is_encoder_decoder = False
-        self.encoder = T5Stack(encoder_config, self.shared)
+        self.encoder = T5Stack(encoder_config, self.shared, cond=True)
 
         decoder_config = copy.deepcopy(config)
         decoder_config.is_decoder = True
         decoder_config.is_encoder_decoder = False
         decoder_config.num_layers = config.num_decoder_layers
-        self.decoder = T5Stack(decoder_config, self.dec_shared)
+        self.decoder = T5Stack(decoder_config, self.dec_shared, cond=True)
 
 
         # Initialize weights and apply final processing

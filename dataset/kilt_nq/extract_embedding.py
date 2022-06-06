@@ -104,7 +104,7 @@ def construct_corpus():
    print(f'tokId: {tokId}')
    return corpusId_corpus_dict, corpusId_emb_dict, tokId_corpus 
 
-def construct_dataset(split):
+def load_data(split):
    if split == "train":
       df = pd.read_csv(args.train_file)
    elif split == "dev":
@@ -113,7 +113,10 @@ def construct_dataset(split):
       df = pd.read_csv(args.test_file)
    else:
       raise NotImplementedError('Check the split!')
+   return df
 
+def construct_dataset(split):
+   df = load_data(split)
    save_dict = {'input': [], 'output': [], 'output_tokid': []}
    for _input, _output in zip(df['input'], df['output']):
       corpus_id = corpus.index(_output)
@@ -124,7 +127,29 @@ def construct_dataset(split):
       save_dict['output'].append(_output)
       save_dict['output_tokid'].append(output_tok)
 
-   return save_dict
+   return save_dict, f"gr_contextualized_{split}.json"
+
+def bi_construct_dataset(split, first_only=False):
+   df = load_data(split)
+   save_dict = {'input': [], 'output': [], 'output_tokid': []}
+   for _input, _output in zip(df["input"], df["output"]):
+      corpus_id = corpus.index(_output)
+      emb_dict = corpusId_emb[corpus_id]
+      output_tok = list(emb_dict.keys())
+      output_emb = list(emb_dict.values())
+
+      assert output_tok[-1] == 1
+      if first_only:
+         save_dict['input'].append(_input)
+         save_dict['output'].append(_output)
+         save_dict['output_tokid'].append([output_tok[0]])
+      else:
+         for _tok in output_tok[:-1]:
+            save_dict['input'].append(_input)
+            save_dict['output'].append(_output)
+            save_dict['output_tokid'].append([_tok])
+   return save_dict, f"bi_contextualized_first_only_{first_only}.json" 
+
 
 def construct_group():
    tokGroupId_tok_dict = {}
@@ -239,8 +264,12 @@ if __name__ == "__main__":
    parser.add_argument("--save_path", default=None, required=True, type=str)
    parser.add_argument("--emb_path", default=None, required=True, type=str)
    parser.add_argument("--t5", action='store_true')
+   parser.add_argument("--bi", action='store_true')
+   parser.add_argument("--first_only", action='store_true')
    args = parser.parse_args()
 
+   if args.first_only and not args.bi: 
+      assert(f"First Only is only applied to bi-encoder for now!")
 
    corpus_file = pd.read_csv(args.corpus)
    corpus = list(corpus_file['corpus'])
@@ -266,9 +295,14 @@ if __name__ == "__main__":
    node_group_set, node_token_set, node_inv_group_set, node_inv_token_set, node_tree = construct_node_prefix_tree()
    node_sup_set = {'group_set': node_group_set, "token_set": node_token_set, "inv_group_set": node_inv_group_set, "inv_token_set": node_inv_token_set}
 
-   train_dict = construct_dataset('train')
-   dev_dict = construct_dataset('dev')
-   test_dict = construct_dataset('test')
+   if args.bi:
+      train_dict, train_fname = bi_construct_dataset("train", first_only=args.first_only)
+      dev_dict, dev_fname = bi_construct_dataset("dev", first_only=args.first_only)
+      test_dict, test_fname = bi_construct_dataset("test", first_only=args.first_only)
+   else:
+      train_dict, train_fname = construct_dataset('train')
+      dev_dict, dev_fname = construct_dataset('dev')
+      test_dict, test_fname = construct_dataset('test')
 
    """
    각 token은 하나씩 존재하고, GroupId를 가지고 있다. 
@@ -286,9 +320,9 @@ if __name__ == "__main__":
    dump("groupId_tree.pickle", group_tree)
    dump("nodeId_tree.pickle", node_tree)
    dump("nodeId_sup_set.pickle", node_sup_set)
-   dump("contextualized_train.pickle", train_dict)
-   dump("contextualized_dev.pickle", dev_dict)
-   dump("contextualized_test.pickle", test_dict)
+   dump(train_fname, train_dict)
+   dump(dev_fname, dev_dict)
+   dump(test_fname, test_dict)
 
    """ 
    dump("tokGroupId_tok.pickle", tokGroupId_tok_dict)

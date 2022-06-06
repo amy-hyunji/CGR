@@ -1,0 +1,7 @@
+pandas==1.1.5
+pytorch-lightning==1.6.1
+sentencepiece==0.1.96
+knockknock
+wandb
+azure-storage-blob
+periflow_sdk

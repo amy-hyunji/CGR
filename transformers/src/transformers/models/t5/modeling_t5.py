@@ -21,6 +21,7 @@ import pickle
 import os
 import warnings
 import numpy
+import numpy as np
 from typing import Optional, Tuple, Union
 
 import torch
@@ -991,6 +992,7 @@ class T5Stack(T5PreTrainedModel):
 
             encoder_extended_attention_mask = self.invert_attention_mask(encoder_attention_mask)
 
+            '''
             dec_input_ids_len = extended_attention_mask.shape[-1]
             d_len = extended_attention_mask.shape[-2]
             q_len = encoder_extended_attention_mask.shape[-1]
@@ -1009,8 +1011,7 @@ class T5Stack(T5PreTrainedModel):
                 new_encoder_extended_attention_mask[i,0] = torch.cat((prefix, mid, suffix), dim=1)
 
             encoder_extended_attention_mask = new_encoder_extended_attention_mask
-            
-
+            '''
         else:
             encoder_extended_attention_mask = None
 
@@ -1685,13 +1686,47 @@ class T5ForConditionalGeneration(T5PreTrainedModel):
             # get decoder inputs from shifting lm labels to the right
             decoder_input_ids = self._shift_right(labels)
 
-        if self.append_last_hidden_state:
+        if self.append_last_hidden_state and input_ids_len is None:
+            # At test, decoder_input_ids = (batch_size * num_beam, 1)
+            # At train, decoder_input_ids = (batch_size, max_output_length(=30))
+            new_encoder_hidden_state = []
+            new_attention_mask = []
+            new_decoder_inputs_ids = []
+            new_labels = []
             for i in range(len(attention_mask)):
                 mask_len = attention_mask[i].sum()
-                if input_ids_len is not None:
-                    mask_len += input_ids_len
-                d_len = len(decoder_input_ids[i])
-                encoder_outputs.last_hidden_state[i, mask_len:mask_len+d_len] = self.lm_head[decoder_input_ids[i]]
+                dec_ids_len = (decoder_input_ids[i] == 0).nonzero()[1,0]
+
+                for j in range(dec_ids_len):
+                    encoder_outputs.last_hidden_state[i, mask_len+j] = self.lm_head[decoder_input_ids[i,j]]
+                    attention_mask[i, mask_len+j] = 1
+
+                    new_encoder_hidden_state.append(encoder_outputs.last_hidden_state[i].clone())
+                    new_attention_mask.append(attention_mask[i].clone())
+                    new_decoder_inputs_ids.append(decoder_input_ids[i,j:j+1].clone())
+                    new_labels.append(labels[i,j].clone())
+                    #if j == dec_ids_len-1:
+                    #    new_labels[-1] = torch.tensor(1, device=labels.device)
+
+            encoder_outputs.last_hidden_state = torch.stack(new_encoder_hidden_state)
+            attention_mask = torch.stack(new_attention_mask)
+            decoder_input_ids = torch.stack(new_decoder_inputs_ids)
+            labels = torch.stack(new_labels)
+
+        if self.append_last_hidden_state and input_ids_len is not None:
+            assert decoder_input_ids.shape[-1] == 1
+            for i in range(len(attention_mask)):
+                mask_len = attention_mask[i].sum()
+                encoder_outputs.last_hidden_state[i, mask_len] = self.lm_head[decoder_input_ids[i,0]]
+                attention_mask[i, mask_len] = 1
+        '''
+        print("shape")
+        print(encoder_outputs.last_hidden_state.shape)
+        print(attention_mask.shape)
+        print(attention_mask[:,:20])
+        print(decoder_input_ids.shape)
+        print(decoder_input_ids)
+        '''
 
         hidden_states = encoder_outputs[0]
 
@@ -1709,6 +1744,8 @@ class T5ForConditionalGeneration(T5PreTrainedModel):
         # Decode
         if self.append_last_hidden_state:
             decoder_input_ids = torch.zeros(decoder_input_ids.shape, device=decoder_input_ids.device)
+            if decoder_attention_mask is not None:
+                decoder_attention_mask = torch.ones(decoder_input_ids.shape, dtype=torch.long, device=decoder_input_ids.device)
         decoder_outputs = self.decoder(
             input_ids=decoder_input_ids,
             attention_mask=decoder_attention_mask,
@@ -1748,7 +1785,7 @@ class T5ForConditionalGeneration(T5PreTrainedModel):
         loss = None
         if labels is not None:
             loss_fct = CrossEntropyLoss(ignore_index=-100)
-            loss = loss_fct(lm_logits.view(-1, lm_logits.size(-1)), labels.view(-1)) #[bs*]
+            loss = loss_fct(lm_logits.view(-1, lm_logits.size(-1)), labels) #[bs*]
             # TODO(thom): Add z_loss https://github.com/tensorflow/mesh/blob/fa19d69eafc9a482aff0b59ddd96b025c0cb207d/mesh_tensorflow/layers.py#L666
 
         if not return_dict:
@@ -1777,6 +1814,7 @@ class T5ForConditionalGeneration(T5PreTrainedModel):
         cross_attn_head_mask=None,
         use_cache=None,
         encoder_outputs=None,
+        decoder_attention_mask=None,
         **kwargs
     ):
 
@@ -1793,6 +1831,7 @@ class T5ForConditionalGeneration(T5PreTrainedModel):
             "decoder_head_mask": decoder_head_mask,
             "cross_attn_head_mask": cross_attn_head_mask,
             "use_cache": use_cache,
+            "decoder_attention_mask": decoder_attention_mask,
         }
 
     def prepare_decoder_input_ids_from_labels(self, labels: torch.Tensor):

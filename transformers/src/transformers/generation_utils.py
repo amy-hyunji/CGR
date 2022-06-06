@@ -2187,6 +2187,9 @@ class GenerationMixin:
             model_inputs = self.prepare_inputs_for_generation(input_ids, **model_kwargs)
             input_ids_len = input_ids.shape[-1] - 1
 
+            model_inputs.pop("past_key_values", None)
+            assert "past_key_values" not in model_inputs.keys()
+
             outputs = self(
                 **model_inputs,
                 return_dict=True,

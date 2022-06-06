@@ -128,7 +128,7 @@ if __name__ == "__main__":
 
     if hparam.wandb_log and hparam.do_train:
         wandb_logger = WandbLogger(
-            project=hparam.wandb_project, name=hparam.wandb_run_name
+            project=hparam.wandb_project, name=hparam.wandb_run_name, save_dir="../wandb"
         )
     else:
         wandb_logger = None
@@ -213,11 +213,13 @@ if __name__ == "__main__":
     if args.accelerator == "ddp":
         plugins = DDPPlugin(find_unused_parameters=False)
         fp_16 = False
+        args.fp16 = False
         if torch.cuda.current_device() == 0:
             print(f"@@@ Using DDP without FP16")
     elif args.accelerator == "deepspeed":
         plugins = DeepSpeedPlugin(stage=2, load_full_weights=True)
         fp_16 = True
+        args.fp16 = True
         if torch.cuda.current_device() == 0:
             print(f"@@@ Using Deepspeed stage2 with FP16")
     else:

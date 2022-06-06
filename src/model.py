@@ -233,6 +233,8 @@ class T5BiEncoder(T5BaseClass):
 
         self.contextualized_tokid2emb = pickle.load(open(self.hparams.contextualized_file, "rb"))
         self.contextualized_tensor = torch.tensor(list(self.contextualized_tokid2emb.values())).to(self.device)
+        if self.hparams.fp16:
+            self.contextualized_tensor = self.contextualized_tensor.half()
         self.contextualized_token = list(self.contextualized_tokid2emb.keys())
         self.tokId2corpus = pickle.load(open(self.hparams.tokId2corpus, "rb"))
 
@@ -269,7 +271,8 @@ class T5BiEncoder(T5BaseClass):
         query_output = query_outputs.last_hidden_state[:, 0]
 
         key_outputs = torch.cat([torch.tensor(self.contextualized_tokid2emb[key_input_id[0]]).unsqueeze(0) for key_input_id in key_input_ids], 0) 
-
+        if self.hparams.fp16:
+            key_outputs = key_outputs.half()
         return query_output, key_outputs
 
     def _calculate_similarity(self, batch):
@@ -298,7 +301,7 @@ class T5BiEncoder(T5BaseClass):
         )
         return loss 
 
-    def _calculate_score(self, indices, batch):
+    def _calculate_score(self, indices, batch, batch_idx):
         em_list = []; recall_list = []; pred_list = []; pred_tok_list = []
         for idx, (_indice_list, _output, _input) in enumerate(zip(indices, batch['output'], batch['input'])):
             _predict = []; _pred_idx = []
@@ -313,7 +316,7 @@ class T5BiEncoder(T5BaseClass):
             recall_list.append(self._calculate_recall(_predict, _output))
             pred_list.append(_predict)
             pred_tok_list.append(_pred_idx)
-            if self.print and idx == 0:
+            if self.print and idx == 0 and batch_idx%100 == 0:
                 print(f"$" * 50)
                 print(f"query: {_input}\ngt: {_output}\npredict: {_predict}")
                 print(f"em: {em_list[-1]} // recall: {recall_list[-1]}")
@@ -328,7 +331,7 @@ class T5BiEncoder(T5BaseClass):
         indices = top_scores.indices # [# of query, self.hparams.val_beam_size]
         assert len(indices) == len(batch['output'])
 
-        em_score, recall_score, _, _ = self._calculate_score(indices, batch)
+        em_score, recall_score, _, _ = self._calculate_score(indices, batch, batch_idx)
         self.em_score_list.extend(list(em_score))
         self.recall_score_list.extend(list(recall_score))
 
@@ -364,7 +367,7 @@ class T5BiEncoder(T5BaseClass):
         indices = top_scores.indices # [# of query, self.hparams.val_beam_size]
         assert len(indices) == len(batch['output'])
 
-        em_score, recall_score, pred_list, pred_tok_list = self._calculate_score(indices, batch)
+        em_score, recall_score, pred_list, pred_tok_list = self._calculate_score(indices, batch, batch_idx)
         self.test_input_list.extend(list(batch["input"]))
         self.test_gt_list.extend(list(batch["output"]))
         self.test_gt_tok_list.extend(list(batch["target_ids"].detach().cpu().numpy().tolist()))
@@ -384,10 +387,11 @@ class T5BiEncoder(T5BaseClass):
         _recall = self.gather_list(self.test_recall_score_list)
         assert len(_input) == len(_gt) == len(_pred) == len(_em) == len(_recall) == len(_gt_tok) == len(_pred_tok)
         if self.print:
+            filename = f"group_{self.hparams.groupId_tree}_mbs_{self.hparams.max_beam_search}_result_beam{self.hparams.val_beam_size}.json"
             with open(
                 os.path.join(
                     self.hparams.output_dir,
-                    f"result_beam{self.hparams.val_beam_size}.json",
+                    filename 
                 ),
                 "w",
             ) as f:
@@ -404,7 +408,7 @@ class T5BiEncoder(T5BaseClass):
                     f,
                 )
             print(
-                f"Saving in {os.path.join(self.hparams.output_dir)}!\nnumber of elements: {len(_input)}"
+                f"Saving in {os.path.join(self.hparams.output_dir, filename)}!\nnumber of elements: {len(_input)}"
             )
             print(f"EM: {np.array(_em).mean()}")
             print(f"Recall: {np.array(_recall).mean()}")
@@ -417,6 +421,7 @@ class T5FineTuner(T5BaseClass):
         # If in training mode, load ckpt for training
         if self.hparams.do_train:
             config = T5Config.from_pretrained(self.hparams.model_name_or_path)
+            config.update({"fp16": self.hparams.fp16})
             config.update(
                 {"contextualized_emb_num": self.hparams.contextualized_emb_num}
             )

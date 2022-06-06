@@ -5,10 +5,10 @@ import pandas as pd
 
 ##### Parameters to Change #####
 corpus = list(pd.read_csv('./nq_toy_corpus.csv')['corpus'])
-save_path = "t5-base-emb"
+save_path = "bi-t5-base-p1-5"
 corpusId_emb = pickle.load(open(os.path.join(save_path, 'corpusId_emb.pickle'), 'rb'))
-split = "dev"
-only_first = True 
+split = "train"
+only_first = False 
 ############################################
 
 df = pd.read_csv(f'./nq_toy_{split}.csv')

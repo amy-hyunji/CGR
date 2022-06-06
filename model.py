@@ -31,6 +31,7 @@ class T5FineTuner(pl.LightningModule):
         # If in training mode, load ckpt for training
         if self.hparams.do_train:
             config = T5Config.from_pretrained(self.hparams.model_name_or_path)
+            config.update({"fp16": self.hparams.fp16})
             config.update(
                 {"contextualized_emb_num": self.hparams.contextualized_emb_num}
             )

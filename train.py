@@ -154,12 +154,12 @@ if __name__ == "__main__":
 
     if args.accelerator == "ddp":
         plugins = DDPPlugin(find_unused_parameters=False)
-        fp_16 = False
+        args.fp16 = False
         if torch.cuda.current_device() == 0:
             print(f"@@@ Using DDP without FP16")
     elif args.accelerator == "deepspeed":
         plugins = DeepSpeedPlugin(stage=2, load_full_weights=True)
-        fp_16 = True
+        args.fp16 = True
         if torch.cuda.current_device() == 0:
             print(f"@@@ Using Deepspeed stage2 with FP16")
     else:
@@ -170,7 +170,7 @@ if __name__ == "__main__":
         gpus=args.n_gpu,
         strategy=plugins,
         max_epochs=args.num_train_epochs,
-        precision=16 if fp_16 else 32,
+        precision=16 if args.fp16 else 32,
         default_root_dir=args.output_dir,
         checkpoint_callback=True,
         val_check_interval=args.val_check_interval,

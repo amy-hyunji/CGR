@@ -1497,6 +1497,7 @@ class T5ForConditionalGeneration(T5PreTrainedModel):
         super().__init__(config)
         print(f"Loading from local!! Using New one")
         self.model_dim = config.d_model
+        self.fp16 = config.fp16
 
         if config.freeze_vocab_emb:
             print("!! Freezing Vocab Embedding and loading from *vocab_emb.pickle*")
@@ -1568,6 +1569,8 @@ class T5ForConditionalGeneration(T5PreTrainedModel):
                 contextualized_emb_list.append(emb)
         """
         contextualized_emb_list = torch.tensor(contextualized_emb_list)
+        if self.fp16:
+            contextualized_emb_list = contextualized_emb_list.half()
         return tokid_emb_dict, contextualized_emb_list #[contextualized_emb_num, 768]
 
     def set_output_embeddings(self, new_embeddings):

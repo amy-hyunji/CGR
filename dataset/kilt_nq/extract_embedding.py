@@ -49,11 +49,8 @@ def construct_sp():
    tok_Idlist_dict = {} # {tok_text: [Idlist of the tok]}
    tok_Id_dict = {} # {Id: tok_text}
 
-   t5_model = T5EncoderModel.from_pretrained('t5-base').cuda()
-   t5_tokenizer = T5Tokenizer.from_pretrained("t5-base")
-
    # tokId = 0 -> <pad> token 
-   _tok_decode, _input_ids, last_hidden_state = encode_sp("<pad>", t5_model, t5_tokenizer)
+   _tok_decode, _input_ids, last_hidden_state = encode_sp("<pad>", model, tokenizer)
    assert len(_tok_decode) == 1
    tok_Idlist_dict[_tok_decode[0]] = [0]
    tok_Id_dict[0] = _tok_decode[0] 
@@ -61,7 +58,7 @@ def construct_sp():
    tokId_emb[0] = last_hidden_state[0]
 
    # tokId = 1 -> </s> token
-   _tok_decode, _input_ids, last_hidden_state = encode_sp("</s>", t5_model, t5_tokenizer)
+   _tok_decode, _input_ids, last_hidden_state = encode_sp("</s>", model, tokenizer)
    assert _tok_decode[0] == "</s>"
    assert len(_tok_decode) == 1
    tok_Idlist_dict[_tok_decode[0]] = [1]
@@ -74,12 +71,6 @@ def construct_corpus():
    corpusId_corpus_dict = {} # {corpusId: corpus} 
    corpusId_emb_dict = {} # {corpusId: {tok: {emb}}}
    tokId_corpus = {} # {tokid: corpusText}
-
-   if args.emb_path == "t5-base" or args.emb_path == "t5-large":
-      model = T5EncoderModel.from_pretrained(args.emb_path).cuda()
-   else:
-      model = AutoModel.from_pretrained(args.emb_path).cuda()
-   tokenizer = AutoTokenizer.from_pretrained(args.emb_path)
 
    total_tok_num = 0; tokId = 2
 
@@ -247,12 +238,20 @@ if __name__ == "__main__":
    parser.add_argument("--test_file", default=None, required=True, type=str)
    parser.add_argument("--save_path", default=None, required=True, type=str)
    parser.add_argument("--emb_path", default=None, required=True, type=str)
+   parser.add_argument("--t5", action='store_true')
    args = parser.parse_args()
 
 
    corpus_file = pd.read_csv(args.corpus)
    corpus = list(corpus_file['corpus'])
    corpus_num = len(corpus)
+
+   if args.t5:
+      print(f'## Loading T5EncoderModel')
+      model = T5EncoderModel.from_pretrained(args.emb_path).cuda()
+   else:
+      model = AutoModel.from_pretrained(args.emb_path).cuda()
+   tokenizer = AutoTokenizer.from_pretrained(args.emb_path)
 
    # add pad and </s>
    tok_Idlist_dict, tok_Id_dict, tokId_emb = construct_sp()

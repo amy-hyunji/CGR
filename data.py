@@ -64,6 +64,8 @@ class GENREDataset(Dataset):
             print(f"=" * 80)
             print(f"input: {input_}")
             print(f"output: {output_}")
+            print(f"source: {source}")
+            print(f"target: {target}")
             print(f"=" * 80)
 
         return source, target, input_, output_

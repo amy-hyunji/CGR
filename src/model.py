@@ -498,10 +498,6 @@ class T5FineTuner(T5BaseClass):
         self.groupId2nodeId = nodeId_sup['inv_group_set']
         self.tokId2nodeId = nodeId_sup['inv_token_set']
         #self.eos_list = list(self.groupId2tokId[1])
-        self.first_beam_dict = {}
-
-    def _flush_first_beam_dict(self):
-        self.first_beam_dict = {}
 
     def _get_max_tokId_from_tokIdList(self, tokIdList, score):
         tokIdList = sorted(tokIdList)
@@ -609,23 +605,18 @@ class T5FineTuner(T5BaseClass):
                 trie_dict = self.node_trie
             else:
                 assert False
-        is_first_token = (len(input_ids)==1)
-        return self._get_from_trie(input_ids, trie_dict, score, is_first_token=is_first_token, batch_id=batch_id)
+        return self._get_from_trie(input_ids, trie_dict, score)
 
     """
     input_ids가 들어오면, 해당 tokId가 속한 groupId 찾고, 그걸 가지고 trie_dict 넘어간 다음
     해당 subtree의 key들(groupId) 를 모은 tokId return
     """
-    def _get_from_trie(self, input_ids, trie_dict, score, is_first_token=False, batch_id=None):
-        if (is_first_token == True) and (batch_id is not None) and (batch_id in self.first_beam_dict.keys()):
-            return self.first_beam_dict[batch_id]
+    def _get_from_trie(self, input_ids, trie_dict, score):
         #print(f"input_ids: {input_ids}")
         if self.hparams.tree_type == "groupId":
             if len(input_ids) == 0:
                 possible_GroupList = list(trie_dict.keys())
                 tokIdList = self._get_tokIdList_from_groupIdList(possible_GroupList, score)
-                if (is_first_token == True) and (batch_id is not None):
-                    self.first_beam_dict[batch_id] = tokIdList
                 return tokIdList
             else:
                 curGroupId = self._get_groupId_from_tokId(input_ids[0])
@@ -640,9 +631,6 @@ class T5FineTuner(T5BaseClass):
                 NodeId = self._get_nodeId_from_tokId(input_ids[-1])
                 next_nId_List = list(trie_dict[NodeId])
                 tokIdList = self._get_tokIdList_from_nodeIdList(next_nId_List, score)
-                
-                if (is_first_token == True) and (batch_id is not None):
-                    self.first_beam_dict[batch_id] = tokIdList
                 return tokIdList
         else:
             raise NotImplementedError('tree type should be either groupId_tree or nodeId_tree!')
@@ -678,7 +666,6 @@ class T5FineTuner(T5BaseClass):
             ),
             early_stopping=True,
         )
-        self._flush_first_beam_dict()
         _generated_text = self.ids_to_text(_generated_ids)
 
         inum = len(_generated_ids) // self.hparams.val_beam_size

@@ -816,9 +816,6 @@ class T5FineTuner(T5BaseClass):
         _idx = 0 
         while len(unique_pred) < self.hparams.val_beam_size:
             _idx += 1
-            print(f'#'*50)
-            print(unique_pred)
-            print(f'#'*50)
             
             _generated_ids = self.model.generate(
                 batch["source_ids"],
@@ -884,8 +881,8 @@ class T5FineTuner(T5BaseClass):
                             assert False
             # remove from _trie_dict
             _trie_dict = self._remove_prev_from_trie(_trie_dict, _upper_ids)
-        self._flush_frist_beam_dict()
-        if self.print: print(f"## UNIQUE PRED: {unique_pred[:self.hparams.val_beam_size]}")
+        #self._flush_first_beam_dict()
+        #if self.print: print(f"## UNIQUE PRED: {unique_pred[:self.hparams.val_beam_size]}")
         em_list, recall_list = self.calculate_scores(
             [unique_pred[:self.hparams.val_beam_size]], batch["output"], batch["input"], batch_idx
         )

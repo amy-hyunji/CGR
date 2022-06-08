@@ -258,9 +258,9 @@ if __name__ == "__main__":
 
    parser = ArgumentParser()
    parser.add_argument("--corpus", default=None, required=True, type=str)
-   parser.add_argument("--train_file", default=None, required=True, type=str)
-   parser.add_argument("--dev_file", default=None, required=True, type=str)
-   parser.add_argument("--test_file", default=None, required=True, type=str)
+   parser.add_argument("--train_file", default=None, type=str)
+   parser.add_argument("--dev_file", default=None, type=str)
+   parser.add_argument("--test_file", default=None, type=str)
    parser.add_argument("--save_path", default=None, required=True, type=str)
    parser.add_argument("--emb_path", default=None, required=True, type=str)
    parser.add_argument("--t5", action='store_true')
@@ -268,8 +268,13 @@ if __name__ == "__main__":
    parser.add_argument("--first_only", action='store_true')
    args = parser.parse_args()
 
+   assert not os.path.exists(args.save_path), f'{args.save_path} already exists!! Check if it is correct!'
+
    if args.first_only and not args.bi: 
-      assert(f"First Only is only applied to bi-encoder for now!")
+      assert False, f"First Only is only applied to bi-encoder for now!"
+
+   if not ((args.train_file is None and args.dev_file is None and args.test_file is None) or (args.train_file is not None and args.dev_file is not None and args.test_file is not None)):
+      assert False, f'Either ALL (train|dev|test) file is None or ALL file is NOT None!!'
 
    corpus_file = pd.read_csv(args.corpus)
    corpus = list(corpus_file['corpus'])
@@ -295,14 +300,17 @@ if __name__ == "__main__":
    node_group_set, node_token_set, node_inv_group_set, node_inv_token_set, node_tree = construct_node_prefix_tree()
    node_sup_set = {'group_set': node_group_set, "token_set": node_token_set, "inv_group_set": node_inv_group_set, "inv_token_set": node_inv_token_set}
 
-   if args.bi:
-      train_dict, train_fname = bi_construct_dataset("train", first_only=args.first_only)
-      dev_dict, dev_fname = bi_construct_dataset("dev", first_only=args.first_only)
-      test_dict, test_fname = bi_construct_dataset("test", first_only=args.first_only)
+   if args.train_file is None:
+      pass 
    else:
-      train_dict, train_fname = construct_dataset('train')
-      dev_dict, dev_fname = construct_dataset('dev')
-      test_dict, test_fname = construct_dataset('test')
+      if args.bi:
+         train_dict, train_fname = bi_construct_dataset("train", first_only=args.first_only)
+         dev_dict, dev_fname = bi_construct_dataset("dev", first_only=args.first_only)
+         test_dict, test_fname = bi_construct_dataset("test", first_only=args.first_only)
+      else:
+         train_dict, train_fname = construct_dataset('train')
+         dev_dict, dev_fname = construct_dataset('dev')
+         test_dict, test_fname = construct_dataset('test')
 
    """
    각 token은 하나씩 존재하고, GroupId를 가지고 있다. 
@@ -320,9 +328,10 @@ if __name__ == "__main__":
    dump("groupId_tree.pickle", group_tree)
    dump("nodeId_tree.pickle", node_tree)
    dump("nodeId_sup_set.pickle", node_sup_set)
-   dump(train_fname, train_dict)
-   dump(dev_fname, dev_dict)
-   dump(test_fname, test_dict)
+   if args.train_file is not None:
+      dump(train_fname, train_dict)
+      dump(dev_fname, dev_dict)
+      dump(test_fname, test_dict)
 
    """ 
    dump("tokGroupId_tok.pickle", tokGroupId_tok_dict)

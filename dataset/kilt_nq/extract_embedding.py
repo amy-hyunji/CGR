@@ -127,7 +127,7 @@ def construct_dataset(split):
       save_dict['output'].append(_output)
       save_dict['output_tokid'].append(output_tok)
 
-   return save_dict, f"gr_contextualized_{split}.json"
+   return save_dict, f"gr_contextualized_{split}.pickle"
 
 def bi_construct_dataset(split, first_only=False):
    df = load_data(split)

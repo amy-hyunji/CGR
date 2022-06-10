@@ -169,6 +169,7 @@ if __name__ == "__main__":
         do_train=hparam.do_train,
         do_test=hparam.do_test,
         test_model_path=hparam.test_model_path,
+        test_name=hparam.test_name,
         val_beam_size=hparam.val_beam_size,
         freeze_encoder=hparam.freeze_encoder,
         freeze_vocab_emb=hparam.freeze_vocab_emb,
@@ -190,10 +191,9 @@ if __name__ == "__main__":
         limit_val_batches=hparam.limit_val_batches
     )
     args = argparse.Namespace(**args_dict)
-    if args.do_test: assert args.eval_batch_size == 1
     assert not (args.do_train and args.do_test), "Choose between train|test"
     assert args.tree_type in ["groupId", "nodeId"]
-    assert args.model_name_or_path in ['t5-base']
+    if args.bi_encoder: assert args.accelerator == "ddp", "ddp is only supported for bi-encoder!"
 
     if torch.cuda.current_device() == 0:
         print("#" * 80)

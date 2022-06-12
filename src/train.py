@@ -188,7 +188,8 @@ if __name__ == "__main__":
         bi_encoder=hparam.bi_encoder, # new - bi-encoder Training
         periflow=hparam.periflow, # new - periflow
         periflow_dir=hparam.periflow_dir, # new - directory of periflow
-        limit_val_batches=hparam.limit_val_batches
+        limit_val_batches=hparam.limit_val_batches,
+        train_c_emb=hparam.train_c_emb
     )
     args = argparse.Namespace(**args_dict)
     assert not (args.do_train and args.do_test), "Choose between train|test"

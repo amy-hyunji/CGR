@@ -420,6 +420,7 @@ class T5FineTuner(T5BaseClass):
         
         config = T5Config.from_pretrained(self.hparams.model_name_or_path)
         config.update({"fp16": self.hparams.fp16})
+        config.update({"train_c_emb": self.hparams.train_c_emb}) ### TODO
         config.update(
             {"contextualized_emb_num": self.hparams.contextualized_emb_num}
         )
@@ -430,10 +431,14 @@ class T5FineTuner(T5BaseClass):
 
         # If in training mode, load ckpt for training
         if self.hparams.do_train:
-
-            self.model = T5ForConditionalGeneration.from_pretrained(
-                self.hparams.model_name_or_path, config=config
-            )
+            if self.hparams.train_c_emb:
+                self.model = T5ForConditionalGeneration.from_pretrained(
+                    self.hparams.model_name_or_path, config=config, ignore_mismatched_sizes =True
+                )
+            else:
+                self.model = T5ForConditionalGeneration.from_pretrained(
+                    self.hparams.model_name_or_path, config=config
+                )
             self.tokenizer = T5Tokenizer.from_pretrained(
                 self.hparams.model_name_or_path
             )

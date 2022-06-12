@@ -54,7 +54,7 @@ class GENREDataset(Dataset):
         
         if len(target) > self.hparams.max_output_length:
             target = target[: self.hparams.max_output_length]
-            att = [1] * len(self.hparams.max_output_length)
+            att = [1] * self.hparams.max_output_length
         else:
             _leftover = self.hparams.max_output_length - len(target)
             att = [1] * len(target) + [0] * _leftover
@@ -72,6 +72,8 @@ class GENREDataset(Dataset):
             print(f"=" * 80)
             print(f"input: {input_}")
             print(f"output: {output_}")
+            print(f"source: {source}")
+            print(f"target: {target}")
             print(f"=" * 80)
 
         return source, target, input_, output_

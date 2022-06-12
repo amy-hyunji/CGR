@@ -15,10 +15,11 @@
 """ PyTorch T5 model."""
 
 
+import os
+import sys
 import copy
 import math
 import pickle
-import os
 import warnings
 import numpy
 from typing import Optional, Tuple, Union
@@ -834,12 +835,13 @@ class T5PreTrainedModel(PreTrainedModel):
 
 
 class T5Stack(T5PreTrainedModel):
-    def __init__(self, config, embed_tokens=None, cond=False):
+    def __init__(self, config, embed_tokens=None, cond=False, train_c_emb=False):
         super().__init__(config)
 
         self.embed_tokens = embed_tokens
         self.is_decoder = config.is_decoder
         self.cond = cond 
+        self.train_c_emb = train_c_emb 
 
         self.block = nn.ModuleList(
             [T5Block(config, has_relative_attention_bias=bool(i == 0)) for i in range(config.num_layers)]
@@ -938,8 +940,11 @@ class T5Stack(T5PreTrainedModel):
             if inputs_embeds is None:
                 assert self.embed_tokens is not None, "You have to initialize the model with valid token embeddings"
                 if type(self.embed_tokens)==dict:
+                    #assert False, f"is_decoder: {self.is_decoder}"
                     if not self.is_decoder:
                         assert False, "Only Decoder is allowed to have dict() for embed_tokens"
+                    if self.train_c_emb:
+                        assert False, "Train_c_emb should not use dict() as embed_token!"
                     _input_ids = copy.deepcopy(input_ids)
                     _input_ids = _input_ids.detach().cpu().numpy()
                     input_embeds = []
@@ -948,7 +953,7 @@ class T5Stack(T5PreTrainedModel):
                         input_embeds.append(_input_embeds)
                     inputs_embeds = torch.tensor(input_embeds).to(input_ids.device)
                 else:
-                    if self.is_decoder: 
+                    if self.is_decoder and not self.train_c_emb: 
                         assert False, "Decoder should have dict() for embed_tokens"
                     inputs_embeds = self.embed_tokens(input_ids)
         else:
@@ -1354,6 +1359,7 @@ class T5Model(T5PreTrainedModel):
         return self.shared
 
     def set_input_embeddings(self, new_embeddings):
+        assert False
         self.shared = new_embeddings
         self.encoder.set_input_embeddings(new_embeddings)
         self.decoder.set_input_embeddings(new_embeddings)
@@ -1505,6 +1511,7 @@ class T5ForConditionalGeneration(T5PreTrainedModel):
         print(f"Loading from local!! Using New one")
         self.model_dim = config.d_model
         self.fp16 = config.fp16
+        self.train_c_emb = config.train_c_emb
 
         if config.freeze_vocab_emb:
             print("!! Freezing Vocab Embedding and loading from *vocab_emb.pickle*")
@@ -1512,7 +1519,12 @@ class T5ForConditionalGeneration(T5PreTrainedModel):
             self.shared = nn.Embedding.from_pretrained(emb.weight, freeze=True)
         else:
             self.shared = nn.Embedding(config.vocab_size, config.d_model)
-        self.dec_shared, self.lm_head = self.set_lm_head(config.contextualized_file) 
+        
+        if self.train_c_emb:
+            self.dec_shared, self.lm_head = self.set_lm_head(config.contextualized_file, freeze=False) 
+            config.tie_word_embeddings = False
+        else:
+            self.dec_shared, self.lm_head = self.set_lm_head(config.contextualized_file, freeze=True) 
 
         encoder_config = copy.deepcopy(config)
         encoder_config.is_decoder = False
@@ -1524,7 +1536,11 @@ class T5ForConditionalGeneration(T5PreTrainedModel):
         decoder_config.is_decoder = True
         decoder_config.is_encoder_decoder = False
         decoder_config.num_layers = config.num_decoder_layers
-        self.decoder = T5Stack(decoder_config, self.dec_shared, cond=True)
+        
+        if self.train_c_emb:
+            self.decoder = T5Stack(decoder_config, self.lm_head, cond=True, train_c_emb=True)
+        else:
+            self.decoder = T5Stack(decoder_config, self.dec_shared, cond=True)
 
 
         # Initialize weights and apply final processing
@@ -1563,19 +1579,18 @@ class T5ForConditionalGeneration(T5PreTrainedModel):
         return self.shared
 
     def set_input_embeddings(self, new_embeddings):
+        assert False
         self.shared = new_embeddings
         self.encoder.set_input_embeddings(new_embeddings)
         self.decoder.set_input_embeddings(new_embeddings)
 
-    def set_lm_head(self, file):
+    def set_lm_head(self, file, freeze):
         tokid_emb_dict = pickle.load(open(file, "rb"))
         contextualized_emb_list = list(tokid_emb_dict.values()) 
-        """
-        for idx_dict in idx_emb_dict.values():
-            for emb in idx_dict.values():
-                contextualized_emb_list.append(emb)
-        """
-        contextualized_emb_list = torch.tensor(contextualized_emb_list)
+        if not freeze:
+            contextualized_emb_list = nn.Embedding.from_pretrained(torch.FloatTensor(contextualized_emb_list), freeze=False)
+        else:
+            contextualized_emb_list = torch.tensor(contextualized_emb_list)
         if self.fp16:
             contextualized_emb_list = contextualized_emb_list.half()
         return tokid_emb_dict, contextualized_emb_list #[contextualized_emb_num, 768]
@@ -1708,9 +1723,15 @@ class T5ForConditionalGeneration(T5PreTrainedModel):
         # lm_head => [contextualized embedding 개수, 768]
         # lm_logits => [bs, output_token 개수,  contextualized_embedding]
         # labels => [bs,  output_token 개수]
-        if self.lm_head.get_device() != sequence_output.get_device():
-            self.lm_head = self.lm_head.to(sequence_output.device)
-        lm_logits = torch.einsum("bod,cd->boc", sequence_output, self.lm_head) 
+        
+        if self.train_c_emb:
+            lm_head_tensor = self.lm_head.weight.clone().detach().requires_grad_(False)
+            lm_head_tensor = lm_head_tensor.to(sequence_output.device)
+            lm_logits = torch.einsum("bod,cd->boc", sequence_output, lm_head_tensor) 
+        else:
+            if self.lm_head.get_device() != sequence_output.get_device():
+                self.lm_head = self.lm_head.to(sequence_output.device)
+            lm_logits = torch.einsum("bod,cd->boc", sequence_output, self.lm_head) 
 
         loss = None
         if labels is not None:

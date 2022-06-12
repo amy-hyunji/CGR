@@ -1,9 +1,13 @@
 wandb/
+config/
+pf-template/
 .vscode/
 __pycache__/
 dataset/kilt_nq/*.csv
 dataset/kilt_nq/*.pickle
 dataset/kilt_nq/*.sh
+dataset/*.json
+dataset/*.csv
 slack.py
 *.pickle
 outputs

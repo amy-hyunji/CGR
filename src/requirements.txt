@@ -5,3 +5,4 @@ knockknock
 wandb
 azure-storage-blob
 periflow_sdk
+deepspeed

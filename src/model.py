@@ -504,6 +504,9 @@ class T5FineTuner(T5BaseClass):
         self.tokId2nodeId = nodeId_sup['inv_token_set']
         #self.eos_list = list(self.groupId2tokId[1])
 
+        self.cnt_over = 0
+        self.len_test_dataset = len(self.test_dataloader())
+
     def _get_max_tokId_from_tokIdList(self, tokIdList, score):
         tokIdList = sorted(tokIdList)
         idx = score[tokIdList].detach().cpu().numpy().argmax()
@@ -894,7 +897,8 @@ class T5FineTuner(T5BaseClass):
                 _trie_list[bid] = _trie_dict
                 if len(unique_pred_list[bid]) >= self.hparams.val_beam_size:
                     over[bid] = 1
-            if over.count(1) == self.hparams.eval_batch_size:
+            if (over.count(1) == self.hparams.eval_batch_size) or (self.cnt_over == self.len_test_dataset):
+                self.cnt_over += over.count(1)
                 break
 
         for i in range(len(unique_pred_list)):

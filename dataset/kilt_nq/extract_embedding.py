@@ -134,7 +134,7 @@ def bi_construct_dataset(split, first_only=False):
    save_dict = {'input': [], 'output': [], 'output_tokid': []}
    for _input, _output in zip(df["input"], df["output"]):
       corpus_id = corpus.index(_output)
-      emb_dict = corpusId_emb[corpus_id]
+      emb_dict = corpusId_emb_dict[corpus_id]
       output_tok = list(emb_dict.keys())
       output_emb = list(emb_dict.values())
 

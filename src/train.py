@@ -196,6 +196,7 @@ if __name__ == "__main__":
     assert args.tree_type in ["groupId", "nodeId"]
     if args.bi_encoder: assert args.accelerator == "ddp", "ddp is only supported for bi-encoder!"
 
+
     if torch.cuda.current_device() == 0:
         print("#" * 80)
         print(args)

@@ -420,7 +420,8 @@ class T5FineTuner(T5BaseClass):
         
         config = T5Config.from_pretrained(self.hparams.model_name_or_path)
         config.update({"fp16": self.hparams.fp16})
-        config.update({"train_c_emb": self.hparams.train_c_emb}) ### TODO
+        config.update({"train_c_emb": self.hparams.train_c_emb}) 
+        config.update({"do_test": self.hparams.do_test}) 
         config.update(
             {"contextualized_emb_num": self.hparams.contextualized_emb_num}
         )
@@ -458,7 +459,7 @@ class T5FineTuner(T5BaseClass):
         if self.hparams.do_test:
             #raise NotImplementedError("Test Code is not implemented yet!")
             self.model = T5ForConditionalGeneration.from_pretrained(
-                self.hparams.test_model_path, config=config
+                self.hparams.test_model_path, config=config, ignore_mismatched_sizes=True
             )
             self.tokenizer = T5Tokenizer.from_pretrained(self.hparams.test_model_path)
             if self.print:

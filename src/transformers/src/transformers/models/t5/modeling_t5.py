@@ -1508,9 +1508,10 @@ class T5ForConditionalGeneration(T5PreTrainedModel):
 
     def __init__(self, config: T5Config):
         super().__init__(config)
-        print(f"Loading from local!! Using New one")
+        print(f"@@@@@@ Loading from local!! Using New one")
         self.model_dim = config.d_model
         self.fp16 = config.fp16
+        self.do_test = config.do_test
         self.train_c_emb = config.train_c_emb
 
         if config.freeze_vocab_emb:
@@ -1520,11 +1521,9 @@ class T5ForConditionalGeneration(T5PreTrainedModel):
         else:
             self.shared = nn.Embedding(config.vocab_size, config.d_model)
         
+        self.dec_shared, self.lm_head = self.set_lm_head(config.contextualized_file) 
         if self.train_c_emb:
-            self.dec_shared, self.lm_head = self.set_lm_head(config.contextualized_file, freeze=False) 
             config.tie_word_embeddings = False
-        else:
-            self.dec_shared, self.lm_head = self.set_lm_head(config.contextualized_file, freeze=True) 
 
         encoder_config = copy.deepcopy(config)
         encoder_config.is_decoder = False
@@ -1584,11 +1583,11 @@ class T5ForConditionalGeneration(T5PreTrainedModel):
         self.encoder.set_input_embeddings(new_embeddings)
         self.decoder.set_input_embeddings(new_embeddings)
 
-    def set_lm_head(self, file, freeze):
+    def set_lm_head(self, file):
         tokid_emb_dict = pickle.load(open(file, "rb"))
         contextualized_emb_list = list(tokid_emb_dict.values()) 
-        if not freeze:
-            contextualized_emb_list = nn.Embedding.from_pretrained(torch.FloatTensor(contextualized_emb_list), freeze=False)
+        if self.train_c_emb:
+            contextualized_emb_list = nn.Embedding.from_pretrained(torch.FloatTensor(contextualized_emb_list), freeze=self.do_test)
         else:
             contextualized_emb_list = torch.tensor(contextualized_emb_list)
         if self.fp16:

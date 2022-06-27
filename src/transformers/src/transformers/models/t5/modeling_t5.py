@@ -837,7 +837,6 @@ class T5PreTrainedModel(PreTrainedModel):
 class T5Stack(T5PreTrainedModel):
     def __init__(self, config, embed_tokens=None, cond=False, train_c_emb=False):
         super().__init__(config)
-
         self.embed_tokens = embed_tokens
         self.is_decoder = config.is_decoder
         self.cond = cond 
@@ -910,6 +909,7 @@ class T5Stack(T5PreTrainedModel):
         output_hidden_states=None,
         return_dict=None,
     ):
+
         # Model parallel
         if self.model_parallel:
             torch.cuda.set_device(self.first_device)
@@ -1520,8 +1520,11 @@ class T5ForConditionalGeneration(T5PreTrainedModel):
             self.shared = nn.Embedding.from_pretrained(emb.weight, freeze=True)
         else:
             self.shared = nn.Embedding(config.vocab_size, config.d_model)
-        
-        self.dec_shared, self.lm_head = self.set_lm_head(config.contextualized_file) 
+       
+        if self.do_test and self.train_c_emb: 
+            self.lm_head = nn.Embedding(int(config.contextualized_emb_num), config.d_model)
+        else:
+            self.dec_shared, self.lm_head = self.set_lm_head(config.contextualized_file)
         if self.train_c_emb:
             config.tie_word_embeddings = False
 

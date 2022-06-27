@@ -16,7 +16,8 @@ import torch.distributed as dist
 from data import GENREDataset
 from blob import get_blob_info, upload_directory_to_blob
 
-from transformers import T5Config, T5Tokenizer, T5Model, T5ForConditionalGeneration, BertTokenizer, Adafactor, AutoTokenizer
+from grounded_T5 import T5ForConditionalGeneration as grounded_T5
+from transformers import T5Config, T5Tokenizer, T5Model, T5EncoderModel, T5ForConditionalGeneration, BertTokenizer, Adafactor, AutoTokenizer
 from torch.utils.data import DataLoader
 from itertools import chain
 
@@ -79,8 +80,6 @@ class T5BaseClass(pl.LightningModule):
         return dataloader
 
     def _gather_object(self, obj):
-        if self.print:
-            print(f"## Gathering list from {self.hparams.n_gpu} process!")
         gathered = [None for _ in range(self.hparams.n_gpu)]
         dist.all_gather_object(gathered, obj)
         return gathered
@@ -183,7 +182,7 @@ class T5BaseClass(pl.LightningModule):
         return white_space_fix(remove_articles(remove_punc(lower(s))))
 
     def _calculate_recall(self, pred, gt):
-        assert len(pred) == self.hparams.val_beam_size
+        assert len(pred) == self.hparams.val_beam_size, f'gt: {gt}\npred: {pred}' 
         _correct = 0
         for elem in pred:
             if elem is None: continue 
@@ -205,7 +204,13 @@ class T5BiEncoder(T5BaseClass):
         self.save_hyperparameters(args)
 
         if self.hparams.do_train:
-            self.model = T5Model.from_pretrained(self.hparams.model_name_or_path)
+            if self.hparams.bi_type in ['encoder_mean', 'encoder_first']:
+                if self.hparams.bi_type == 'encoder_mean': raise NotImplementedError('Future work')
+                self.model = T5EncoderModel.from_pretrained(self.hparams.model_name_or_path)
+            elif self.hparams.bi_type in ['encoder_decoder']:
+                self.model = T5Model.from_pretrained(self.hparams.model_name_or_path)
+            else:
+                assert False
             self.tokenizer = T5Tokenizer.from_pretrained(self.hparams.model_name_or_path)
             if self.print:
                 print(f'@@@ In Training Mode...')
@@ -218,7 +223,13 @@ class T5BiEncoder(T5BaseClass):
                 self.blob_service_client = BlobServiceClient.from_connection_string(self.connect_str)
 
         if self.hparams.do_test:
-            self.model = T5Model.from_pretrained(self.hparams.test_model_path)
+            if self.hparams.bi_type in ['encoder_mean', 'encoder_first']:
+                if self.hparams.bi_type == 'encoder_mean': raise NotImplementedError('Future work')
+                self.model = T5EncoderModel.from_pretrained(self.hparams.test_model_path)
+            elif self.hparams.bi_type in ['encoder_decoder']:
+                self.model = T5Model.from_pretrained(self.hparams.test_model_path)
+            else:
+                assert False
             self.tokenizer = T5Tokenizer.from_pretrained(self.hparams.test_model_path)
             if self.print:
                 print(f'@@@ In Test Mode ...')
@@ -249,14 +260,19 @@ class T5BiEncoder(T5BaseClass):
 
     def forward(self, input_ids, attention_mask=None):
         bs = input_ids.shape[0]
-        d_input = torch.cat([self.decoder_input_ids]*bs, 0).to(self.device)
-        d_att = torch.cat([self.decoder_attention_mask]*bs, 0).to(self.device)
-
-        outputs = self.model(input_ids, 
-                        attention_mask=attention_mask,
-                        decoder_input_ids=d_input, 
-                        decoder_attention_mask=d_att
-                        )
+        if self.hparams.bi_type in ['encoder_decoder']:
+            d_input = torch.cat([self.decoder_input_ids]*bs, 0).to(self.device)
+            d_att = torch.cat([self.decoder_attention_mask]*bs, 0).to(self.device)
+            
+            outputs = self.model(input_ids, 
+                            attention_mask=attention_mask,
+                            decoder_input_ids=d_input, 
+                            decoder_attention_mask=d_att
+                            )
+        else:
+            outputs = self.model(input_ids,
+                            attention_mask=attention_mask,
+                            )
         return outputs 
 
     def _get_embedding(self, batch):
@@ -434,12 +450,13 @@ class T5FineTuner(T5BaseClass):
         if self.hparams.do_train:
             if self.hparams.train_c_emb:
                 self.model = T5ForConditionalGeneration.from_pretrained(
-                    self.hparams.model_name_or_path, config=config, ignore_mismatched_sizes =True
+                    self.hparams.model_name_or_path, config=config, ignore_mismatched_sizes=True
                 )
             else:
                 self.model = T5ForConditionalGeneration.from_pretrained(
                     self.hparams.model_name_or_path, config=config
                 )
+
             self.tokenizer = T5Tokenizer.from_pretrained(
                 self.hparams.model_name_or_path
             )
@@ -457,20 +474,33 @@ class T5FineTuner(T5BaseClass):
 
         # If in testing mode, load ckpt for inference
         if self.hparams.do_test:
-            #raise NotImplementedError("Test Code is not implemented yet!")
             self.model = T5ForConditionalGeneration.from_pretrained(
                 self.hparams.test_model_path, config=config, ignore_mismatched_sizes=True
             )
             self.tokenizer = T5Tokenizer.from_pretrained(self.hparams.test_model_path)
             if self.print:
                 print(f"@@@ Loading Model from {self.hparams.test_model_path}")
-            self.test_input_list = []
-            self.test_gt_list = []
-            self.test_gt_tok_list = []
-            self.test_pred_list = []
-            self.test_pred_tok_list = []
-            self.test_em_score_list = []
-            self.test_recall_score_list = []
+            
+            self.test_save_name = os.path.join(self.hparams.output_dir, f"{self.hparams.test_name}_{self.hparams.tree_type}_mbs_{self.hparams.max_beam_search}_result_beam{self.hparams.val_beam_size}.json")               
+            if os.path.exists(self.test_save_name):
+                 prev_f = json.load(open(self.test_save_name))
+                 print(f"@@@ Loading Previous file!! => #: {len(prev_f['input'])}")
+                 self.test_input_list = prev_f['input']
+                 self.test_gt_list = prev_f['gt']
+                 self.test_gt_tok_list = prev_f['gt_tok']
+                 self.test_pred_list = prev_f['pred']
+                 self.test_pred_tok_list = prev_f['pred_tok']
+                 self.test_em_score_list = prev_f['em']
+                 self.test_recall_score_list = prev_f['recall']
+            else:
+                 print(f'@@@ Initialize Test!!')
+                 self.test_input_list = []
+                 self.test_gt_list = []
+                 self.test_gt_tok_list = []
+                 self.test_pred_list = []
+                 self.test_pred_tok_list = []
+                 self.test_em_score_list = []
+                 self.test_recall_score_list = []
 
         if self.hparams.freeze_encoder:
             if self.print:
@@ -819,26 +849,49 @@ class T5FineTuner(T5BaseClass):
 
 
     def _test_step(self, batch, batch_idx, return_elem=False):
+       
+        # for case where it resume test 
+        test_input = []
+        for _input in batch['input']:
+            if _input in self.test_input_list: continue
+            else: test_input.append(_input) 
+        test_num = len(test_input)
+        start_num = len(batch['input'])-test_num
+        if test_num == 0: return None
+
+        test_output = batch['output'][start_num:]
+        test_source_ids = batch['source_ids'][start_num:]
+        test_source_masks = batch['source_mask'][start_num:]
+        test_target_ids = batch['target_ids'][start_num:]
+        test_target_masks = batch['target_mask'][start_num:]
+        assert len(test_output) == test_num, f'test_output: {len(test_output)}\ttest_num: {test_num}'
+
         if self.hparams.tree_type == "groupId":
-            _trie_list = [copy.deepcopy(self.group_trie) for _ in range(self.hparams.eval_batch_size)]
+            _trie_list = [copy.deepcopy(self.group_trie) for _ in range(test_num)]
             #_trie_dict = copy.deepcopy(self.group_trie)
         elif self.hparams.tree_type == "nodeId":
-            _trie_list = [copy.deepcopy(self.node_trie) for _ in range(self.hparams.eval_batch_size)]
+            _trie_list = [copy.deepcopy(self.node_trie) for _ in range(test_num)]
             #_trie_dict = copy.deepcopy(self.node_trie)
         else:
             assert False
         
         #unique_pred = []; unique_ids = []
-        unique_pred_list = [[] for _ in range(self.hparams.eval_batch_size)] 
-        unique_ids_list = [[] for _ in range(self.hparams.eval_batch_size)] 
-        over = [0]*self.hparams.eval_batch_size
-        while True:
-            
+        unique_pred_list = [[] for _ in range(test_num)] 
+        unique_ids_list = [[] for _ in range(test_num)] 
+        over = [0]*test_num
+        
+        for _iter in range(self.hparams.val_beam_size*2):
+            """
+            print("="*80)
+            print(f"iter: {_iter} // DONE: {over.count(1)} / {test_num}")
+            print(unique_pred_list)
+            print("="*80)
+            """
             _generated_ids = self.model.generate(
-                batch["source_ids"],
-                attention_mask=batch["source_mask"],
+                test_source_ids, 
+                attention_mask=test_source_masks,
                 use_cache=True,
-                decoder_attention_mask=batch["target_mask"],
+                decoder_attention_mask=test_target_masks,
                 max_length=self.hparams.max_output_length,
                 num_beams=self.hparams.val_beam_size,
                 num_return_sequences=self.hparams.val_beam_size,
@@ -849,7 +902,7 @@ class T5FineTuner(T5BaseClass):
             )
             _generated_text = self.ids_to_text(_generated_ids)
             inum = len(_generated_ids) // self.hparams.val_beam_size
-            assert inum == len(batch["output"])
+            assert inum == len(test_output) 
             generated_text = [
                 _generated_text[
                     i * self.hparams.val_beam_size : (i + 1) * self.hparams.val_beam_size
@@ -867,41 +920,55 @@ class T5FineTuner(T5BaseClass):
                 for _text, _ids in zip(b_texts, b_ids):
                     g_ids = [self.tokId2groupId[el] for el in _ids]
             """
+            print(f"prediction: {generated_text}")
+            print("*"*80) 
             for bid, (batch_text, batch_ids) in enumerate(zip(generated_text, generated_ids)):
                 if over[bid] == 1: continue
                 ### iterate over batch (val_beam_size)
                 _upper_ids = []
                 _trie_dict = _trie_list[bid]
                 for _text, _ids in zip(batch_text, batch_ids):
-                    if _text not in unique_pred_list[bid] and len(unique_pred_list[bid])<self.hparams.val_beam_size:
-                        unique_pred_list[bid].append(_text)
-                        unique_ids_list[bid].append(_ids)
-                        if self.hparams.tree_type == "groupId":
+                    if _ids in unique_ids_list[bid]:
+                        continue
+                    else:
+                        if _text in unique_pred_list[bid]:
+                            assert not self.hparams.tree_type == "nodeId"
                             _upper_ids.append([self.tokId2groupId[el] for el in _ids]) 
-                        elif self.hparams.tree_type == "nodeId":
-                            temp = []
-                            eos_pos = (np.array(_ids) == 1).nonzero()[0][0]
-                            for el in _ids[:eos_pos]:
-                                assert len(self.tokId2nodeId[el]) == 1, self.tokId2nodeId[el]
-                                temp.append(list(self.tokId2nodeId[el])[0])
-                            # find the end token
-                            cur_nId = temp[-1]
-                            next_nId = _trie_dict[cur_nId]
-                            end_nId = list(next_nId.intersection(self.tokId2nodeId[1]))
-                            assert len(end_nId) == 1
-                            temp.append(end_nId[0])
-                            _upper_ids.append(temp)
+                        elif len(unique_pred_list[bid]) < self.hparams.val_beam_size:
+                            unique_pred_list[bid].append(_text)
+                            unique_ids_list[bid].append(_ids)
+                            if self.hparams.tree_type == "groupId":
+                                _upper_ids.append([self.tokId2groupId[el] for el in _ids]) 
+                            elif self.hparams.tree_type == "nodeId":
+                                temp = []
+                                eos_pos = (np.array(_ids) == 1).nonzero()[0][0]
+                                for el in _ids[:eos_pos]:
+                                    assert len(self.tokId2nodeId[el]) == 1, self.tokId2nodeId[el]
+                                    temp.append(list(self.tokId2nodeId[el])[0])
+                                # find the end token
+                                cur_nId = temp[-1]
+                                next_nId = _trie_dict[cur_nId]
+                                end_nId = list(next_nId.intersection(self.tokId2nodeId[1]))
+                                assert len(end_nId) == 1
+                                temp.append(end_nId[0])
+                                _upper_ids.append(temp)
+                            else:
+                                assert False
                         else:
-                            assert False
+                            pass
                 # remove from _trie_dict
                 _trie_dict = self._remove_prev_from_trie(_trie_dict, _upper_ids)
                 _trie_list[bid] = _trie_dict
                 if len(unique_pred_list[bid]) >= self.hparams.val_beam_size:
                     over[bid] = 1
-            if (over.count(1) == self.hparams.eval_batch_size) or (self.cnt_over == self.len_test_dataset):
+            if over.count(1) == test_num:
+                break
+            """
+            if (over.count(1) == test_num) or (self.cnt_over == self.len_test_dataset):
                 self.cnt_over += over.count(1)
                 break
-
+            """
+            
         for i in range(len(unique_pred_list)):
             unique_pred_list[i] = unique_pred_list[i][:self.hparams.val_beam_size]
 
@@ -912,16 +979,16 @@ class T5FineTuner(T5BaseClass):
         )
         if return_elem:
             assert (
-                len(list(batch["input"]))
+                len(list(test_input))
                 == len(list(generated_text))
                 == len(list(em_list))
                 == len(list(unique_pred_list))
                 == len(list(unique_ids_list))
             )
             return {
-                "input": list(batch["input"]),
-                "gt": list(batch["output"]),
-                "gt_tok": list(batch["target_ids"].detach().cpu().numpy().tolist()),
+                "input": list(test_input),
+                "gt": list(test_output),
+                "gt_tok": [el.detach().cpu().numpy().tolist() for el in test_target_ids],
                 "pred": list(unique_pred_list),
                 "pred_tok": list(unique_ids_list),
                 "em": list(em_list),
@@ -963,6 +1030,7 @@ class T5FineTuner(T5BaseClass):
 
     def test_step(self, batch, batch_idx):
         ret_dict = self._test_step(batch, batch_idx, return_elem=True)
+        if ret_dict is None: return None 
         self.test_input_list.extend(ret_dict["input"])
         self.test_gt_list.extend(ret_dict["gt"])
         self.test_gt_tok_list.extend(ret_dict["gt_tok"])
@@ -970,8 +1038,9 @@ class T5FineTuner(T5BaseClass):
         self.test_pred_tok_list.extend(ret_dict["pred_tok"])
         self.test_em_score_list.extend(ret_dict["em"])
         self.test_recall_score_list.extend(ret_dict["recall"])
+        self._save_test() 
 
-    def test_epoch_end(self, outputs):
+    def _save_test(self, epoch_end=False):
         os.makedirs(self.hparams.output_dir, exist_ok=True)
         _input = self.gather_list(self.test_input_list)
         _gt = self.gather_list(self.test_gt_list)
@@ -982,13 +1051,7 @@ class T5FineTuner(T5BaseClass):
         _recall = self.gather_list(self.test_recall_score_list)
         assert len(_input) == len(_gt) == len(_pred) == len(_em) == len(_recall) == len(_gt_tok) == len(_pred_tok)
         if self.print:
-            with open(
-                os.path.join(
-                    self.hparams.output_dir,
-                    f"{self.hparams.tree_type}_mbs_{self.hparams.max_beam_search}_result_beam{self.hparams.val_beam_size}.json",
-                ),
-                "w",
-            ) as f:
+            with open(self.test_save_name, "w") as f:
                 json.dump(
                     {
                         "input": _input,
@@ -1001,9 +1064,13 @@ class T5FineTuner(T5BaseClass):
                     },
                     f,
                 )
-            print(
-                f"Saving in {os.path.join(self.hparams.output_dir)}!\nnumber of elements: {len(_input)}"
-            )
-            print(f"EM: {np.array(_em).mean()}")
-            print(f"Recall: {np.array(_recall).mean()}")
+            if epoch_end:
+                print(
+                    f"Saving in {self.test_save_name}!\nnumber of elements: {len(_input)}"
+                )
+                print(f"EM: {np.array(_em).mean()}")
+                print(f"Recall: {np.array(_recall).mean()}")
+
+    def test_epoch_end(self, outputs):
+        self._save_test(epoch_end=True)
 

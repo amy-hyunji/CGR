@@ -25,8 +25,8 @@ from pathlib import Path
 from typing import Any, Optional, Union
 from pytorch_lightning.utilities.types import STEP_OUTPUT
 
-#from knockknock import slack_sender
-#from slack import get_webhook_url, get_channel
+from knockknock import slack_sender
+from slack import get_webhook_url, get_channel
 
 
 def set_seed(seed):
@@ -67,7 +67,7 @@ class PeriFlowTrainer(Trainer):
         super().save_checkpoint(filepath, weights_only=weights_only, storage_options=storage_options)
         pf.upload_checkpoint()
 
-#@slack_sender(webhook_url=get_webhook_url(), channel=get_channel())
+@slack_sender(webhook_url=get_webhook_url(), channel=get_channel())
 def main(args, train_params):
     sys.setrecursionlimit(10000)
     set_seed(args.seed)
@@ -189,7 +189,8 @@ if __name__ == "__main__":
         periflow=hparam.periflow, # new - periflow
         periflow_dir=hparam.periflow_dir, # new - directory of periflow
         limit_val_batches=hparam.limit_val_batches,
-        train_c_emb=hparam.train_c_emb
+        train_c_emb=hparam.train_c_emb,
+        bi_type=hparam.bi_type
     )
     args = argparse.Namespace(**args_dict)
     assert not (args.do_train and args.do_test), "Choose between train|test"

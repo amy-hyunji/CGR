@@ -7,6 +7,9 @@ from argparse import ArgumentParser
 from transformers import AutoTokenizer, AutoModel, T5EncoderModel, T5Tokenizer
 from tqdm import tqdm
 
+from knockknock import slack_sender
+from slack import get_webhook_url, get_channel
+
 def insert(d, k, v):
    if k not in d.keys():
       d[k] = set([v])
@@ -29,11 +32,13 @@ def insert_tokId(nodeId, tokId):
         nodeId_tokIdList[nodeId].append(tokId)
 
 def dump(fname, file):
+   if not os.path.exists(args.save_path):
+      os.makedirs(args.save_path)
    with open(os.path.join(args.save_path, fname), "wb") as f:
       pickle.dump(file, f)
 
 def encode_sp(sen, model, tokenizer):
-   _tok = tokenizer(sen, return_tensors='pt', add_special_tokens=False)
+   _tok = tokenizer(sen, return_tensors='pt', add_special_tokens=False, max_length=3000)
    _input_ids = _tok['input_ids'].cuda()
    _attention_mask = _tok["attention_mask"].cuda()
    _tok_decode = tokenizer.convert_ids_to_tokens(_input_ids[0])
@@ -76,21 +81,45 @@ def construct_sp():
    tokId_emb[1] = last_hidden_state[0]
    return tok_Idlist_dict, tok_Id_dict, tokId_emb
 
+@slack_sender(webhook_url=get_webhook_url(), channel=get_channel())
 def construct_corpus():
    corpusId_corpus_dict = {} # {corpusId: corpus} 
+   corpusId_fileId_dict = {} # {corpusId: fileId} 
+   corpusId_tokenList_dict = {} # {corpusId: [tok]} 
    corpusId_emb_dict = {} # {corpusId: {tok: {emb}}}
    tokId_corpus = {} # {tokid: corpusText}
+   save_cycle = 50000
 
-   total_tok_num = 0; tokId = 2
+   # RESUME! 
+   if os.path.exists(args.save_path):
+      fileId = len(os.listdir(args.save_path))
+      with open(os.path.join(args.save_path, f'{fileId-1}_results.pickle'), 'rb') as f:
+         last_tokId = list(pickle.load(f)['tokId_corpus'].keys())[-1]
+      tokId = last_tokId + 1 
+      corpus_start = save_cycle*fileId+1 
 
+   else:
+      tokId = 2
+      fileId = 0
+      corpus_start = 0
+   
    for corpusId in tqdm(range(corpus_num)):
+      if corpusId < corpus_start:
+         continue
+      if args.split_save and corpusId % save_cycle == 0 and corpusId != 0: 
+         print(f'== Save fileId: {fileId}!')
+         dump(f'{fileId}_results.pickle', {'corpusId_emb_dict': corpusId_emb_dict, 'corpusId_corpus_dict': corpusId_corpus_dict, 'corpusId_tokenList_dict': corpusId_tokenList_dict, 'tokId_corpus': tokId_corpus})
+         corpusId_corpus_dict = {}
+         corpusId_tokenList_dict = {}
+         corpusId_emb_dict = {}
+         tokId_corpus = {}
+         fileId += 1
       elem = corpus_file["corpus"][corpusId]
       context = corpus_file["context"][corpusId]
       _tok_decode, _input_ids, last_hidden_state = encode_context(elem, context, model, tokenizer)
 
       _tok_dict = {}
       assert len(_input_ids[0])==len(last_hidden_state)==len(_tok_decode)
-      total_tok_num += len(last_hidden_state)
 
       for tok_pos, (_text, _ids, _emb) in enumerate(zip(_tok_decode, _input_ids[0], last_hidden_state)):
          tok_Id_dict[tokId] = _text 
@@ -108,11 +137,19 @@ def construct_corpus():
             _tok_dict[1] = tokId_emb[1]
 
       corpusId_corpus_dict[corpusId] = elem
-      corpusId_emb_dict[corpusId] = _tok_dict 
+      corpusId_fileId_dict[corpusId] = fileId
+      corpusId_emb_dict[corpusId] = _tok_dict
+      corpusId_tokenList_dict[corpusId] = list(_tok_dict.keys()) 
 
-   print(f'total_tok_num: {total_tok_num}')
    print(f'tokId: {tokId}')
-   return corpusId_corpus_dict, corpusId_emb_dict, tokId_corpus 
+
+   if args.split_save:
+      print(f'== Save fileId: {fileId}!')
+      dump(f'tokId_emb_{fileId}.pickle', corpusId_emb_dict)
+
+      return corpusId_corpus_dict, corpusId_fileId_dict, tokId_corpus, corpusId_tokenList_dict 
+   else:
+      return corpusId_corpus_dict, corpusId_emb_dict, tokId_corpus, corpusId_tokenList_dict 
 
 def load_data(split):
    if split == "train":
@@ -158,7 +195,7 @@ def bi_construct_dataset(split, first_only=False):
             save_dict['input'].append(_input)
             save_dict['output'].append(_output)
             save_dict['output_tokid'].append([_tok])
-   return save_dict, f"bi_contextualized_first_only_{first_only}.pickle" 
+   return save_dict, f"bi_contextualized_first_only_{first_only}_{split}.pickle" 
 
 
 def construct_group():
@@ -240,9 +277,9 @@ def construct_group_prefix_tree():
    sys.setrecursionlimit(900000000)
 
    constrained_dict = {}
-   for corpusId, corpusDict in corpusId_emb_dict.items():
+   for corpusId, tokIdList in corpusId_tokenList_dict.items():
       cur_dict = constrained_dict # cur_dict[-2]: the node number
-      tokIdList = list(corpusDict.keys())
+      #tokIdList = list(corpusDict.keys())
       tokGroupIdList = [tokId_tokGroupId[el] for el in tokIdList]
       tokGroupIdList = [0] + tokGroupIdList
       
@@ -275,13 +312,18 @@ if __name__ == "__main__":
    parser.add_argument("--t5", action='store_true')
    parser.add_argument("--bi", action='store_true')
    parser.add_argument("--first_only", action='store_true')
+   parser.add_argument("--split_save", action='store_true')
    args = parser.parse_args()
 
-   assert not os.path.exists(args.save_path), f'{args.save_path} already exists!'
+   if args.split_save and os.path.exists(args.save_path):
+      if input('Are you trying to continue? (y/n)') != "y":
+         assert False 
+   else:
+      assert not os.path.exists(args.save_path), f'{args.save_path} already exists!'
 
    if args.first_only and not args.bi: 
       assert(f"First Only is only applied to bi-encoder for now!")
-
+   
    corpus_file = pd.read_csv(args.corpus)
    corpus_file = corpus_file.fillna("")
    corpus = list(corpus_file['corpus'])
@@ -296,51 +338,59 @@ if __name__ == "__main__":
 
    # add pad and </s>
    tok_Idlist_dict, tok_Id_dict, tokId_emb = construct_sp()
-   # add the rest 
-   corpusId_corpus_dict, corpusId_emb_dict, tokId_corpus = construct_corpus()
+   # add the rest - corpusId_emb_dict 
+   if args.split_save:
+      corpusId_corpus_dict, corpusId_fileId_dict, tokId_corpus, corpusId_tokenList_dict = construct_corpus()
+   else:
+      corpusId_corpus_dict, corpusId_emb_dict, tokId_corpus, corpusId_tokenList_dict = construct_corpus()
 
    # Grouping
    tokGroupId_tok_dict, tokId_tokGroupId, tokGroupId_tokIdList = construct_group()
 
    # construct corpus_tree
    group_tree = construct_group_prefix_tree()
-   node_group_set, node_token_set, node_inv_group_set, node_inv_token_set, node_tree = construct_node_prefix_tree()
-   node_sup_set = {'group_set': node_group_set, "token_set": node_token_set, "inv_group_set": node_inv_group_set, "inv_token_set": node_inv_token_set}
+   #node_group_set, node_token_set, node_inv_group_set, node_inv_token_set, node_tree = construct_node_prefix_tree()
+   #node_sup_set = {'group_set': node_group_set, "token_set": node_token_set, "inv_group_set": node_inv_group_set, "inv_token_set": node_inv_token_set}
 
-   if args.bi:
-      train_dict, train_fname = bi_construct_dataset("train", first_only=args.first_only)
-      dev_dict, dev_fname = bi_construct_dataset("dev", first_only=args.first_only)
-      test_dict, test_fname = bi_construct_dataset("test", first_only=args.first_only)
-   else:
-      train_dict, train_fname = construct_dataset('train')
-      dev_dict, dev_fname = construct_dataset('dev')
-      test_dict, test_fname = construct_dataset('test')
 
-   """
-   각 token은 하나씩 존재하고, GroupId를 가지고 있다. 
-   해당 GroupId 안에는 여러 tokId가 존재하고 이는 각각 contextualized tokId로 연결
-   -> GroupId: 이전에서의 tokenId와 비슷한 역할을 한다고 생각하면 된다.
-   둘 다 0부터 시작하고 tokenId의 0은 <pad> 이고 groupId의 0은 <pad>, 1은 </s>
-   + corpus tree는 GroupId로 만들어진다! 
-   """
+
    os.makedirs(args.save_path, exist_ok=True)
-   dump("tokId_emb.pickle", tokId_emb)
-   dump("tokGroupId_tokIdList.pickle", tokGroupId_tokIdList)
-   dump("tokId_tokGroupId.pickle", tokId_tokGroupId)
-   dump("tokId_tokText.pickle", tok_Id_dict)
-   dump("tokId_corpus.pickle", tokId_corpus)
-   dump("groupId_tree.pickle", group_tree)
-   dump("nodeId_tree.pickle", node_tree)
-   dump("nodeId_sup_set.pickle", node_sup_set)
-   dump(train_fname, train_dict)
-   dump(dev_fname, dev_dict)
-   dump(test_fname, test_dict)
+   if args.split_save:
+      #dump("tokId_emb.pickle", tokId_emb)
+      dump("tokGroupId_tokIdList.pickle", tokGroupId_tokIdList)
+      dump("tokId_tokGroupId.pickle", tokId_tokGroupId)
+      dump("tokId_tokText.pickle", tok_Id_dict)
+      dump("tokId_corpus.pickle", tokId_corpus)
+      dump("corpusId_fileId.pickle", corpusId_fileId_dict)
+      dump("groupId_tree.pickle", group_tree)
+   else:
+      if args.bi:
+         train_dict, train_fname = bi_construct_dataset("train", first_only=args.first_only)
+         dev_dict, dev_fname = bi_construct_dataset("dev", first_only=args.first_only)
+         test_dict, test_fname = bi_construct_dataset("test", first_only=args.first_only)
+      else:
+         train_dict, train_fname = construct_dataset('train')
+         dev_dict, dev_fname = construct_dataset('dev')
+         test_dict, test_fname = construct_dataset('test')
+
+      dump("tokGroupId_tokIdList.pickle", tokGroupId_tokIdList)
+      dump("tokId_tokGroupId.pickle", tokId_tokGroupId)
+      dump("tokId_tokText.pickle", tok_Id_dict)
+      dump("tokId_corpus.pickle", tokId_corpus)
+      dump("corpusId_fileId.pickle", corpusId_fileId_dict)
+      dump("groupId_tree.pickle", group_tree)
+      dump("corpusId_emb.pickle", corpusId_emb_dict)
+      dump(train_fname, train_dict)
+      dump(dev_fname, dev_dict)
+      dump(test_fname, test_dict)
+      #dump("nodeId_tree.pickle", node_tree)
+      #dump("nodeId_sup_set.pickle", node_sup_set)
 
    """ 
    dump("tokGroupId_tok.pickle", tokGroupId_tok_dict)
    dump("tokText_TokIdList.pickle", tok_Idlist_dict)
    dump("corpusId_corpus.pickle", corpusId_corpus_dict)
-   dump("corpusId_emb.pickle", corpusId_emb_dict)
    """
 
    print("DONE!!")
+

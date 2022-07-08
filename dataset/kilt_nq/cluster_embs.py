@@ -78,6 +78,7 @@ def do_cluster():
    no_cluster = 0
    total_cluster = 0
    tokText_emb = {}
+
    for id, text in tokId_tokText.items():
        if text in tokText_emb.keys():
            tokText_emb[text].append([id, tokId_embs[id]])
@@ -176,6 +177,8 @@ def do_cluster():
 if __name__ == "__main__":
    parser = ArgumentParser()
    parser.add_argument('--cluster_num', default=15, type=int)
+   parser.add_argument('--filenum', default=14, type=int)
+   parser.add_argument('--is_split', action='store_true')
    parser.add_argument('--do_total', action='store_true')
    parser.add_argument('--cluster_method', default="k-means", type=str)
    parser.add_argument('--basedir', default=None, required=True, type=str)

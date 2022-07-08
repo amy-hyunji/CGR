@@ -91,8 +91,9 @@ def construct_corpus():
    save_cycle = 50000
 
    # RESUME! 
-   if os.path.exists(args.save_path):
+   if os.path.exists(args.save_path) and len(os.listdir(args.save_path))>1:
       fileId = len(os.listdir(args.save_path))
+      print(f'=== # of previous files: {fileId}')
       with open(os.path.join(args.save_path, f'{fileId-1}_results.pickle'), 'rb') as f:
          last_tokId = list(pickle.load(f)['tokId_corpus'].keys())[-1]
       tokId = last_tokId + 1 
@@ -100,7 +101,7 @@ def construct_corpus():
 
    else:
       tokId = 2
-      fileId = 0
+      fileId = 1
       corpus_start = 0
    
    for corpusId in tqdm(range(corpus_num)):
@@ -108,7 +109,7 @@ def construct_corpus():
          continue
       if args.split_save and corpusId % save_cycle == 0 and corpusId != 0: 
          print(f'== Save fileId: {fileId}!')
-         dump(f'{fileId}_results.pickle', {'corpusId_emb_dict': corpusId_emb_dict, 'corpusId_corpus_dict': corpusId_corpus_dict, 'corpusId_tokenList_dict': corpusId_tokenList_dict, 'tokId_corpus': tokId_corpus})
+         dump(f'{fileId}_results.pickle', {'tokId_emb': tokId_emb, 'tok_Idlist_dict': tok_Idlist_dict, 'tok_Id_dict': tok_Id_dict,  'tokId_corpus': tokId_corpus, 'corpusId_fileId_dict': corpusId_fileId_dict, 'corpusId_emb_dict': corpusId_emb_dict, 'corpusId_corpus_dict': corpusId_corpus_dict, 'corpusId_tokenList_dict': corpusId_tokenList_dict})
          corpusId_corpus_dict = {}
          corpusId_tokenList_dict = {}
          corpusId_emb_dict = {}
@@ -145,7 +146,7 @@ def construct_corpus():
 
    if args.split_save:
       print(f'== Save fileId: {fileId}!')
-      dump(f'tokId_emb_{fileId}.pickle', corpusId_emb_dict)
+      dump(f'{fileId}_results.pickle', {'tokId_emb': tokId_emb, 'tok_Idlist_dict': tok_Idlist_dict, 'tok_Id_dict': tok_Id_dict,  'tokId_corpus': tokId_corpus, 'corpusId_fileId_dict': corpusId_fileId_dict, 'corpusId_emb_dict': corpusId_emb_dict, 'corpusId_corpus_dict': corpusId_corpus_dict, 'corpusId_tokenList_dict': corpusId_tokenList_dict})
 
       return corpusId_corpus_dict, corpusId_fileId_dict, tokId_corpus, corpusId_tokenList_dict 
    else:
@@ -338,32 +339,23 @@ if __name__ == "__main__":
 
    # add pad and </s>
    tok_Idlist_dict, tok_Id_dict, tokId_emb = construct_sp()
+   dump(f'0_results.pickle', {'tok_Idlist_dict': tok_Idlist_dict, 'tok_Id_dict': tok_Id_dict, 'tokId_emb': tokId_emb})
    # add the rest - corpusId_emb_dict 
    if args.split_save:
-      corpusId_corpus_dict, corpusId_fileId_dict, tokId_corpus, corpusId_tokenList_dict = construct_corpus()
+      construct_corpus()
    else:
       corpusId_corpus_dict, corpusId_emb_dict, tokId_corpus, corpusId_tokenList_dict = construct_corpus()
 
-   # Grouping
-   tokGroupId_tok_dict, tokId_tokGroupId, tokGroupId_tokIdList = construct_group()
+      # Grouping
+      tokGroupId_tok_dict, tokId_tokGroupId, tokGroupId_tokIdList = construct_group()
 
-   # construct corpus_tree
-   group_tree = construct_group_prefix_tree()
-   #node_group_set, node_token_set, node_inv_group_set, node_inv_token_set, node_tree = construct_node_prefix_tree()
-   #node_sup_set = {'group_set': node_group_set, "token_set": node_token_set, "inv_group_set": node_inv_group_set, "inv_token_set": node_inv_token_set}
+      # construct corpus_tree
+      group_tree = construct_group_prefix_tree()
+      #node_group_set, node_token_set, node_inv_group_set, node_inv_token_set, node_tree = construct_node_prefix_tree()
+      #node_sup_set = {'group_set': node_group_set, "token_set": node_token_set, "inv_group_set": node_inv_group_set, "inv_token_set": node_inv_token_set}
 
+      os.makedirs(args.save_path, exist_ok=True)
 
-
-   os.makedirs(args.save_path, exist_ok=True)
-   if args.split_save:
-      #dump("tokId_emb.pickle", tokId_emb)
-      dump("tokGroupId_tokIdList.pickle", tokGroupId_tokIdList)
-      dump("tokId_tokGroupId.pickle", tokId_tokGroupId)
-      dump("tokId_tokText.pickle", tok_Id_dict)
-      dump("tokId_corpus.pickle", tokId_corpus)
-      dump("corpusId_fileId.pickle", corpusId_fileId_dict)
-      dump("groupId_tree.pickle", group_tree)
-   else:
       if args.bi:
          train_dict, train_fname = bi_construct_dataset("train", first_only=args.first_only)
          dev_dict, dev_fname = bi_construct_dataset("dev", first_only=args.first_only)
@@ -380,11 +372,25 @@ if __name__ == "__main__":
       dump("corpusId_fileId.pickle", corpusId_fileId_dict)
       dump("groupId_tree.pickle", group_tree)
       dump("corpusId_emb.pickle", corpusId_emb_dict)
+      dump("tokId_emb.pickle", tokId_emb)
       dump(train_fname, train_dict)
       dump(dev_fname, dev_dict)
       dump(test_fname, test_dict)
       #dump("nodeId_tree.pickle", node_tree)
       #dump("nodeId_sup_set.pickle", node_sup_set)
+   
+   print("DONE!!")
+
+   # if args.split_save:
+   #    #dump("tokId_emb.pickle", tokId_emb)
+   #    dump("tokGroupId_tokIdList.pickle", tokGroupId_tokIdList)
+   #    dump("tokId_tokGroupId.pickle", tokId_tokGroupId)
+   #    dump("tokId_tokText.pickle", tok_Id_dict)
+   #    dump("tokId_corpus.pickle", tokId_corpus)
+   #    dump("corpusId_fileId.pickle", corpusId_fileId_dict)
+   #    dump("groupId_tree.pickle", group_tree)
+   # else:
+
 
    """ 
    dump("tokGroupId_tok.pickle", tokGroupId_tok_dict)
@@ -392,5 +398,4 @@ if __name__ == "__main__":
    dump("corpusId_corpus.pickle", corpusId_corpus_dict)
    """
 
-   print("DONE!!")
 

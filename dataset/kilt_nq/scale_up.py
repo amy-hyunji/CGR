@@ -5,7 +5,7 @@ prev_corpus = list(pd.read_csv('nq_toy_corpus.csv')['corpus'])
 total_corpus = list(pd.read_csv('../kilt_total_corpus.csv')['corpus'])
 
 prev_len = len(prev_corpus)
-scale = 10 
+scale = 50
 
 random.shuffle(total_corpus)
 additional_corpus = []

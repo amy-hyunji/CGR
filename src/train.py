@@ -180,8 +180,7 @@ if __name__ == "__main__":
         tokId2tokText=hparam.tokId2tokText,  # new - tokId_tokText.pickle 
         tokId2corpus=hparam.tokId2corpus,  # new - tokId_corpus.pickle 
         tree_type=hparam.tree_type,  # new - nodeId_tokIdList.pickle
-        groupId_tree=hparam.groupId_tree, # new
-        nodeId_tree=hparam.nodeId_tree, # new
+        tree_path=hparam.tree_path, # new
         nodeId_sup=hparam.nodeId_sup, # new
         embedding_model=hparam.embedding_model, # new - model used to extract embedding
         max_beam_search=hparam.max_beam_search, # new - select a token which has maximum score in groupId
@@ -190,11 +189,13 @@ if __name__ == "__main__":
         periflow_dir=hparam.periflow_dir, # new - directory of periflow
         limit_val_batches=hparam.limit_val_batches,
         train_c_emb=hparam.train_c_emb,
-        bi_type=hparam.bi_type
+        bi_type=hparam.bi_type,
+        gr_decoder_only=hparam.gr_decoder_only,
+        gr_decoder_only_encoder_ckpt=hparam.gr_decoder_only_encoder_ckpt,
     )
     args = argparse.Namespace(**args_dict)
     assert not (args.do_train and args.do_test), "Choose between train|test"
-    assert args.tree_type in ["groupId", "nodeId"]
+    assert args.tree_type in ["groupId", "nodeId", "clusterId"]
     if args.bi_encoder: assert args.accelerator == "ddp", "ddp is only supported for bi-encoder!"
 
 

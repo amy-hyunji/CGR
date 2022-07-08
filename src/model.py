@@ -205,7 +205,6 @@ class T5BiEncoder(T5BaseClass):
 
         if self.hparams.do_train:
             if self.hparams.bi_type in ['encoder_mean', 'encoder_first']:
-                if self.hparams.bi_type == 'encoder_mean': raise NotImplementedError('Future work')
                 self.model = T5EncoderModel.from_pretrained(self.hparams.model_name_or_path)
             elif self.hparams.bi_type in ['encoder_decoder']:
                 self.model = T5Model.from_pretrained(self.hparams.model_name_or_path)
@@ -224,7 +223,6 @@ class T5BiEncoder(T5BaseClass):
 
         if self.hparams.do_test:
             if self.hparams.bi_type in ['encoder_mean', 'encoder_first']:
-                if self.hparams.bi_type == 'encoder_mean': raise NotImplementedError('Future work')
                 self.model = T5EncoderModel.from_pretrained(self.hparams.test_model_path)
             elif self.hparams.bi_type in ['encoder_decoder']:
                 self.model = T5Model.from_pretrained(self.hparams.test_model_path)
@@ -284,9 +282,14 @@ class T5BiEncoder(T5BaseClass):
             input_ids=query_input_ids,
             attention_mask=query_attention_mask,
         )
-        query_output = query_outputs.last_hidden_state[:, 0]
+        if self.hparams.bi_type in ['encoder_decoder', 'encoder_first']:
+            query_output = query_outputs.last_hidden_state[:, 0]
+        elif self.hparams.bi_type in ['encoder_mean']:
+            query_output = torch.mean(query_outputs.last_hidden_state, dim=1) 
+        else:
+            assert False
 
-        key_outputs = torch.cat([torch.tensor(self.contextualized_tokid2emb[key_input_id[0]]).unsqueeze(0) for key_input_id in key_input_ids], 0) 
+        key_outputs = torch.cat([torch.tensor(self.contextualized_tokid2emb[key_input_id[0]]).unsqueeze(0) for key_input_id in key_input_ids], 0)
         if self.hparams.fp16:
             key_outputs = key_outputs.half()
         return query_output, key_outputs
@@ -322,7 +325,7 @@ class T5BiEncoder(T5BaseClass):
         for idx, (_indice_list, _output, _input) in enumerate(zip(indices, batch['output'], batch['input'])):
             _predict = []; _pred_idx = []
             for _indice in _indice_list:
-                tokId = self.contextualized_token[_indice]
+                tokId = self.contextualized_token[int(_indice)]
                 _pred_idx.append(tokId)
                 if tokId == 0 or tokId == 1:
                     _predict.append(None)
@@ -391,7 +394,23 @@ class T5BiEncoder(T5BaseClass):
         self.test_pred_tok_list.extend(list(pred_tok_list))
         self.test_em_score_list.extend(list(em_score))
         self.test_recall_score_list.extend(list(recall_score))
- 
+
+    def _remove_dup(self, _dict):
+        unique_num = len(set(_dict['input']))
+        ret_dict = {'input': [], 'gt': [], 'gt_tok': [], 'pred': [], 'pred_tok': [], 'em': [], 'recall': []}
+        for _input, _gt, _gt_tok, _pred, _pred_tok, _em, _recall in zip(_dict['input'], _dict['gt'], _dict['gt_tok'], _dict['pred'], _dict['pred_tok'], _dict['em'], _dict['recall']):
+            if _input in ret_dict['input']: continue
+            else:
+                ret_dict['input'].append(_input)
+                ret_dict['gt'].append(_gt)
+                ret_dict['gt_tok'].append(_gt_tok)
+                ret_dict['pred'].append(_pred)
+                ret_dict['pred_tok'].append(_pred_tok)
+                ret_dict['em'].append(_em)
+                ret_dict['recall'].append(_recall)
+        assert len(ret_dict['input']) == unique_num
+        return ret_dict
+
     def test_epoch_end(self, outputs):
         os.makedirs(self.hparams.output_dir, exist_ok=True)
         _input = self.gather_list(self.test_input_list)
@@ -401,9 +420,11 @@ class T5BiEncoder(T5BaseClass):
         _pred_tok = self.gather_list(self.test_pred_tok_list)
         _em = self.gather_list(self.test_em_score_list)
         _recall = self.gather_list(self.test_recall_score_list)
+        save_dict = {'input': _input, 'gt': _gt, 'gt_tok': _gt_tok, 'pred': _pred, 'pred_tok': _pred_tok, 'em': _em, 'recall': _recall}
+        save_dict = self._remove_dup(save_dict)
         assert len(_input) == len(_gt) == len(_pred) == len(_em) == len(_recall) == len(_gt_tok) == len(_pred_tok)
         if self.print:
-            filename = f"{self.hparams.test_name}_group_{self.hparams.groupId_tree}_mbs_{self.hparams.max_beam_search}_result_beam{self.hparams.val_beam_size}.json"
+            filename = f"{self.hparams.test_name}_result_beam{self.hparams.val_beam_size}.json"
             with open(
                 os.path.join(
                     self.hparams.output_dir,
@@ -412,15 +433,7 @@ class T5BiEncoder(T5BaseClass):
                 "w",
             ) as f:
                 json.dump(
-                    {
-                        "input": _input,
-                        "gt": _gt,
-                        "gt_tok": _gt_tok,
-                        "pred": _pred,
-                        "pred_tok": _pred_tok,
-                        "em": _em,
-                        "recall": _recall,
-                    },
+                    save_dict,
                     f,
                 )
             print(
@@ -456,6 +469,28 @@ class T5FineTuner(T5BaseClass):
                 self.model = T5ForConditionalGeneration.from_pretrained(
                     self.hparams.model_name_or_path, config=config
                 )
+
+            if self.hparams.gr_decoder_only_encoder_ckpt is not None:
+                print(f'===== Loading encoder ckpt from.. {self.hparams.gr_decoder_only_encoder_ckpt}')
+                m = torch.load(os.path.join(self.hparams.gr_decoder_only_encoder_ckpt, "pytorch_model.bin"))
+                model_dict = self.model.state_dict()
+                for k in m.keys():
+                    if 'decoder.embed_tokens' in k:
+                        continue
+                    if k in model_dict:
+                        pname = k
+                        pval = m[k]
+                        model_dict[pname] = pval.clone().to(model_dict[pname].device)
+
+                self.model.load_state_dict(model_dict, strict=False)
+
+                #self.model.load_state_dict(torch.load(os.path.join(self.hparams.gr_decoder_only_encoder_ckpt, "pytorch_model.bin")), strict=False)
+            else:
+                print(f'===== Encoder ckpt is same as Decoder ckpt')
+
+            if self.hparams.gr_decoder_only:
+                for n, p in self.model.get_encoder().named_parameters():
+                    p.requires_grad = False
 
             self.tokenizer = T5Tokenizer.from_pretrained(
                 self.hparams.model_name_or_path
@@ -515,8 +550,7 @@ class T5FineTuner(T5BaseClass):
             self.hparams.embedding_model
         )
         ### REMEMBER!!! Values in trie_dict is "GroupID" not "tokId"
-        self.group_trie = pickle.load(open(os.path.join(self.hparams.dataset, self.hparams.groupId_tree), "rb"))
-        self.node_trie = pickle.load(open(os.path.join(self.hparams.dataset, self.hparams.nodeId_tree), "rb"))
+        self.trie = pickle.load(open(os.path.join(self.hparams.dataset, self.hparams.tree_path), "rb"))
         self.contextualized_tokid2emb = pickle.load(
             open(os.path.join(self.hparams.dataset, self.hparams.contextualized_file), "rb")
         )
@@ -528,11 +562,12 @@ class T5FineTuner(T5BaseClass):
         self.groupId2tokId= pickle.load(open(os.path.join(self.hparams.dataset, self.hparams.groupId2tokIdList), "rb"))
         self.tokId2groupId = pickle.load(open(os.path.join(self.hparams.dataset, self.hparams.tokId2groupId), 'rb'))
         self.tokId2tokText = pickle.load(open(os.path.join(self.hparams.dataset, self.hparams.tokId2tokText), 'rb'))
-        nodeId_sup = pickle.load(open(os.path.join(self.hparams.dataset, self.hparams.nodeId_sup), 'rb'))
-        self.nodeId2groupdId = nodeId_sup['group_set']
-        self.nodeId2tokId = nodeId_sup['token_set']
-        self.groupId2nodeId = nodeId_sup['inv_group_set']
-        self.tokId2nodeId = nodeId_sup['inv_token_set']
+        if self.hparams.tree_type == "nodeId":
+            nodeId_sup = pickle.load(open(os.path.join(self.hparams.dataset, self.hparams.nodeId_sup), 'rb'))
+            self.nodeId2groupdId = nodeId_sup['group_set']
+            self.nodeId2tokId = nodeId_sup['token_set']
+            self.groupId2nodeId = nodeId_sup['inv_group_set']
+            self.tokId2nodeId = nodeId_sup['inv_token_set']
         #self.eos_list = list(self.groupId2tokId[1])
 
         self.cnt_over = 0
@@ -644,12 +679,7 @@ class T5FineTuner(T5BaseClass):
         # starts with pad token & groupId for pad token is -1
         assert input_ids[0] == 0
         if trie_dict is None:
-            if self.hparams.tree_type == "groupId":
-                trie_dict = self.group_trie
-            elif self.hparams.tree_type == "nodeId":
-                trie_dict = self.node_trie
-            else:
-                assert False
+            trie_dict = self.trie
         return self._get_from_trie(input_ids, trie_dict, score)
 
     """
@@ -677,6 +707,14 @@ class T5FineTuner(T5BaseClass):
                 next_nId_List = list(trie_dict[NodeId])
                 tokIdList = self._get_tokIdList_from_nodeIdList(next_nId_List, score)
                 return tokIdList
+        elif self.hparams.tree_type == "clusterId":
+            if len(input_ids) == 0:
+                return list(trie_dict.keys()) 
+            else:
+                if input_ids[0] in list(trie_dict.keys()):
+                    return self._get_from_trie(input_ids[1:], trie_dict[clusterId], score)
+                else:
+                    return []
         else:
             raise NotImplementedError('tree type should be either groupId_tree or nodeId_tree!')
 
@@ -866,14 +904,7 @@ class T5FineTuner(T5BaseClass):
         test_target_masks = batch['target_mask'][start_num:]
         assert len(test_output) == test_num, f'test_output: {len(test_output)}\ttest_num: {test_num}'
 
-        if self.hparams.tree_type == "groupId":
-            _trie_list = [copy.deepcopy(self.group_trie) for _ in range(test_num)]
-            #_trie_dict = copy.deepcopy(self.group_trie)
-        elif self.hparams.tree_type == "nodeId":
-            _trie_list = [copy.deepcopy(self.node_trie) for _ in range(test_num)]
-            #_trie_dict = copy.deepcopy(self.node_trie)
-        else:
-            assert False
+        _trie_list = [copy.deepcopy(self.trie) for _ in range(test_num)]
         
         #unique_pred = []; unique_ids = []
         unique_pred_list = [[] for _ in range(test_num)] 
@@ -881,12 +912,10 @@ class T5FineTuner(T5BaseClass):
         over = [0]*test_num
         
         for _iter in range(self.hparams.val_beam_size*2):
-            """
             print("="*80)
             print(f"iter: {_iter} // DONE: {over.count(1)} / {test_num}")
             print(unique_pred_list)
             print("="*80)
-            """
             _generated_ids = self.model.generate(
                 test_source_ids, 
                 attention_mask=test_source_masks,

@@ -166,7 +166,6 @@ if __name__ == "__main__":
 
    # tok_Idlist_dict -> construct_group -> tokGroupId_tokIdList, tokId_tokGroupId
    # tok_Id_dict
-   """
    print(f'=== Construct Group')
    tok_Idlist_dict = {}; tok_Id_dict = {}; tokId_emb = {}
    for idx in tqdm(range(args.filenum)):
@@ -201,8 +200,6 @@ if __name__ == "__main__":
    del tok_Idlist_dict
    del tokGroupId_tokIdList
    del tok_Id_dict 
-   """
-   tokId_tokGroupId = pickle.load(open(os.path.join(args.save_path, "tokId_tokGroupId.pickle"), "rb"))
 
    # corpusId_tokenList_dict -> construct_group_prefix_tree -> group_tree 
    # construct tokId_corpus, corpusId_fileId_dict, corpusId_emb_dict 

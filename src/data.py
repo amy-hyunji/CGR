@@ -1,10 +1,69 @@
 import os
+import sys
 import torch
 import pickle
 import pandas as pd
 
 from torch.utils.data import Dataset
 
+class JOINTDataset(Dataset):
+    def __init__(self, tokenizer, split, hparams):
+        self.hparams = hparams
+        if split == "train":
+            data_path = self.hparams.train_file
+        elif split == "validation":
+            data_path = self.hparams.dev_file
+        elif split == "test":
+            data_path = self.hparams.test_file
+        else:
+            raise NotImplementedError(f"Inappropriate split type: {split}")
+        
+        assert data_path.endswith(".csv"), "Only csv file is possible!"
+        self.dataset = pd.read_csv(os.path.join(self.hparams.dataset, data_path)) # key - input, output, output_tokid, output_tokemb
+        self.len = len(self.dataset)
+        if torch.cuda.current_device() == 0:
+            print(
+                f"@@@ Loading from {os.path.join(self.hparams.dataset, data_path)}: {self.len}"
+            )
+
+        self.tokenizer = tokenizer
+
+    def __len__(self):
+        return self.len 
+
+    def convert_to_features(self, batch, idx):
+        input_ = batch['query']
+        title_ = batch['title']
+        context_ = batch['context']
+        if type(context_) != str:
+            context_ = ""
+
+        source = self.tokenizer.batch_encode_plus(
+            [input_],
+            max_length=self.hparams.max_input_length,
+            padding="max_length",
+            truncation=True,
+            return_tensors="pt",
+        )
+
+        return source, input_, title_, context_ 
+
+    def __getitem__(self, idx):
+        source, input_, title_, context_ = self.convert_to_features(
+            self.dataset.iloc[idx], idx
+        )
+        source_ids = source["input_ids"].squeeze()
+        src_mask = source["attention_mask"].squeeze()
+
+        #print(f'source_ids: {source_ids}\nsource_mask: {src_mask}\ntitle: {title_}\ncontext: {context_}\ninput: {input_}\n\n')
+        return {
+            "source_ids": source_ids,
+            "source_mask": src_mask,
+            "title": title_, 
+            "context": context_, 
+            "input": input_,
+            "output": title_,
+        }
 
 class GENREDataset(Dataset):
     def __init__(self, tokenizer, split, hparams, tokid2emb):

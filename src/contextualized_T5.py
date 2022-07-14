@@ -15,11 +15,13 @@
 """ PyTorch T5 model."""
 
 
+import os
+import sys
 import copy
 import math
 import pickle
-import os
 import warnings
+import numpy
 from typing import Optional, Tuple, Union
 
 import torch
@@ -27,16 +29,16 @@ from torch import nn
 from torch.nn import CrossEntropyLoss
 from torch.utils.checkpoint import checkpoint
 
-from ...activations import ACT2FN
-from ...modeling_outputs import (
+from transformers.activations import ACT2FN
+from transformers.modeling_outputs import (
     BaseModelOutput,
     BaseModelOutputWithPastAndCrossAttentions,
     Seq2SeqLMOutput,
     Seq2SeqModelOutput,
 )
-from ...modeling_utils import PreTrainedModel
-from ...pytorch_utils import find_pruneable_heads_and_indices, prune_linear_layer
-from ...utils import (
+from transformers.modeling_utils import PreTrainedModel
+from transformers.pytorch_utils import find_pruneable_heads_and_indices, prune_linear_layer
+from transformers.utils import (
     DUMMY_INPUTS,
     DUMMY_MASK,
     add_start_docstrings,
@@ -45,8 +47,11 @@ from ...utils import (
     logging,
     replace_return_docstrings,
 )
-from ...utils.model_parallel_utils import assert_device_map, get_device_map
-from .configuration_t5 import T5Config
+from transformers.utils.model_parallel_utils import assert_device_map, get_device_map
+from transformers import T5Config
+
+
+logger = logging.get_logger(__name__)
 
 
 logger = logging.get_logger(__name__)
@@ -764,7 +769,7 @@ class T5PreTrainedModel(PreTrainedModel):
         factor = self.config.initializer_factor  # Used for testing weights initialization
         if isinstance(module, T5LayerNorm):
             module.weight.data.fill_(factor * 1.0)
-        elif isinstance(module, (T5Model, T5WithContext, T5ForConditionalGeneration, T5EncoderModel)):
+        elif isinstance(module, (T5Model, T5ForConditionalGeneration, T5EncoderModel)):
             # Mesh TensorFlow embeddings initialization
             # See https://github.com/tensorflow/mesh/blob/fa19d69eafc9a482aff0b59ddd96b025c0cb207d/mesh_tensorflow/layers.py#L1624
             module.shared.weight.data.normal_(mean=0.0, std=factor * 1.0)
@@ -833,11 +838,12 @@ class T5PreTrainedModel(PreTrainedModel):
 
 
 class T5Stack(T5PreTrainedModel):
-    def __init__(self, config, embed_tokens=None):
+    def __init__(self, config, embed_tokens=None, cond=False, train_c_emb=False):
         super().__init__(config)
-
         self.embed_tokens = embed_tokens
         self.is_decoder = config.is_decoder
+        self.cond = cond 
+        self.train_c_emb = train_c_emb 
 
         self.block = nn.ModuleList(
             [T5Block(config, has_relative_attention_bias=bool(i == 0)) for i in range(config.num_layers)]
@@ -906,6 +912,7 @@ class T5Stack(T5PreTrainedModel):
         output_hidden_states=None,
         return_dict=None,
     ):
+
         # Model parallel
         if self.model_parallel:
             torch.cuda.set_device(self.first_device)
@@ -931,9 +938,31 @@ class T5Stack(T5PreTrainedModel):
             err_msg_prefix = "decoder_" if self.is_decoder else ""
             raise ValueError(f"You have to specify either {err_msg_prefix}input_ids or {err_msg_prefix}inputs_embeds")
 
-        if inputs_embeds is None:
-            assert self.embed_tokens is not None, "You have to initialize the model with valid token embeddings"
-            inputs_embeds = self.embed_tokens(input_ids)
+
+        if self.cond:
+            if inputs_embeds is None:
+                assert self.embed_tokens is not None, "You have to initialize the model with valid token embeddings"
+                if type(self.embed_tokens)==dict:
+                    #assert False, f"is_decoder: {self.is_decoder}"
+                    if not self.is_decoder:
+                        assert False, "Only Decoder is allowed to have dict() for embed_tokens"
+                    if self.train_c_emb:
+                        assert False, "Train_c_emb should not use dict() as embed_token!"
+                    _input_ids = copy.deepcopy(input_ids)
+                    _input_ids = _input_ids.detach().cpu().numpy()
+                    input_embeds = []
+                    for bs in _input_ids: 
+                        _input_embeds = [self.embed_tokens[el] for el in bs]
+                        input_embeds.append(_input_embeds)
+                    inputs_embeds = torch.tensor(input_embeds).to(input_ids.device)
+                else:
+                    if self.is_decoder and not self.train_c_emb: 
+                        assert False, "Decoder should have dict() for embed_tokens"
+                    inputs_embeds = self.embed_tokens(input_ids)
+        else:
+            if inputs_embeds is None:
+                assert self.embed_tokens is not None, "You have to initialize the model with valid token embeddings"
+                inputs_embeds = self.embed_tokens(input_ids)
 
         batch_size, seq_length = input_shape
 
@@ -1333,6 +1362,7 @@ class T5Model(T5PreTrainedModel):
         return self.shared
 
     def set_input_embeddings(self, new_embeddings):
+        assert False
         self.shared = new_embeddings
         self.encoder.set_input_embeddings(new_embeddings)
         self.decoder.set_input_embeddings(new_embeddings)
@@ -1481,23 +1511,41 @@ class T5ForConditionalGeneration(T5PreTrainedModel):
 
     def __init__(self, config: T5Config):
         super().__init__(config)
-        print(f"Loading from local!! Using New one")
+        print(f"@@@@@@ Loading from local!! Using New one")
         self.model_dim = config.d_model
+        self.fp16 = config.fp16
+        self.do_test = config.do_test
+        self.train_c_emb = config.train_c_emb
 
-        self.shared = nn.Embedding(config.vocab_size, config.d_model)
-        self.dec_shared, self.lm_head = self.set_lm_head(config.contextualized_file) 
+        if config.freeze_vocab_emb:
+            print("!! Freezing Vocab Embedding and loading from *vocab_emb.pickle*")
+            emb = pickle.load(open("vocab_emb.pickle", "rb"))
+            self.shared = nn.Embedding.from_pretrained(emb.weight, freeze=True)
+        else:
+            self.shared = nn.Embedding(config.vocab_size, config.d_model)
+       
+        if self.do_test and self.train_c_emb: 
+            self.lm_head = nn.Embedding(int(config.contextualized_emb_num), config.d_model)
+        else:
+            self.dec_shared, self.lm_head = self.set_lm_head(config.contextualized_file)
+        if self.train_c_emb:
+            config.tie_word_embeddings = False
 
         encoder_config = copy.deepcopy(config)
         encoder_config.is_decoder = False
         encoder_config.use_cache = False
         encoder_config.is_encoder_decoder = False
-        self.encoder = T5Stack(encoder_config, self.shared)
+        self.encoder = T5Stack(encoder_config, self.shared, cond=True)
 
         decoder_config = copy.deepcopy(config)
         decoder_config.is_decoder = True
         decoder_config.is_encoder_decoder = False
         decoder_config.num_layers = config.num_decoder_layers
-        self.decoder = T5Stack(decoder_config, self.dec_shared)
+        
+        if self.train_c_emb:
+            self.decoder = T5Stack(decoder_config, self.lm_head, cond=True, train_c_emb=True)
+        else:
+            self.decoder = T5Stack(decoder_config, self.dec_shared, cond=True)
 
 
         # Initialize weights and apply final processing
@@ -1536,6 +1584,7 @@ class T5ForConditionalGeneration(T5PreTrainedModel):
         return self.shared
 
     def set_input_embeddings(self, new_embeddings):
+        assert False
         self.shared = new_embeddings
         self.encoder.set_input_embeddings(new_embeddings)
         self.decoder.set_input_embeddings(new_embeddings)
@@ -1543,12 +1592,12 @@ class T5ForConditionalGeneration(T5PreTrainedModel):
     def set_lm_head(self, file):
         tokid_emb_dict = pickle.load(open(file, "rb"))
         contextualized_emb_list = list(tokid_emb_dict.values()) 
-        """
-        for idx_dict in idx_emb_dict.values():
-            for emb in idx_dict.values():
-                contextualized_emb_list.append(emb)
-        """
-        contextualized_emb_list = torch.tensor(contextualized_emb_list)
+        if self.train_c_emb:
+            contextualized_emb_list = nn.Embedding.from_pretrained(torch.FloatTensor(contextualized_emb_list), freeze=self.do_test)
+        else:
+            contextualized_emb_list = torch.tensor(contextualized_emb_list)
+        if self.fp16:
+            contextualized_emb_list = contextualized_emb_list.half()
         return tokid_emb_dict, contextualized_emb_list #[contextualized_emb_num, 768]
 
     def set_output_embeddings(self, new_embeddings):
@@ -1556,7 +1605,7 @@ class T5ForConditionalGeneration(T5PreTrainedModel):
         self.lm_head = new_embeddings
 
     def get_output_embeddings(self):
-        print(self.lm_head)
+        #print(self.lm_head)
         #assert False
         return self.lm_head
 
@@ -1679,13 +1728,15 @@ class T5ForConditionalGeneration(T5PreTrainedModel):
         # lm_head => [contextualized embedding 개수, 768]
         # lm_logits => [bs, output_token 개수,  contextualized_embedding]
         # labels => [bs,  output_token 개수]
-        print(f"*** Shape of sequence_output: {sequence_output.shape}") #[1, 6, 768] / [2, 10, 768]
-        print(f"*** Shape of self.lm_head: {self.lm_head.shape}") #[4, 768]
-        lm_logits = torch.einsum("bod,cd->boc", sequence_output, self.lm_head) 
-        print(f"*** Shape of lm_logits: {lm_logits.shape}") #[4, 1, 6]
-        print(f"*** Shape of labels: {labels.shape}") #[1, 6]
-        #print(f"## lm_logits: {lm_logits}")
-        print(f"## labels: {labels}")
+        
+        if self.train_c_emb:
+            lm_head_tensor = self.lm_head.weight.clone().detach().requires_grad_(False)
+            lm_head_tensor = lm_head_tensor.to(sequence_output.device)
+            lm_logits = torch.einsum("bod,cd->boc", sequence_output, lm_head_tensor) 
+        else:
+            if self.lm_head.get_device() != sequence_output.get_device():
+                self.lm_head = self.lm_head.to(sequence_output.device)
+            lm_logits = torch.einsum("bod,cd->boc", sequence_output, self.lm_head) 
 
         loss = None
         if labels is not None:
@@ -1979,10 +2030,7 @@ class _T5ForConditionalGeneration(T5PreTrainedModel):
             # See https://github.com/tensorflow/mesh/blob/fa19d69eafc9a482aff0b59ddd96b025c0cb207d/mesh_tensorflow/transformer/transformer.py#L586
             sequence_output = sequence_output * (self.model_dim**-0.5)
 
-        print(f"Shape of sequence output: {sequence_output.shape}") #[2, 10,  768]
         lm_logits = self.lm_head(sequence_output)
-        print(f"Shape of lm_logits: {lm_logits.shape}") #[bs, output dim, vocab size]
-        print(f"Shape of labels: {labels.shape}") # [2, 10]
 
         loss = None
         if labels is not None:

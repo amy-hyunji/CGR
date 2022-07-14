@@ -13,10 +13,12 @@ import torch.nn as nn
 import pytorch_lightning as pl
 import torch.distributed as dist
 
-from data import GENREDataset
+from data import GENREDataset, JOINTDataset
 from blob import get_blob_info, upload_directory_to_blob
 
 from grounded_T5 import T5ForConditionalGeneration as grounded_T5
+from joint_T5 import T5Model as joint_T5
+from contextualized_T5 import T5ForConditionalGeneration as contextualized_T5
 from transformers import T5Config, T5Tokenizer, T5Model, T5EncoderModel, T5ForConditionalGeneration, BertTokenizer, Adafactor, AutoTokenizer
 from torch.utils.data import DataLoader
 from itertools import chain
@@ -37,14 +39,6 @@ class T5BaseClass(pl.LightningModule):
         else:
             self.print = False 
 
-    def _get_dataset(self, split):
-        dataset = GENREDataset(
-            tokenizer=self.tokenizer,
-            split=split,
-            hparams=self.hparams,
-            tokid2emb=self.contextualized_tokid2emb 
-        )
-        return dataset
 
     def train_dataloader(self):
         train_dataset = self._get_dataset(split="train")
@@ -250,6 +244,16 @@ class T5BiEncoder(T5BaseClass):
         self.loss_fct = nn.CrossEntropyLoss()
         self.decoder_input_ids, self.decoder_attention_mask = self.get_decoder_input()
 
+
+    def _get_dataset(self, split):
+        dataset = GENREDataset(
+            tokenizer=self.tokenizer,
+            split=split,
+            hparams=self.hparams,
+            tokid2emb=self.contextualized_tokid2emb 
+        )
+        return dataset
+
     def get_decoder_input(self):
         _tok = self.tokenizer("</s>", return_tensors='pt', add_special_tokens=False)
         _input_ids = _tok['input_ids'].to(self.device)
@@ -442,6 +446,61 @@ class T5BiEncoder(T5BaseClass):
             print(f"EM: {np.array(_em).mean()}")
             print(f"Recall: {np.array(_recall).mean()}")
 
+
+    def configure_optimizers(self):
+        model = self.model
+        no_decay = ["bias", "LayerNorm.weight"]
+        optimizer_grouped_parameters = [
+            {
+                "params": [
+                    p
+                    for n, p in model.named_parameters()
+                    if not any(nd in n for nd in no_decay)
+                ],
+                "weight_decay": self.hparams.weight_decay,
+            },
+            {
+                "params": [
+                    p
+                    for n, p in model.named_parameters()
+                    if any(nd in n for nd in no_decay)
+                ],
+                "weight_decay": 0.0,
+            },
+        ]
+
+        optimizer = Adafactor(
+            optimizer_grouped_parameters,
+            lr=self.hparams.learning_rate,
+            warmup_init=False,
+            scale_parameter=False,
+            relative_step=False,
+        )
+        self.opt = optimizer
+
+        if self.hparams.lr_scheduler == "constant":
+            return [optimizer]
+        elif self.hparams.lr_scheduler == "exponential":
+            len_data = len(self.train_dataloader())
+            denominator = self.hparams.n_gpu
+            steps_per_epoch = (
+                (len_data // denominator) + 1
+            ) // self.hparams.gradient_accumulation_steps
+            scheduler = torch.optim.lr_scheduler.OneCycleLR(
+                optimizer,
+                max_lr=self.hparams.learning_rate,
+                steps_per_epoch=steps_per_epoch,
+                pct_start=0.1,
+                epochs=self.hparams.num_train_epochs,
+                anneal_strategy="linear",
+                cycle_momentum=False,
+            )
+            return [optimizer], [
+                {"scheduler": scheduler, "interval": "step", "name": "learning_rate"}
+            ]
+        else:
+            raise NotImplementedError("Choose lr_schduler from (constant|exponential)")
+
 class T5FineTuner(T5BaseClass):
     def __init__(self, args):
         super(T5FineTuner, self).__init__()
@@ -462,11 +521,11 @@ class T5FineTuner(T5BaseClass):
         # If in training mode, load ckpt for training
         if self.hparams.do_train:
             if self.hparams.train_c_emb:
-                self.model = T5ForConditionalGeneration.from_pretrained(
+                self.model = contextualized_T5.from_pretrained(
                     self.hparams.model_name_or_path, config=config, ignore_mismatched_sizes=True
                 )
             else:
-                self.model = T5ForConditionalGeneration.from_pretrained(
+                self.model = contextualized_T5.from_pretrained(
                     self.hparams.model_name_or_path, config=config
                 )
 
@@ -509,7 +568,7 @@ class T5FineTuner(T5BaseClass):
 
         # If in testing mode, load ckpt for inference
         if self.hparams.do_test:
-            self.model = T5ForConditionalGeneration.from_pretrained(
+            self.model = contextualized_T5.from_pretrained(
                 self.hparams.test_model_path, config=config, ignore_mismatched_sizes=True
             )
             self.tokenizer = T5Tokenizer.from_pretrained(self.hparams.test_model_path)
@@ -572,6 +631,15 @@ class T5FineTuner(T5BaseClass):
 
         self.cnt_over = 0
         self.len_test_dataset = len(self.test_dataloader())
+
+    def _get_dataset(self, split):
+        dataset = GENREDataset(
+            tokenizer=self.tokenizer,
+            split=split,
+            hparams=self.hparams,
+            tokid2emb=self.contextualized_tokid2emb 
+        )
+        return dataset
 
     def _get_max_tokId_from_tokIdList(self, tokIdList, score):
         tokIdList = sorted(tokIdList)
@@ -1103,3 +1171,356 @@ class T5FineTuner(T5BaseClass):
     def test_epoch_end(self, outputs):
         self._save_test(epoch_end=True)
 
+
+    def configure_optimizers(self):
+        model = self.model
+        no_decay = ["bias", "LayerNorm.weight"]
+        optimizer_grouped_parameters = [
+            {
+                "params": [
+                    p
+                    for n, p in model.named_parameters()
+                    if not any(nd in n for nd in no_decay)
+                ],
+                "weight_decay": self.hparams.weight_decay,
+            },
+            {
+                "params": [
+                    p
+                    for n, p in model.named_parameters()
+                    if any(nd in n for nd in no_decay)
+                ],
+                "weight_decay": 0.0,
+            },
+        ]
+
+        optimizer = Adafactor(
+            optimizer_grouped_parameters,
+            lr=self.hparams.learning_rate,
+            warmup_init=False,
+            scale_parameter=False,
+            relative_step=False,
+        )
+        self.opt = optimizer
+
+        if self.hparams.lr_scheduler == "constant":
+            return [optimizer]
+        elif self.hparams.lr_scheduler == "exponential":
+            len_data = len(self.train_dataloader())
+            denominator = self.hparams.n_gpu
+            steps_per_epoch = (
+                (len_data // denominator) + 1
+            ) // self.hparams.gradient_accumulation_steps
+            scheduler = torch.optim.lr_scheduler.OneCycleLR(
+                optimizer,
+                max_lr=self.hparams.learning_rate,
+                steps_per_epoch=steps_per_epoch,
+                pct_start=0.1,
+                epochs=self.hparams.num_train_epochs,
+                anneal_strategy="linear",
+                cycle_momentum=False,
+            )
+            return [optimizer], [
+                {"scheduler": scheduler, "interval": "step", "name": "learning_rate"}
+            ]
+        else:
+            raise NotImplementedError("Choose lr_schduler from (constant|exponential)")
+
+class T5JointTuner(T5BaseClass):
+    def __init__(self, args):
+        super(T5JointTuner, self).__init__()
+        self.save_hyperparameters(args)
+        '''
+        config = T5Config.from_pretrained(self.hparams.model_name_or_path)
+        config.update({"fp16": self.hparams.fp16})
+        config.update({"train_c_emb": self.hparams.train_c_emb}) 
+        config.update({"do_test": self.hparams.do_test}) 
+        config.update(
+            {"contextualized_emb_num": self.hparams.contextualized_emb_num}
+        )
+        config.update(
+            {"contextualized_file": os.path.join(self.hparams.dataset, self.hparams.contextualized_file)}
+        )  # tokId_emb.pickle
+        config.update({"freeze_vocab_emb": self.hparams.freeze_vocab_emb})
+        '''
+        if self.hparams.do_train:
+            self.model = joint_T5.from_pretrained(
+                self.hparams.model_name_or_path #, config=config
+            )
+            self.emb_enc = T5EncoderModel.from_pretrained(
+                self.hparams.model_name_or_path
+            )
+            self.tokenizer = T5Tokenizer.from_pretrained(
+                self.hparams.model_name_or_path
+            )
+
+            if self.print:
+                print(f'@@@ Loading Model from {self.hparams.model_name_or_path}')
+
+            
+        if self.hparams.do_test:
+            raise NotImplementedError('Code for Test Case is Not Implemented Yet')
+        self.loss_fct = nn.CrossEntropyLoss()
+        self.val_loss = []; self.val_em = []
+    
+    def _get_dataset(self, split):
+        dataset = JOINTDataset(self.tokenizer, split, self.hparams)
+        return dataset
+
+    def forward(self, input_ids, attention_mask, decoder_inputs_embeds, decoder_attention_mask):
+        return self.model(
+                    input_ids, 
+                    attention_mask=attention_mask, 
+                    decoder_inputs_embeds=decoder_inputs_embeds,
+                    decoder_attention_mask=decoder_attention_mask
+                ) 
+        
+    def _get_embedding(self, batch):            
+        last_hidden_state = self(
+                            input_ids=batch["source_ids"], 
+                            attention_mask=batch["source_mask"], 
+                            decoder_inputs_embeds=batch["target_emb"],
+                            decoder_attention_mask=batch["target_mask"],
+                            ).last_hidden_state
+        assert last_hidden_state.shape[1] == batch["target_emb"].shape[1]
+        return last_hidden_state # [bs, target_ids num, 768]
+
+    def _calculate_similarity(self, batch):
+        preds = self._get_embedding(batch) # output embedding of model
+        gts = batch['target_emb'] 
+        assert preds.shape == gts.shape
+        # target_mask를 기반으로 pad token 아닌 애들만 냅두기
+        preds, gts = self._remove_pad_tokens(batch['target_mask'], preds, gts)
+        return torch.inner(preds, gts)
+
+    def _remove_pad_tokens(self, target_mask, preds, gts):
+        non_mask = torch.count_nonzero(target_mask, dim=1)
+        assert non_mask.shape[0] == preds.shape[0] == gts.shape[0]
+        pred_list = []; gt_list = []
+        for _non_mask, _pred, _gt in zip(non_mask, preds, gts):
+            _pred = _pred[:_non_mask, :]
+            _gt = _gt[:_non_mask, :]
+            pred_list.append(_pred); gt_list.append(_gt)
+        preds = torch.cat(pred_list, dim=0)
+        gts = torch.cat(gt_list, dim=0)
+        assert preds.shape == gts.shape
+        return preds, gts 
+
+    def _calculate_loss(self, batch, get_em=False):
+        sim = self._calculate_similarity(batch)
+        labels = torch.arange(sim.size(0)).long().to(self.device)
+        loss = self.loss_fct(sim, labels)
+        if get_em:
+            sub_em = self._calculate_sub_em(sim, labels)
+            print(f'loss: {loss}\tem: {sub_em}')
+            return loss, sub_em
+        return loss, None
+
+    def _get_end_tok_emb(self):
+        _, end_emb = self._encode_sp("</s>")
+        return end_emb
+
+
+    def _tokenize(self, sen):
+        _tok = self.tokenizer(sen, return_tensors='pt', add_special_tokens=False, max_length=600)
+        _tok_decode = self.tokenizer.convert_ids_to_tokens(_tok['input_ids'][0])
+        return _tok, _tok_decode
+
+    def _encode_sp(self, sen):
+        _tok, _tok_decode = self._tokenize(sen)
+        _input_ids = _tok['input_ids'].to(self.device)
+        _attention_mask = _tok["attention_mask"].to(self.device)
+        model_ret = self.emb_enc(input_ids=_input_ids, attention_mask=_attention_mask, return_dict=True)
+        last_hidden_state = model_ret['last_hidden_state'][0]
+        #last_hidden_state = last_hidden_state.detach()
+        return _tok_decode, last_hidden_state
+
+    def _emb_enc_forward(self, title, context, end_emb):
+        if context == "":
+            context = title 
+        else:
+            context = " ".join([title, context])
+        context = context.strip()
+
+        # get embedding of context
+        _tok_decoder, last_hidden_state = self._encode_sp(context)
+
+        # check number of tokens of title 
+        _, _title_tok_list = self._tokenize(title)
+        _title_tok_num = len(_title_tok_list)
+        assert _title_tok_list == _tok_decoder[:_title_tok_num]
+        title_hidden_state = last_hidden_state[:_title_tok_num]
+        assert len(title_hidden_state) == _title_tok_num 
+
+        tokText_emb = {}
+        for _tok, _emb in zip(_title_tok_list, title_hidden_state):
+            tokText_emb[_tok] = _emb.unsqueeze(0).to(self.device) 
+        tokText_emb["</s>"] = end_emb.to(self.device)
+        return tokText_emb
+
+    def _get_target_embs(self, batch):
+        target_emb_list = []; target_mask_list = []
+        end_emb = self._get_end_tok_emb()
+        for _title, _context in zip(batch['title'], batch['context']):
+            tokText_emb = self._emb_enc_forward(_title, _context, end_emb)
+            target_text = list(tokText_emb.keys())
+            target_emb = list(tokText_emb.values())
+            assert len(target_text) == len(target_emb)
+            if len(target_text) <= self.hparams.max_output_length:
+                leftover = self.hparams.max_output_length-len(target_text)
+                target_mask = torch.tensor([1]*len(target_text) + [0]*leftover).to(self.device)
+                target_text = target_text + [-1]*leftover
+                target_emb = target_emb + [torch.tensor([-1]*target_emb[0].shape[-1]).unsqueeze(0).to(self.device)]*leftover
+            else:
+                target_mask = torch.tensor([1]*self.hparams.max_output_length).to(self.device)
+                target_text = target_text[:self.hparams.max_output_length]
+                target_emb = target_emb[:self.hparams.max_output_length]
+            assert len(target_text) == len(target_emb) == len(target_mask)
+
+            target_emb = torch.cat(target_emb, dim=0).to(self.device) #[max_output_length, 768]
+            target_emb_list.append(target_emb.unsqueeze(0))
+            target_mask_list.append(target_mask.unsqueeze(0))
+        target_emb = torch.cat(target_emb_list, dim=0)
+        target_mask = torch.cat(target_mask_list, dim=0)
+        return target_emb, target_mask
+
+    def _calculate_sub_em(self, sim, labels):
+        top_score = torch.topk(sim, 1)
+        indices = top_score.indices.squeeze() 
+        print(indices)
+        print(labels)
+        correct = torch.eq(indices, labels).sum()
+        total = len(indices)
+        return correct/total*100
+
+    def training_step(self, batch, batch_idx):
+        target_emb, target_mask = self._get_target_embs(batch)
+        batch['target_emb'] = target_emb
+        batch['target_mask'] = target_mask 
+        loss, _ = self._calculate_loss(batch) 
+        self.log(
+            "train_loss",
+            loss, 
+            on_step=True,
+            on_epoch=True,
+            prog_bar=False,
+            logger=True,
+            sync_dist=True,
+        )
+        return loss
+
+    # TODO
+    def validation_step(self, batch, batch_idx):
+        target_emb, target_mask = self._get_target_embs(batch)
+        batch['target_emb'] = target_emb
+        batch['target_mask'] = target_mask 
+        sim = self._calculate_similarity(batch)
+        loss, sub_em = self._calculate_loss(batch, get_em=True)
+        self.log(
+            "val_loss",
+            loss, 
+            on_step=True,
+            on_epoch=True,
+            prog_bar=False,
+            logger=True,
+            sync_dist=True,
+        )
+        self.val_loss.append(loss.cpu())
+        self.val_em.append(sub_em.cpu())
+        return loss 
+
+    # TODO
+    def validation_epoch_end(self, outputs):
+        avg_loss = np.mean(np.array(self.val_loss))
+        avg_em = np.mean(np.array(self.val_em))
+        self.val_loss = []; self.val_em = []
+        self.log(
+            "val_avg_loss",
+            avg_loss, 
+            on_step=False,
+            on_epoch=True,
+            prog_bar=False,
+            logger=True,
+            sync_dist=True,
+        )
+        self.log(
+            "val em",
+            avg_em, 
+            on_step=False,
+            on_epoch=True,
+            prog_bar=False,
+            logger=True,
+            sync_dist=True,
+        )
+        return
+
+    # TODO
+    def test_step(self, batch, batch_idx):
+        assert False
+        return 
+    
+    # TODO
+    def test_epoch_end(self, outputs):
+        return 
+
+    def _get_params(self, no_decay, find_no_decay):
+        ret_list = []
+        if find_no_decay:
+            for model in [self.model, self.emb_enc]:
+                for n, p in model.named_parameters():
+                    #if not torch.is_tensor(p): continue
+                    if any(nd in n for nd in no_decay):
+                        ret_list.append(p)
+        else:            
+            for model in [self.model, self.emb_enc]:
+                for n, p in model.named_parameters():
+                    #if not torch.is_tensor(p): continue
+                    if not any(nd in n for nd in no_decay):
+                        ret_list.append(p)
+        return ret_list
+
+
+    def configure_optimizers(self):
+        no_decay = ["bias", "LayerNorm.weight"]
+        optimizer_grouped_parameters = [
+            {
+                "params": self._get_params(no_decay, find_no_decay=False),
+                "weight_decay": self.hparams.weight_decay,
+            },
+            {
+                "params": self._get_params(no_decay, find_no_decay=True),
+                "weight_decay": 0.0,
+            },
+        ]
+
+        optimizer = Adafactor(
+            optimizer_grouped_parameters,
+            lr=self.hparams.learning_rate,
+            warmup_init=False,
+            scale_parameter=False,
+            relative_step=False,
+        )
+        self.opt = optimizer
+
+        if self.hparams.lr_scheduler == "constant":
+            return [optimizer]
+        elif self.hparams.lr_scheduler == "exponential":
+            len_data = len(self.train_dataloader())
+            denominator = self.hparams.n_gpu
+            steps_per_epoch = (
+                (len_data // denominator) + 1
+            ) // self.hparams.gradient_accumulation_steps
+            scheduler = torch.optim.lr_scheduler.OneCycleLR(
+                optimizer,
+                max_lr=self.hparams.learning_rate,
+                steps_per_epoch=steps_per_epoch,
+                pct_start=0.1,
+                epochs=self.hparams.num_train_epochs,
+                anneal_strategy="linear",
+                cycle_momentum=False,
+            )
+            return [optimizer], [
+                {"scheduler": scheduler, "interval": "step", "name": "learning_rate"}
+            ]
+        else:
+            raise NotImplementedError("Choose lr_schduler from (constant|exponential)")

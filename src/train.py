@@ -17,10 +17,10 @@ import periflow_sdk as pf
 from argparse import ArgumentParser
 from pytorch_lightning import Trainer
 from pytorch_lightning.loggers import WandbLogger
-from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor, Callback
+from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor, Callback, ModelSummary
 from pytorch_lightning.plugins import DDPPlugin, DeepSpeedPlugin
 
-from model import T5BiEncoder, T5FineTuner
+from model import T5BiEncoder, T5FineTuner, T5JointTuner
 from pathlib import Path
 from typing import Any, Optional, Union
 from pytorch_lightning.utilities.types import STEP_OUTPUT
@@ -71,10 +71,21 @@ class PeriFlowTrainer(Trainer):
 def main(args, train_params):
     sys.setrecursionlimit(10000)
     set_seed(args.seed)
-    if args.bi_encoder:
+    if args.model_type == "bi":
         model = T5BiEncoder(args)
-    else:
+    elif args.model_type == "joint":
+        model = T5JointTuner(args)
+    elif args.model_type == "gr":
         model = T5FineTuner(args)
+    else:
+        assert False
+
+    total_params = sum(p.numel() for p in model.parameters())
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    if torch.cuda.current_device() == 0:
+        print('='*80)
+        print(f"# of trainable parameters: {trainable_params}\n# of total parameters: {total_params}")
+        print('='*80)
 
     if args.periflow:
         print(f'Using Periflow..')
@@ -184,7 +195,7 @@ if __name__ == "__main__":
         nodeId_sup=hparam.nodeId_sup, # new
         embedding_model=hparam.embedding_model, # new - model used to extract embedding
         max_beam_search=hparam.max_beam_search, # new - select a token which has maximum score in groupId
-        bi_encoder=hparam.bi_encoder, # new - bi-encoder Training
+        model_type=hparam.model_type, # new - bi-encoder Training
         periflow=hparam.periflow, # new - periflow
         periflow_dir=hparam.periflow_dir, # new - directory of periflow
         limit_val_batches=hparam.limit_val_batches,
@@ -196,8 +207,7 @@ if __name__ == "__main__":
     args = argparse.Namespace(**args_dict)
     assert not (args.do_train and args.do_test), "Choose between train|test"
     assert args.tree_type in ["groupId", "nodeId", "clusterId"]
-    if args.bi_encoder: assert args.accelerator == "ddp", "ddp is only supported for bi-encoder!"
-
+    if args.model_type == "bi": assert args.accelerator == "ddp", "ddp is only supported for bi-encoder!"
 
     if torch.cuda.current_device() == 0:
         print("#" * 80)

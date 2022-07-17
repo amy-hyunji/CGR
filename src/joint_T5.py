@@ -2097,24 +2097,9 @@ class T5ForConditionalGeneration(T5PreTrainedModel):
     def __init__(self, config: T5Config):
         super().__init__(config)
         print(f"Loading from joint_T5!")
+        
         self.model_dim = config.d_model
-        self.do_test = config.do_test
-
         self.shared = nn.Embedding(config.vocab_size, config.d_model)
-
-        config.tie_word_embeddings = False
-        tokid_emb_dict = pickle.load(open(config.contextualized_file, "rb"))
-        contextualized_emb_tensor = torch.FloatTensor(list(tokid_emb_dict.values()))
-        if self.do_test: 
-            self.dec_shared = nn.Embedding(int(config.contextualized_emb_num), config.d_model)
-        else:
-            self.dec_shared = nn.Embedding.from_pretrained(contextualized_emb_tensor, freeze=False)
-
-        emb_encoder_config = copy.deepcopy(config)
-        emb_encoder_config.is_decoder = False
-        emb_encoder_config.use_cache = False
-        emb_encoder_config.is_encoder_decoder = False
-        self.emb_encoder = T5Stack(emb_encoder_config, self.shared)
 
         encoder_config = copy.deepcopy(config)
         encoder_config.is_decoder = False
@@ -2126,9 +2111,9 @@ class T5ForConditionalGeneration(T5PreTrainedModel):
         decoder_config.is_decoder = True
         decoder_config.is_encoder_decoder = False
         decoder_config.num_layers = config.num_decoder_layers
-        self.decoder = T5Stack(decoder_config, self.dec_shared)
+        self.decoder = T5Stack(decoder_config, self.shared)
 
-        self.lm_head = nn.Linear(config.d_model, int(config.contextualized_emb_num), bias=False)
+        self.lm_head = nn.Linear(config.d_model, config.vocab_size, bias=False)
 
         # Initialize weights and apply final processing
         self.post_init()

@@ -9,6 +9,7 @@ import string
 import pickle
 import numpy 
 import numpy as np
+import pandas as pd 
 import torch.nn as nn
 import pytorch_lightning as pl
 import torch.distributed as dist
@@ -84,80 +85,6 @@ class T5BaseClass(pl.LightningModule):
         output = list(chain(*gathered))
         return output
 
-    def configure_optimizers(self):
-        model = self.model
-        no_decay = ["bias", "LayerNorm.weight"]
-        optimizer_grouped_parameters = [
-            {
-                "params": [
-                    p
-                    for n, p in model.named_parameters()
-                    if not any(nd in n for nd in no_decay)
-                ],
-                "weight_decay": self.hparams.weight_decay,
-            },
-            {
-                "params": [
-                    p
-                    for n, p in model.named_parameters()
-                    if any(nd in n for nd in no_decay)
-                ],
-                "weight_decay": 0.0,
-            },
-        ]
-
-        optimizer = Adafactor(
-            optimizer_grouped_parameters,
-            lr=self.hparams.learning_rate,
-            warmup_init=False,
-            scale_parameter=False,
-            relative_step=False,
-        )
-        self.opt = optimizer
-
-        if self.hparams.lr_scheduler == "constant":
-            return [optimizer]
-        elif self.hparams.lr_scheduler == "exponential":
-            len_data = len(self.train_dataloader())
-            denominator = self.hparams.n_gpu
-            steps_per_epoch = (
-                (len_data // denominator) + 1
-            ) // self.hparams.gradient_accumulation_steps
-            scheduler = torch.optim.lr_scheduler.OneCycleLR(
-                optimizer,
-                max_lr=self.hparams.learning_rate,
-                steps_per_epoch=steps_per_epoch,
-                pct_start=0.1,
-                epochs=self.hparams.num_train_epochs,
-                anneal_strategy="linear",
-                cycle_momentum=False,
-            )
-            return [optimizer], [
-                {"scheduler": scheduler, "interval": "step", "name": "learning_rate"}
-            ]
-        else:
-            raise NotImplementedError("Choose lr_schduler from (constant|exponential)")
-
-    def on_save_checkpoint(self, checkpoint):
-        save_path = os.path.join(
-            self.hparams.output_dir, f"best_tfmr_{self.current_epoch}"
-        )
-        self.model.save_pretrained(save_path)
-        self.tokenizer.save_pretrained(save_path)
-
-        target_path = save_path
-        if self.hparams.periflow:
-            success = False
-            i = 1
-            while not success:
-               try:
-                  upload_directory_to_blob(save_path, target=target_path, container_name=self.container_name)
-                  success = True
-               except:
-                  print(f'Failed on Uploading {target_path}')
-                  _name = "best_tfmr_"*i+f"{self.current_epoch}"
-                  target_path = os.path.join(self.hparams.output_dir, _name)
-                  i += 1
 
     def normalize_answer(self, s):
         def remove_articles(text):
@@ -191,6 +118,69 @@ class T5BaseClass(pl.LightningModule):
             return 100
         else:
             return 0
+
+    def lmap(self, f, x):
+        return list(map(f, x))
+
+
+    def _remove_zero(self, ids):
+        if ids.count(0) == 1: 
+            return ids
+        for i, id in enumerate(ids):
+            if i != 0 and id == 0:   
+                return ids[:i] 
+        assert False
+
+    def _remove_prev_from_trie(self, trie, ids_list):
+        temp_list = []
+        for elem in ids_list:
+            if elem in temp_list:
+                continue
+            else:
+                temp_list.append(elem)
+        ids_list = temp_list
+        for i in range(len(ids_list)):
+            ids_list[i][0] = 0
+            ids_list[i] = self._remove_zero(ids_list[i])
+        if self.hparams.tree_type == "groupId":
+            for ids in ids_list:
+                cur_dict = trie
+                for i in range(len(ids)-1):
+                    cur_dict = cur_dict[ids[i]]
+                cur_dict.pop(ids[-1])
+                """
+                if len(cur_dict.keys()) == 1:
+                    assert int(list(cur_dict.keys())[0]) == -2
+                    cur_dict.pop(-2)
+                """
+                for i in range(len(ids)-1):
+                    idx = -2-i 
+                    _ids = int(ids[idx])
+                    cur_dict = trie 
+                    for j in range(len(ids)+idx):
+                        cur_dict = cur_dict[int(ids[j])] 
+                    if len(cur_dict[_ids]) == 0:
+                        cur_dict.pop(_ids)
+                        """
+                        if len(cur_dict.keys()) == 1:
+                            assert int(list(cur_dict.keys())[0]) == -2
+                            cur_dict.pop(-2)
+                        """
+        elif self.hparams.tree_type == "nodeId":
+            for ids in ids_list:
+                c_nodeid = ids[-1]
+                n_nodeid = list(trie[c_nodeid])[0]
+                if len(trie[n_nodeid]) == 0:
+                    trie[c_nodeid].remove(n_nodeid)
+                for r_id in range(len(ids)-1):
+                    c_nodeid = ids[-1-r_id]
+                    p_nodeid = ids[-2-r_id]
+                    if len(trie[c_nodeid]) == 0:
+                        trie[p_nodeid].remove(c_nodeid)
+        else:
+            assert False
+
+        return trie 
 
 class T5BiEncoder(T5BaseClass):
     def __init__(self, args):
@@ -501,6 +491,29 @@ class T5BiEncoder(T5BaseClass):
         else:
             raise NotImplementedError("Choose lr_schduler from (constant|exponential)")
 
+
+    def on_save_checkpoint(self, checkpoint):
+        save_path = os.path.join(
+            self.hparams.output_dir, f"best_tfmr_{self.current_epoch}"
+        )
+        self.model.save_pretrained(save_path)
+        self.tokenizer.save_pretrained(save_path)
+
+        target_path = save_path
+        if self.hparams.periflow:
+            success = False
+            i = 1
+            while not success:
+               try:
+                  upload_directory_to_blob(save_path, target=target_path, container_name=self.container_name)
+                  success = True
+               except:
+                  print(f'Failed on Uploading {target_path}')
+                  _name = "best_tfmr_"*i+f"{self.current_epoch}"
+                  target_path = os.path.join(self.hparams.output_dir, _name)
+                  i += 1
+
+
 class T5FineTuner(T5BaseClass):
     def __init__(self, args):
         super(T5FineTuner, self).__init__()
@@ -659,6 +672,7 @@ class T5FineTuner(T5BaseClass):
             for nodeId in nodeIdList:
                 tokIdList.extend(list(self.nodeId2tokId[nodeId]))                
             return list(set(tokIdList))
+    
     def _get_tokIdList_from_groupIdList(self, groupIdList, score):
         assert self.hparams.tree_type == "groupId"
         tokIdList = []
@@ -674,15 +688,14 @@ class T5FineTuner(T5BaseClass):
             for groupId in groupIdList:
                 tokIdList.extend(self.groupId2tokId[groupId])
             return list(set(tokIdList))
+   
     def _get_nodeId_from_tokId(self, tokId):
         nodeId = list(self.tokId2node/_teId[tokId])
         assert len(nodeId) == 1
         return nodeId[0] 
+    
     def _get_groupId_from_tokId(self, tokId):
         return self.tokId2groupId[tokId]
-
-    def lmap(self, f, x):
-        return list(map(f, x))
 
     def ids_to_text(self, _generated_ids):
         generated_ids = []
@@ -857,63 +870,6 @@ class T5FineTuner(T5BaseClass):
             return em_list, recall_list
 
 
-    def _remove_zero(self, ids):
-        if ids.count(0) == 1: 
-            return ids
-        for i, id in enumerate(ids):
-            if i != 0 and id == 0:   
-                return ids[:i] 
-        assert False
-
-    def _remove_prev_from_trie(self, trie, ids_list):
-        temp_list = []
-        for elem in ids_list:
-            if elem in temp_list:
-                continue
-            else:
-                temp_list.append(elem)
-        ids_list = temp_list
-        for i in range(len(ids_list)):
-            ids_list[i][0] = 0
-            ids_list[i] = self._remove_zero(ids_list[i])
-        if self.hparams.tree_type == "groupId":
-            for ids in ids_list:
-                cur_dict = trie
-                for i in range(len(ids)-1):
-                    cur_dict = cur_dict[ids[i]]
-                cur_dict.pop(ids[-1])
-                """
-                if len(cur_dict.keys()) == 1:
-                    assert int(list(cur_dict.keys())[0]) == -2
-                    cur_dict.pop(-2)
-                """
-                for i in range(len(ids)-1):
-                    idx = -2-i 
-                    _ids = int(ids[idx])
-                    cur_dict = trie 
-                    for j in range(len(ids)+idx):
-                        cur_dict = cur_dict[int(ids[j])] 
-                    if len(cur_dict[_ids]) == 0:
-                        cur_dict.pop(_ids)
-                        """
-                        if len(cur_dict.keys()) == 1:
-                            assert int(list(cur_dict.keys())[0]) == -2
-                            cur_dict.pop(-2)
-                        """
-        elif self.hparams.tree_type == "nodeId":
-            for ids in ids_list:
-                c_nodeid = ids[-1]
-                n_nodeid = list(trie[c_nodeid])[0]
-                if len(trie[n_nodeid]) == 0:
-                    trie[c_nodeid].remove(n_nodeid)
-                for r_id in range(len(ids)-1):
-                    c_nodeid = ids[-1-r_id]
-                    p_nodeid = ids[-2-r_id]
-                    if len(trie[c_nodeid]) == 0:
-                        trie[p_nodeid].remove(c_nodeid)
-        else:
-            assert False
-        return trie 
 
     def _find_unique_path(self, seq, trie):
         _ids = seq.tolist()
@@ -1226,23 +1182,32 @@ class T5FineTuner(T5BaseClass):
         else:
             raise NotImplementedError("Choose lr_schduler from (constant|exponential)")
 
+    def on_save_checkpoint(self, checkpoint):
+        save_path = os.path.join(
+            self.hparams.output_dir, f"best_tfmr_{self.current_epoch}"
+        )
+        self.model.save_pretrained(save_path)
+        self.tokenizer.save_pretrained(save_path)
+
+        target_path = save_path
+        if self.hparams.periflow:
+            success = False
+            i = 1
+            while not success:
+               try:
+                  upload_directory_to_blob(save_path, target=target_path, container_name=self.container_name)
+                  success = True
+               except:
+                  print(f'Failed on Uploading {target_path}')
+                  _name = "best_tfmr_"*i+f"{self.current_epoch}"
+                  target_path = os.path.join(self.hparams.output_dir, _name)
+                  i += 1
+
+
 class T5JointTuner(T5BaseClass):
     def __init__(self, args):
         super(T5JointTuner, self).__init__()
         self.save_hyperparameters(args)
-        '''
-        config = T5Config.from_pretrained(self.hparams.model_name_or_path)
-        config.update({"fp16": self.hparams.fp16})
-        config.update({"train_c_emb": self.hparams.train_c_emb}) 
-        config.update({"do_test": self.hparams.do_test}) 
-        config.update(
-            {"contextualized_emb_num": self.hparams.contextualized_emb_num}
-        )
-        config.update(
-            {"contextualized_file": os.path.join(self.hparams.dataset, self.hparams.contextualized_file)}
-        )  # tokId_emb.pickle
-        config.update({"freeze_vocab_emb": self.hparams.freeze_vocab_emb})
-        '''
         if self.hparams.do_train:
             self.model = joint_T5.from_pretrained(
                 self.hparams.model_name_or_path #, config=config
@@ -1254,20 +1219,54 @@ class T5JointTuner(T5BaseClass):
                 self.hparams.model_name_or_path
             )
 
-            if self.print:
-                print(f'@@@ Loading Model from {self.hparams.model_name_or_path}')
 
             
         if self.hparams.do_test:
-            raise NotImplementedError('Code for Test Case is Not Implemented Yet')
+            # pass query to self.model -> for each step use beam search ..?
+            self.model = joint_T5Model.from_pretrained(
+                os.path.join(self.hparams.test_model_path, "model")
+            )
+            self.emb_enc = T5EncoderModel.from_pretrained(
+                os.path.join(self.hparams.test_model_path, "emb_enc")
+            )
+            self.tokenizer = T5Tokenizer.from_pretrained(
+                self.hparams.test_model_path
+            )
+            self.pad_tokenid = 0; self.end_tokenid = 1
+
+            self.trie = pickle.load(open(os.path.join(self.hparams.dataset, self.hparams.tree_path), "rb"))
+            self.tokId2Emb = pickle.load(open(os.path.join(self.hparams.dataset, self.hparams.contextualized_file), "rb"))
+            self.groupId2tokId = pickle.load(open(os.path.join(self.hparams.dataset, self.hparams.groupId2tokIdList), "rb"))
+            self.tokId2groupId = pickle.load(open(os.path.join(self.hparams.dataset, self.hparams.tokId2groupId), "rb"))
+            self.tokId2tokText = pickle.load(open(os.path.join(self.hparams.dataset, self.hparams.tokId2tokText), "rb"))
+
+            self.tokEmbList = [torch.tensor(emb).unsqueeze(0).to(self.device) for emb in self.tokId2Emb.values()]
+            #self.tokEmbList = [np.expand_dims(emb, axis=0) for emb in self.tokId2Emb.values()]
+            self.total_emb = torch.cat(self.tokEmbList, dim=0)
+            self.end_emb = self.tokEmbList[self.end_tokenid] 
+            self.pad_emb = self.tokEmbList[self.pad_tokenid]
+            self.softmax = nn.Softmax(dim=2)
+
+            self.test_em_score_list = []
+            self.test_recall_score_list = []
+            self.test_input_list = []
+            self.test_gt_list = []
+            self.test_pred_list = []
+            
+            self.test_save_name = os.path.join(self.hparams.output_dir, f"{self.hparams.test_name}_result_beam{self.hparams.val_beam_size}.json")               
+
+        if self.print:
+            print(f'@@@ Loading Model from {self.hparams.model_name_or_path}')
+
         self.loss_fct = nn.CrossEntropyLoss()
         self.val_loss = []; self.val_em = []
-    
+        
+
     def _get_dataset(self, split):
         dataset = JOINTDataset(self.tokenizer, split, self.hparams)
         return dataset
 
-    def forward(self, input_ids, attention_mask, decoder_inputs_embeds, decoder_attention_mask):
+    def forward(self, input_ids, attention_mask, decoder_inputs_embeds, decoder_attention_mask=None):
         return self.model(
                     input_ids, 
                     attention_mask=attention_mask, 
@@ -1320,9 +1319,8 @@ class T5JointTuner(T5BaseClass):
         _, end_emb = self._encode_sp("</s>")
         return end_emb
 
-
     def _tokenize(self, sen):
-        _tok = self.tokenizer(sen, return_tensors='pt', add_special_tokens=False, max_length=600)
+        _tok = self.tokenizer(sen, return_tensors='pt', add_special_tokens=False, max_length=self.hparams.max_context_length)
         _tok_decode = self.tokenizer.convert_ids_to_tokens(_tok['input_ids'][0])
         return _tok, _tok_decode
 
@@ -1453,15 +1451,263 @@ class T5JointTuner(T5BaseClass):
             sync_dist=True,
         )
         return
+ 
+    def get(self, input_ids, trie_dict=None):
+        if trie_dict is None:
+            trie_dict = self.trie
+            print('Trie_dict is None!')
+            sys.exit()
+        return self._get_from_trie(input_ids, trie_dict)
+
+    def _get_from_trie(self, input_ids, trie_dict):
+        assert self.hparams.tree_type == "groupId"
+        
+        if len(input_ids) == 0:
+            possible_GroupList = list(trie_dict.keys())
+            tokIdList = self._get_tokIdList_from_groupIdList(possible_GroupList)
+            return tokIdList
+        else:
+            curGroupId = self._get_groupId_from_tokId(input_ids[0])
+            if curGroupId in list(trie_dict.keys()):
+                return self._get_from_trie(input_ids[1:], trie_dict[curGroupId]) 
+            else:
+                return []
+
+    def _get_tokIdList_from_groupIdList(self, groupIdList):
+        assert self.hparams.tree_type == "groupId"
+        tokIdList = []
+
+        assert not self.hparams.max_beam_search 
+        """
+        # for groupId Tree with max beam search
+        if self.hparams.max_beam_search:
+            for groupId in groupIdList:
+                max_tokId = self._get_max_tokId_from_tokIdList(self.groupId2tokId[groupId], score)
+                tokIdList.append(max_tokId)
+            return list(set(tokIdList))
+        # for normal groupId Tree
+        """
+        for groupId in groupIdList:
+            tokIdList.extend(self.groupId2tokId[groupId])
+        return list(set(tokIdList))
+   
+
+    def _get_groupId_from_tokId(self, tokId):
+        return self.tokId2groupId[tokId]
+
+    def ids_to_text(self, _generated_ids):
+        generated_ids = []
+        for _ids in _generated_ids:
+            _ids = copy.deepcopy(_ids)
+            _text = [self.tokId2tokText[_id] for _id in _ids]
+            generated_ids.append(self.tokenizer.convert_tokens_to_ids(_text))
+        gen_text = self.tokenizer.batch_decode(
+            generated_ids, skip_special_tokens=True, clean_up_tokenization_spaces=True
+        )
+        return self.lmap(str.strip, gen_text)
+
+
+    def _calculate_beam_score(self, scores, next_possible_tokens, _beam_score, _decoder_inputs_ids, leftover, first=False):
+        t_df = {'ids': [], 'score': []}
+        #print(f'scores: {len(scores)}')
+        for batch_id, (_score, _n_tokens) in enumerate(zip(scores, next_possible_tokens)):
+            _score = _score[_n_tokens]
+            assert len(_score) == len(_n_tokens)
+            #print(f'# of elements in _score: {len(_score)}')
+            assert len(_score) > 0
+            top_scores = torch.topk(_score, min(len(_score), self.hparams.val_beam_size))
+            #print(top_scores)
+            p_beam_scores = _beam_score[batch_id]
+            p_tokid = _decoder_inputs_ids[batch_id]
+            for top_id, (_val, _ind) in enumerate(zip(top_scores.values, top_scores.indices)):
+                #print(f'[{batch_id}_{top_id}] ### _val: {_val}\t_ind: {_ind}')
+                _tokId = _n_tokens[_ind.item()]
+                #print(f'[{batch_id}_{top_id}] ### _tokId: {_tokId} // _tokText: {self.tokId2tokText[_tokId]}')
+                t_df['ids'].append(list(p_tokid)+list([_tokId]))
+                t_df['score'].append(p_beam_scores*_val.item())
+    
+        t_df = pd.DataFrame(t_df).sort_values(by=['score'], ascending=False)[:leftover]
+        #print(t_df)
+        return t_df
+
+    def _test_step(self, batch, trie_dict):
+        end_token = [False]*self.hparams.val_beam_size
+        leftover = self.hparams.val_beam_size
+        end_ids = []
+
+        # 처음에는 하나만 넣고 그 다음부터 val_beam_size 만큼
+        _decoder_inputs_embeds = [[self.pad_emb]]
+        _decoder_inputs_ids = [[self.pad_tokenid]]
+        _beam_score = [1]
+        
+        _dec_input = torch.cat([torch.cat(embs, dim=0).unsqueeze(0).to(self.device) for embs in _decoder_inputs_embeds], dim=0) 
+        _enc_input = torch.cat([batch['source_ids']], dim=0)
+        _enc_attention = torch.cat([batch['source_mask']], dim=0) 
+        
+        model_output = self(
+            input_ids=_enc_input,
+            attention_mask=_enc_attention,
+            decoder_inputs_embeds=_dec_input,
+        ).last_hidden_state # [bs, 1, 768]
+
+        model_output = model_output[:, -1:, :]
+        scores = torch.inner(model_output.to(self.device), self.total_emb.to(self.device))
+        scores = self.softmax(scores)
+        scores = scores.squeeze(1)
+        next_possible_tokens = np.array([self.get(ids, trie_dict) for ids in _decoder_inputs_ids])
+    
+        t_df = self._calculate_beam_score(scores, next_possible_tokens, _beam_score, _decoder_inputs_ids, leftover, first=True)
+
+        _decoder_inputs_ids = [] 
+        _beam_score = [] 
+        _decoder_inputs_embeds = []
+        for bid, (ids, score) in enumerate(zip(t_df['ids'], t_df['score'])):
+            #print(f'\n\n!!! ids: {ids}\n!!! score: {score}\n\n')
+            if ids[-1] == self.end_tokenid:
+                end_ids.append(ids)
+                end_token[bid] = True 
+                leftover -= 1
+            else:
+                _decoder_inputs_embeds.append([self.tokEmbList[_id] for _id in ids])
+                _decoder_inputs_ids.append(ids)
+                _beam_score.append(score)
+
+        while leftover > 0:
+            _dec_input = torch.cat([torch.cat(embs, dim=0).unsqueeze(0).to(self.device) for embs in _decoder_inputs_embeds], dim=0) 
+            _enc_input = torch.cat([batch['source_ids']]*leftover, dim=0)
+            _enc_attention = torch.cat([batch['source_mask']]*leftover, dim=0)
+            assert _dec_input.shape[0] == _enc_input.shape[0] == _enc_attention.shape[0]
+
+            """
+            print('='*80)
+            print(f'decoder_input_ids: {_decoder_inputs_ids}') #[[0]]
+            print(f'beam_score: {_beam_score}')
+            print(f'end_token: {end_token}')
+            print('='*80)
+            print(f'shape of encoder input: {_enc_input.shape}') # [1, 40]
+            print(f'shape of encoder attention: {_enc_attention.shape}') # [1, 40]
+            print(f'shape of decoder input: {_dec_input.shape}') # [1, 768]
+            print()
+            """
+            model_output = self(
+                input_ids=_enc_input,
+                attention_mask=_enc_attention,
+                decoder_inputs_embeds=_dec_input,
+            ).last_hidden_state # [bs, 1, 768]
+            # find the closest embedding
+            #assert model_output.shape[1] == 1, f"model_output shape: {model_output.shape}"
+            #model_output = model_output.squeeze(1)
+            assert model_output.shape[0] == leftover, f"model_output shape: {model_output.shape}"
+            model_output = model_output[:, -1:, :]
+            #print(f"shape of model_output: {model_output.shape}") #[2, 1, 768]
+            #print(f"shape of total_emb: {self.total_emb.shape}") #[1057995, 768]
+            # [bs, 1, # of vocab]
+            scores = torch.inner(model_output.to(self.device), self.total_emb.to(self.device))
+            #print(f"shape of scores: {scores.shape}") #[2, 1, 1057995]
+            scores = self.softmax(scores) #[bs, 768], [num of embs, 768] => [num of embs]
+            #print("shape of scores ", scores.shape) #[2, 1, 1057995]
+            assert scores.shape[1] == 1
+            scores = scores.squeeze(1)
+
+            # mask out tokens not in trie
+            next_possible_tokens = np.array([self.get(ids, trie_dict) for ids in _decoder_inputs_ids])
+            assert len(next_possible_tokens) == leftover 
+
+            t_df = self._calculate_beam_score(scores, next_possible_tokens, _beam_score, _decoder_inputs_ids, leftover)
+
+            _decoder_inputs_ids = [] 
+            _beam_score = [] 
+            _decoder_inputs_embeds = []
+            for bid, (ids, score) in enumerate(zip(t_df['ids'], t_df['score'])):
+                #print(f'\n\n!!! ids: {ids}\n!!! score: {score}\n\n')
+                if ids[-1] == self.end_tokenid:
+                    end_ids.append(ids)
+                    end_token[bid] = True 
+                    leftover -= 1
+                    #print(f'========= leftover: {leftover} ==============')
+                else:
+                    _decoder_inputs_embeds.append([self.tokEmbList[_id] for _id in ids])
+                    _decoder_inputs_ids.append(ids)
+                    _beam_score.append(score)
+
+        # detokenize _decoder_inputs_ids
+        for elem in end_ids: assert end_ids.count(elem) == 1 
+        preds = [self.ids_to_text(end_ids)]
+        return preds[0], end_ids
+
+    # TODO: 
+        # batch size > 1
+        # beam size > 1
+        # 현 상태: batch size 1 and greedy search (beam size is 1)
+    # batch -> {"source_ids", "source_mask", "title", "context", "input", "output"}
+    def test_step(self, batch, batch_idx):
+        preds = []
+        _trie_dict = copy.deepcopy(self.trie)
+        while len(preds) < self.hparams.val_beam_size:
+            
+            _preds, _tokIdList = self._test_step(batch, _trie_dict)
+            remove_tokId = []
+            for _pred, _tokIds in zip(_preds, _tokIdList):
+                if _pred not in preds:
+                    preds.append(_pred)
+                    remove_tokId.append([self.tokId2groupId[el] for el in _tokIds])
+            _upper_ids = []
+            _trie_dict = self._remove_prev_from_trie(_trie_dict, remove_tokId)
+
+            """
+            print('='*80)
+            print(f'preds: {preds}')
+            print(f'remove: {remove_tokId}')
+            print('='*80)
+            """
+
+        preds = preds[:self.hparams.val_beam_size]
+        assert len(batch['output']) ==len(batch['input'])== 1
+        self.test_em_score_list.append(self._calculate_em(preds[0], batch['output'][0]))
+        self.test_recall_score_list.append(self._calculate_recall(preds, batch['output'][0]))
+        self.test_input_list.extend(batch['input']) 
+        self.test_gt_list.extend(batch['output']) 
+        self.test_pred_list.append(preds)
+
+        print('='*80)
+        print(f'preds: {preds}')
+        print(f"gt: {batch['output']}")
+        print(f'EM: {self.test_em_score_list[-1]}\tRECALL: {self.test_recall_score_list[-1]}')
+        print('='*80)
+
+        self._save_test()
+        return 
+
+    def _save_test(self, epoch_end=False):
+        os.makedirs(self.hparams.output_dir, exist_ok=True)
+        _input = self.gather_list(self.test_input_list)
+        _gt = self.gather_list(self.test_gt_list)
+        _pred = self.gather_list(self.test_pred_list)
+        _em = self.gather_list(self.test_em_score_list)
+        _recall = self.gather_list(self.test_recall_score_list)
+        assert len(_input) == len(_gt) == len(_pred) == len(_em) == len(_recall) 
+        if self.print:
+            with open(self.test_save_name, "w") as f:
+                json.dump(
+                    {
+                        "input": _input,
+                        "gt": _gt,
+                        "pred": _pred,
+                        "em": _em,
+                        "recall": _recall,
+                    },
+                    f,
+                )
+            if epoch_end:
+                print(
+                    f"Saving in {self.test_save_name}!\nnumber of elements: {len(_input)}"
+                )
+                print(f"EM: {np.array(_em).mean()}")
+                print(f"Recall: {np.array(_recall).mean()}")
 
     # TODO
-    def test_step(self, batch, batch_idx):
-        assert False
-        return 
-    
-    # TODO
     def test_epoch_end(self, outputs):
-        return 
+        self._save_test(epoch_end=True)
 
     def _get_params(self, no_decay, find_no_decay):
         ret_list = []
@@ -1524,3 +1770,29 @@ class T5JointTuner(T5BaseClass):
             ]
         else:
             raise NotImplementedError("Choose lr_schduler from (constant|exponential)")
+
+    def on_save_checkpoint(self, checkpoint):
+        save_path = os.path.join(
+            self.hparams.output_dir, f"best_tfmr_{self.current_epoch}"
+        )
+        if not os.path.exists(save_path): os.makedirs(save_path)
+        if not os.path.exists(os.path.join(save_path, "model")): os.makedirs(os.path.join(save_path, "model"))
+        if not os.path.exists(os.path.join(save_path, "emb_enc")): os.makedirs(os.path.join(save_path, "emb_enc"))
+        self.model.save_pretrained(os.path.join(save_path, "model"))
+        self.emb_enc.save_pretrained(os.path.join(save_path, "emb_enc"))
+        self.tokenizer.save_pretrained(save_path)
+
+        if self.hparams.periflow:
+            assert False
+            target_path = save_path
+            success = False
+            i = 1
+            while not success:
+               try:
+                  upload_directory_to_blob(save_path, target=target_path, container_name=self.container_name)
+                  success = True
+               except:
+                  print(f'Failed on Uploading {target_path}')
+                  _name = "best_tfmr_"*i+f"{self.current_epoch}"
+                  target_path = os.path.join(self.hparams.output_dir, _name)
+                  i += 1

@@ -136,6 +136,8 @@ def main(args, train_params):
 if __name__ == "__main__":
     parser = ArgumentParser()
     parser.add_argument("--config", default=None, required=True, type=str)
+    parser.add_argument("--test_file", default=None, type=str)
+    parser.add_argument("--test_name", default=None, type=str)
     arg_ = parser.parse_args()
 
     with open(arg_.config) as config_file:
@@ -156,6 +158,7 @@ if __name__ == "__main__":
         tokenizer_name_or_path=hparam.model,
         max_input_length=hparam.max_input_length,
         max_output_length=hparam.max_output_length,
+        max_context_length=hparam.max_context_length,
         learning_rate=hparam.learning_rate,
         lr_scheduler=hparam.lr_scheduler,  # exponential, constant
         weight_decay=0.0,
@@ -175,12 +178,12 @@ if __name__ == "__main__":
         check_val_every_n_epoch=hparam.check_val_every_n_epoch,
         train_file=hparam.train_file,
         dev_file=hparam.dev_file,
-        test_file=hparam.test_file,
+        test_file=arg_.test_file if arg_.test_file else hparam.test_file,
         constrained_decoding=True,
         do_train=hparam.do_train,
         do_test=hparam.do_test,
         test_model_path=hparam.test_model_path,
-        test_name=hparam.test_name,
+        test_name=arg_.test_name if arg_.test_name else hparam.test_name,
         val_beam_size=hparam.val_beam_size,
         freeze_encoder=hparam.freeze_encoder,
         freeze_vocab_emb=hparam.freeze_vocab_emb,
@@ -208,6 +211,8 @@ if __name__ == "__main__":
     assert not (args.do_train and args.do_test), "Choose between train|test"
     if args.model_type == "gr": assert args.tree_type in ["groupId", "nodeId", "clusterId"] 
     if args.model_type == "bi": assert args.accelerator == "ddp", "ddp is only supported for bi-encoder!"
+    if args.model_type == "joint" and args.do_test:
+        assert args.eval_batch_size == 1, "Batch Size larger than 1 is not implemented yet!"
     assert args.model_type in ["gr", "bi", "joint"]
 
     if torch.cuda.current_device() == 0:

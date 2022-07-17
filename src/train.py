@@ -206,8 +206,9 @@ if __name__ == "__main__":
     )
     args = argparse.Namespace(**args_dict)
     assert not (args.do_train and args.do_test), "Choose between train|test"
-    assert args.tree_type in ["groupId", "nodeId", "clusterId"]
+    if args.model_type == "gr": assert args.tree_type in ["groupId", "nodeId", "clusterId"] 
     if args.model_type == "bi": assert args.accelerator == "ddp", "ddp is only supported for bi-encoder!"
+    assert args.model_type in ["gr", "bi", "joint"]
 
     if torch.cuda.current_device() == 0:
         print("#" * 80)

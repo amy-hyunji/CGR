@@ -84,80 +84,6 @@ class T5BaseClass(pl.LightningModule):
         output = list(chain(*gathered))
         return output
 
-    def configure_optimizers(self):
-        model = self.model
-        no_decay = ["bias", "LayerNorm.weight"]
-        optimizer_grouped_parameters = [
-            {
-                "params": [
-                    p
-                    for n, p in model.named_parameters()
-                    if not any(nd in n for nd in no_decay)
-                ],
-                "weight_decay": self.hparams.weight_decay,
-            },
-            {
-                "params": [
-                    p
-                    for n, p in model.named_parameters()
-                    if any(nd in n for nd in no_decay)
-                ],
-                "weight_decay": 0.0,
-            },
-        ]
-
-        optimizer = Adafactor(
-            optimizer_grouped_parameters,
-            lr=self.hparams.learning_rate,
-            warmup_init=False,
-            scale_parameter=False,
-            relative_step=False,
-        )
-        self.opt = optimizer
-
-        if self.hparams.lr_scheduler == "constant":
-            return [optimizer]
-        elif self.hparams.lr_scheduler == "exponential":
-            len_data = len(self.train_dataloader())
-            denominator = self.hparams.n_gpu
-            steps_per_epoch = (
-                (len_data // denominator) + 1
-            ) // self.hparams.gradient_accumulation_steps
-            scheduler = torch.optim.lr_scheduler.OneCycleLR(
-                optimizer,
-                max_lr=self.hparams.learning_rate,
-                steps_per_epoch=steps_per_epoch,
-                pct_start=0.1,
-                epochs=self.hparams.num_train_epochs,
-                anneal_strategy="linear",
-                cycle_momentum=False,
-            )
-            return [optimizer], [
-                {"scheduler": scheduler, "interval": "step", "name": "learning_rate"}
-            ]
-        else:
-            raise NotImplementedError("Choose lr_schduler from (constant|exponential)")
-
-    def on_save_checkpoint(self, checkpoint):
-        save_path = os.path.join(
-            self.hparams.output_dir, f"best_tfmr_{self.current_epoch}"
-        )
-        self.model.save_pretrained(save_path)
-        self.tokenizer.save_pretrained(save_path)
-
-        target_path = save_path
-        if self.hparams.periflow:
-            success = False
-            i = 1
-            while not success:
-               try:
-                  upload_directory_to_blob(save_path, target=target_path, container_name=self.container_name)
-                  success = True
-               except:
-                  print(f'Failed on Uploading {target_path}')
-                  _name = "best_tfmr_"*i+f"{self.current_epoch}"
-                  target_path = os.path.join(self.hparams.output_dir, _name)
-                  i += 1
 
     def normalize_answer(self, s):
         def remove_articles(text):
@@ -500,6 +426,29 @@ class T5BiEncoder(T5BaseClass):
             ]
         else:
             raise NotImplementedError("Choose lr_schduler from (constant|exponential)")
+
+
+    def on_save_checkpoint(self, checkpoint):
+        save_path = os.path.join(
+            self.hparams.output_dir, f"best_tfmr_{self.current_epoch}"
+        )
+        self.model.save_pretrained(save_path)
+        self.tokenizer.save_pretrained(save_path)
+
+        target_path = save_path
+        if self.hparams.periflow:
+            success = False
+            i = 1
+            while not success:
+               try:
+                  upload_directory_to_blob(save_path, target=target_path, container_name=self.container_name)
+                  success = True
+               except:
+                  print(f'Failed on Uploading {target_path}')
+                  _name = "best_tfmr_"*i+f"{self.current_epoch}"
+                  target_path = os.path.join(self.hparams.output_dir, _name)
+                  i += 1
+
 
 class T5FineTuner(T5BaseClass):
     def __init__(self, args):
@@ -1226,6 +1175,27 @@ class T5FineTuner(T5BaseClass):
         else:
             raise NotImplementedError("Choose lr_schduler from (constant|exponential)")
 
+    def on_save_checkpoint(self, checkpoint):
+        save_path = os.path.join(
+            self.hparams.output_dir, f"best_tfmr_{self.current_epoch}"
+        )
+        self.model.save_pretrained(save_path)
+        self.tokenizer.save_pretrained(save_path)
+
+        target_path = save_path
+        if self.hparams.periflow:
+            success = False
+            i = 1
+            while not success:
+               try:
+                  upload_directory_to_blob(save_path, target=target_path, container_name=self.container_name)
+                  success = True
+               except:
+                  print(f'Failed on Uploading {target_path}')
+                  _name = "best_tfmr_"*i+f"{self.current_epoch}"
+                  target_path = os.path.join(self.hparams.output_dir, _name)
+                  i += 1
+
 class T5JointTuner(T5BaseClass):
     def __init__(self, args):
         super(T5JointTuner, self).__init__()
@@ -1254,15 +1224,29 @@ class T5JointTuner(T5BaseClass):
                 self.hparams.model_name_or_path
             )
 
-            if self.print:
-                print(f'@@@ Loading Model from {self.hparams.model_name_or_path}')
 
             
         if self.hparams.do_test:
             raise NotImplementedError('Code for Test Case is Not Implemented Yet')
+            # pass query to self.model -> for each step use beam search ..?
+            self.model = joint_T5.from_pretrained(
+                os.path.join(self.hparams.test_model_path, "model")
+            )
+            self.emb_enc = T5EncoderModel.from_pretrained(
+                os.path.join(self.hparams.test_model_path, "emb_enc")
+            )
+            self.tokenizer = T5Tokenizer.from_pretrained(
+                self.hparams.test_model_path
+            )
+
+        if self.print:
+            print(f'@@@ Loading Model from {self.hparams.model_name_or_path}')
+
         self.loss_fct = nn.CrossEntropyLoss()
         self.val_loss = []; self.val_em = []
-    
+
+        
+
     def _get_dataset(self, split):
         dataset = JOINTDataset(self.tokenizer, split, self.hparams)
         return dataset
@@ -1524,3 +1508,29 @@ class T5JointTuner(T5BaseClass):
             ]
         else:
             raise NotImplementedError("Choose lr_schduler from (constant|exponential)")
+
+    def on_save_checkpoint(self, checkpoint):
+        save_path = os.path.join(
+            self.hparams.output_dir, f"best_tfmr_{self.current_epoch}"
+        )
+        if not os.path.exists(save_path): os.makedirs(save_path)
+        if not os.path.exists(os.path.join(save_path, "model")): os.makedirs(os.path.join(save_path, "model"))
+        if not os.path.exists(os.path.join(save_path, "emb_enc")): os.makedirs(os.path.join(save_path, "emb_enc"))
+        self.model.save_pretrained(os.path.join(save_path, "model"))
+        self.emb_enc.save_pretrained(os.path.join(save_path, f"best_tfmr_{self.current_epoch}", "emb_enc"))
+        self.tokenizer.save_pretrained(save_path)
+
+        if self.hparams.periflow:
+            assert False
+            target_path = save_path
+            success = False
+            i = 1
+            while not success:
+               try:
+                  upload_directory_to_blob(save_path, target=target_path, container_name=self.container_name)
+                  success = True
+               except:
+                  print(f'Failed on Uploading {target_path}')
+                  _name = "best_tfmr_"*i+f"{self.current_epoch}"
+                  target_path = os.path.join(self.hparams.output_dir, _name)
+                  i += 1

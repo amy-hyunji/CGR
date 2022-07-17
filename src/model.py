@@ -1218,12 +1218,10 @@ class T5JointTuner(T5BaseClass):
             self.tokenizer = T5Tokenizer.from_pretrained(
                 self.hparams.model_name_or_path
             )
-
-
             
         if self.hparams.do_test:
             # pass query to self.model -> for each step use beam search ..?
-            self.model = joint_T5Model.from_pretrained(
+            self.model = joint_T5.from_pretrained(
                 os.path.join(self.hparams.test_model_path, "model")
             )
             self.emb_enc = T5EncoderModel.from_pretrained(
@@ -1245,7 +1243,6 @@ class T5JointTuner(T5BaseClass):
             self.total_emb = torch.cat(self.tokEmbList, dim=0)
             self.end_emb = self.tokEmbList[self.end_tokenid] 
             self.pad_emb = self.tokEmbList[self.pad_tokenid]
-            self.softmax = nn.Softmax(dim=2)
 
             self.test_em_score_list = []
             self.test_recall_score_list = []
@@ -1260,7 +1257,11 @@ class T5JointTuner(T5BaseClass):
 
         self.loss_fct = nn.CrossEntropyLoss()
         self.val_loss = []; self.val_em = []
-        
+        if 'log.txt' in os.listdir(self.hparams.output_dir):
+            print(f'+++ removing previous log file!')
+            os.system(f'rm {os.path.join(self.hparams.output_dir, "log.txt")}')
+        self.file = open(os.path.join(self.hparams.output_dir, "log.txt"), 'w') 
+        print(f'+++ Writing logs in {os.path.join(self.hparams.output_dir, "log.txt")}')
 
     def _get_dataset(self, split):
         dataset = JOINTDataset(self.tokenizer, split, self.hparams)
@@ -1300,17 +1301,26 @@ class T5JointTuner(T5BaseClass):
             _pred = _pred[:_non_mask, :]
             _gt = _gt[:_non_mask, :]
             pred_list.append(_pred); gt_list.append(_gt)
+        
+        pred_length = [len(pred) for pred in pred_list]
+        gt_length = [len(gt) for gt in gt_list]
+        print(f'After Removing Pad Tokens..\npred_length: {pred_length}\ngt_length: {gt_length}\n\n')
+        self.file.write(f'After Removing Pad Tokens..\npred_length: {pred_length}\ngt_length: {gt_length}\n\n')
+        
         preds = torch.cat(pred_list, dim=0)
         gts = torch.cat(gt_list, dim=0)
         assert preds.shape == gts.shape
+
         return preds, gts 
 
-    def _calculate_loss(self, batch, get_em=False):
+    def _calculate_loss(self, batch, ret_em=True):
         sim = self._calculate_similarity(batch)
         labels = torch.arange(sim.size(0)).long().to(self.device)
         loss = self.loss_fct(sim, labels)
-        if get_em:
+        if ret_em:
             sub_em = self._calculate_sub_em(sim, labels)
+            self.file.write(f"loss: {loss}\tem: {sub_em}\n")
+            self.file.write('='*80)
             print(f'loss: {loss}\tem: {sub_em}')
             return loss, sub_em
         return loss, None
@@ -1385,8 +1395,8 @@ class T5JointTuner(T5BaseClass):
     def _calculate_sub_em(self, sim, labels):
         top_score = torch.topk(sim, 1)
         indices = top_score.indices.squeeze() 
-        print(indices)
-        print(labels)
+        print(f'indices: {indices}\nlabels: {labels}\n\n')
+        self.file.write(f'indices: {indices}\nlabels: {labels}\n\n')
         correct = torch.eq(indices, labels).sum()
         total = len(indices)
         return correct/total*100
@@ -1407,13 +1417,11 @@ class T5JointTuner(T5BaseClass):
         )
         return loss
 
-    # TODO
     def validation_step(self, batch, batch_idx):
         target_emb, target_mask = self._get_target_embs(batch)
         batch['target_emb'] = target_emb
         batch['target_mask'] = target_mask 
-        sim = self._calculate_similarity(batch)
-        loss, sub_em = self._calculate_loss(batch, get_em=True)
+        loss, sub_em = self._calculate_loss(batch, ret_em=True)
         self.log(
             "val_loss",
             loss, 
@@ -1427,7 +1435,6 @@ class T5JointTuner(T5BaseClass):
         self.val_em.append(sub_em.cpu())
         return loss 
 
-    # TODO
     def validation_epoch_end(self, outputs):
         avg_loss = np.mean(np.array(self.val_loss))
         avg_em = np.mean(np.array(self.val_em))
@@ -1509,36 +1516,29 @@ class T5JointTuner(T5BaseClass):
 
     def _calculate_beam_score(self, scores, next_possible_tokens, _beam_score, _decoder_inputs_ids, leftover, first=False):
         t_df = {'ids': [], 'score': []}
-        #print(f'scores: {len(scores)}')
         for batch_id, (_score, _n_tokens) in enumerate(zip(scores, next_possible_tokens)):
             _score = _score[_n_tokens]
-            assert len(_score) == len(_n_tokens)
-            #print(f'# of elements in _score: {len(_score)}')
-            assert len(_score) > 0
+            assert len(_score) == len(_n_tokens) and len(_score) > 0
             top_scores = torch.topk(_score, min(len(_score), self.hparams.val_beam_size))
-            #print(top_scores)
             p_beam_scores = _beam_score[batch_id]
             p_tokid = _decoder_inputs_ids[batch_id]
             for top_id, (_val, _ind) in enumerate(zip(top_scores.values, top_scores.indices)):
-                #print(f'[{batch_id}_{top_id}] ### _val: {_val}\t_ind: {_ind}')
                 _tokId = _n_tokens[_ind.item()]
-                #print(f'[{batch_id}_{top_id}] ### _tokId: {_tokId} // _tokText: {self.tokId2tokText[_tokId]}')
                 t_df['ids'].append(list(p_tokid)+list([_tokId]))
-                t_df['score'].append(p_beam_scores*_val.item())
+                t_df['score'].append(p_beam_scores+_val.item())
     
         t_df = pd.DataFrame(t_df).sort_values(by=['score'], ascending=False)[:leftover]
-        #print(t_df)
         return t_df
 
     def _test_step(self, batch, trie_dict):
         end_token = [False]*self.hparams.val_beam_size
         leftover = self.hparams.val_beam_size
-        end_ids = []
+        end_df = {'ids': [], 'beam_score': []}
 
         # 처음에는 하나만 넣고 그 다음부터 val_beam_size 만큼
         _decoder_inputs_embeds = [[self.pad_emb]]
         _decoder_inputs_ids = [[self.pad_tokenid]]
-        _beam_score = [1]
+        _beam_score = [0]
         
         _dec_input = torch.cat([torch.cat(embs, dim=0).unsqueeze(0).to(self.device) for embs in _decoder_inputs_embeds], dim=0) 
         _enc_input = torch.cat([batch['source_ids']], dim=0)
@@ -1552,7 +1552,7 @@ class T5JointTuner(T5BaseClass):
 
         model_output = model_output[:, -1:, :]
         scores = torch.inner(model_output.to(self.device), self.total_emb.to(self.device))
-        scores = self.softmax(scores)
+        scores = nn.functional.log_softmax(scores, dim=2)
         scores = scores.squeeze(1)
         next_possible_tokens = np.array([self.get(ids, trie_dict) for ids in _decoder_inputs_ids])
     
@@ -1562,9 +1562,9 @@ class T5JointTuner(T5BaseClass):
         _beam_score = [] 
         _decoder_inputs_embeds = []
         for bid, (ids, score) in enumerate(zip(t_df['ids'], t_df['score'])):
-            #print(f'\n\n!!! ids: {ids}\n!!! score: {score}\n\n')
             if ids[-1] == self.end_tokenid:
-                end_ids.append(ids)
+                end_df['ids'].append(ids)
+                end_df['beam_score'].append(score/len(ids))
                 end_token[bid] = True 
                 leftover -= 1
             else:
@@ -1578,38 +1578,19 @@ class T5JointTuner(T5BaseClass):
             _enc_attention = torch.cat([batch['source_mask']]*leftover, dim=0)
             assert _dec_input.shape[0] == _enc_input.shape[0] == _enc_attention.shape[0]
 
-            """
-            print('='*80)
-            print(f'decoder_input_ids: {_decoder_inputs_ids}') #[[0]]
-            print(f'beam_score: {_beam_score}')
-            print(f'end_token: {end_token}')
-            print('='*80)
-            print(f'shape of encoder input: {_enc_input.shape}') # [1, 40]
-            print(f'shape of encoder attention: {_enc_attention.shape}') # [1, 40]
-            print(f'shape of decoder input: {_dec_input.shape}') # [1, 768]
-            print()
-            """
             model_output = self(
                 input_ids=_enc_input,
                 attention_mask=_enc_attention,
                 decoder_inputs_embeds=_dec_input,
             ).last_hidden_state # [bs, 1, 768]
             # find the closest embedding
-            #assert model_output.shape[1] == 1, f"model_output shape: {model_output.shape}"
-            #model_output = model_output.squeeze(1)
             assert model_output.shape[0] == leftover, f"model_output shape: {model_output.shape}"
             model_output = model_output[:, -1:, :]
-            #print(f"shape of model_output: {model_output.shape}") #[2, 1, 768]
-            #print(f"shape of total_emb: {self.total_emb.shape}") #[1057995, 768]
-            # [bs, 1, # of vocab]
             scores = torch.inner(model_output.to(self.device), self.total_emb.to(self.device))
-            #print(f"shape of scores: {scores.shape}") #[2, 1, 1057995]
-            scores = self.softmax(scores) #[bs, 768], [num of embs, 768] => [num of embs]
-            #print("shape of scores ", scores.shape) #[2, 1, 1057995]
+            scores = nn.functional.log_softmax(scores, dim=2)
             assert scores.shape[1] == 1
             scores = scores.squeeze(1)
 
-            # mask out tokens not in trie
             next_possible_tokens = np.array([self.get(ids, trie_dict) for ids in _decoder_inputs_ids])
             assert len(next_possible_tokens) == leftover 
 
@@ -1619,49 +1600,39 @@ class T5JointTuner(T5BaseClass):
             _beam_score = [] 
             _decoder_inputs_embeds = []
             for bid, (ids, score) in enumerate(zip(t_df['ids'], t_df['score'])):
-                #print(f'\n\n!!! ids: {ids}\n!!! score: {score}\n\n')
                 if ids[-1] == self.end_tokenid:
-                    end_ids.append(ids)
+                    end_df['ids'].append(ids)
+                    end_df['beam_score'].append(score/len(ids))
                     end_token[bid] = True 
                     leftover -= 1
-                    #print(f'========= leftover: {leftover} ==============')
                 else:
                     _decoder_inputs_embeds.append([self.tokEmbList[_id] for _id in ids])
                     _decoder_inputs_ids.append(ids)
                     _beam_score.append(score)
 
         # detokenize _decoder_inputs_ids
-        for elem in end_ids: assert end_ids.count(elem) == 1 
-        preds = [self.ids_to_text(end_ids)]
-        return preds[0], end_ids
+        for elem in end_df['ids']: assert end_df['ids'].count(elem) == 1 
+        preds = [self.ids_to_text(end_df['ids'])]
+        return preds[0], end_df 
 
-    # TODO: 
-        # batch size > 1
-        # beam size > 1
-        # 현 상태: batch size 1 and greedy search (beam size is 1)
+    # TODO: batch size > 1
     # batch -> {"source_ids", "source_mask", "title", "context", "input", "output"}
     def test_step(self, batch, batch_idx):
-        preds = []
+        preds = []; scores = []
         _trie_dict = copy.deepcopy(self.trie)
         while len(preds) < self.hparams.val_beam_size:
             
-            _preds, _tokIdList = self._test_step(batch, _trie_dict)
+            _preds, _end_df = self._test_step(batch, _trie_dict)
             remove_tokId = []
-            for _pred, _tokIds in zip(_preds, _tokIdList):
+            for _pred, _ids, _score in zip(_preds, _end_df['ids'], _end_df['beam_score']):
                 if _pred not in preds:
                     preds.append(_pred)
-                    remove_tokId.append([self.tokId2groupId[el] for el in _tokIds])
+                    scores.append(_score)
+                    remove_tokId.append([self.tokId2groupId[el] for el in _ids])
             _upper_ids = []
             _trie_dict = self._remove_prev_from_trie(_trie_dict, remove_tokId)
 
-            """
-            print('='*80)
-            print(f'preds: {preds}')
-            print(f'remove: {remove_tokId}')
-            print('='*80)
-            """
-
-        preds = preds[:self.hparams.val_beam_size]
+        preds = list(pd.DataFrame({'preds': preds, 'scores': scores}).sort_values(by=['scores'], ascending=False)[:self.hparams.val_beam_size]['preds'])
         assert len(batch['output']) ==len(batch['input'])== 1
         self.test_em_score_list.append(self._calculate_em(preds[0], batch['output'][0]))
         self.test_recall_score_list.append(self._calculate_recall(preds, batch['output'][0]))
@@ -1670,6 +1641,7 @@ class T5JointTuner(T5BaseClass):
         self.test_pred_list.append(preds)
 
         print('='*80)
+        print(f"query: {batch['input']}")
         print(f'preds: {preds}')
         print(f"gt: {batch['output']}")
         print(f'EM: {self.test_em_score_list[-1]}\tRECALL: {self.test_recall_score_list[-1]}')

@@ -2,7 +2,7 @@ import json
 import pandas as pd
 from tqdm import tqdm
 
-scale = 50
+scale = 100
 df_corpus = pd.read_csv(f'scale_{scale}_kilt_corpus.csv', header=0, names=['corpusId', 'corpus'])
 
 print(f'Open kilt_title_text ... ')

@@ -1203,7 +1203,6 @@ class T5FineTuner(T5BaseClass):
                   target_path = os.path.join(self.hparams.output_dir, _name)
                   i += 1
 
-
 class T5JointTuner(T5BaseClass):
     def __init__(self, args):
         super(T5JointTuner, self).__init__()
@@ -1220,7 +1219,6 @@ class T5JointTuner(T5BaseClass):
             )
             
         if self.hparams.do_test:
-            # pass query to self.model -> for each step use beam search ..?
             self.model = joint_T5.from_pretrained(
                 os.path.join(self.hparams.test_model_path, "model")
             )

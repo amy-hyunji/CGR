@@ -339,7 +339,8 @@ if __name__ == "__main__":
 
    # add pad and </s>
    tok_Idlist_dict, tok_Id_dict, tokId_emb = construct_sp()
-   dump(f'0_results.pickle', {'tok_Idlist_dict': tok_Idlist_dict, 'tok_Id_dict': tok_Id_dict, 'tokId_emb': tokId_emb})
+   if args.split_save:
+      dump(f'0_results.pickle', {'tok_Idlist_dict': tok_Idlist_dict, 'tok_Id_dict': tok_Id_dict, 'tokId_emb': tokId_emb})
    # add the rest - corpusId_emb_dict 
    if args.split_save:
       construct_corpus()

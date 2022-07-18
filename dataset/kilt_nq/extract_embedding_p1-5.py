@@ -335,7 +335,7 @@ if __name__ == "__main__":
       model = T5EncoderModel.from_pretrained(args.emb_path).cuda()
    else:
       model = AutoModel.from_pretrained(args.emb_path).cuda()
-   tokenizer = AutoTokenizer.from_pretrained(args.emb_path)
+   tokenizer = AutoTokenizer.from_pretrained("t5-base")
 
    # add pad and </s>
    tok_Idlist_dict, tok_Id_dict, tokId_emb = construct_sp()

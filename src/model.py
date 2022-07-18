@@ -1257,6 +1257,7 @@ class T5JointTuner(T5BaseClass):
 
         self.loss_fct = nn.CrossEntropyLoss()
         self.val_loss = []; self.val_em = []
+        os.makedirs(self.hparams.output_dir, exist_ok=True)
         if 'log.txt' in os.listdir(self.hparams.output_dir):
             print(f'+++ removing previous log file!')
             os.system(f'rm {os.path.join(self.hparams.output_dir, "log.txt")}')
@@ -1285,15 +1286,15 @@ class T5JointTuner(T5BaseClass):
         assert last_hidden_state.shape[1] == batch["target_emb"].shape[1]
         return last_hidden_state # [bs, target_ids num, 768]
 
-    def _calculate_similarity(self, batch):
+    def _calculate_similarity(self, batch, batch_idx):
         preds = self._get_embedding(batch) # output embedding of model
         gts = batch['target_emb'] 
         assert preds.shape == gts.shape
         # target_mask를 기반으로 pad token 아닌 애들만 냅두기
-        preds, gts = self._remove_pad_tokens(batch['target_mask'], preds, gts)
+        preds, gts = self._remove_pad_tokens(batch['target_mask'], preds, gts, batch_idx)
         return torch.inner(preds, gts)
 
-    def _remove_pad_tokens(self, target_mask, preds, gts):
+    def _remove_pad_tokens(self, target_mask, preds, gts, batch_idx):
         non_mask = torch.count_nonzero(target_mask, dim=1)
         assert non_mask.shape[0] == preds.shape[0] == gts.shape[0]
         pred_list = []; gt_list = []
@@ -1304,8 +1305,8 @@ class T5JointTuner(T5BaseClass):
         
         pred_length = [len(pred) for pred in pred_list]
         gt_length = [len(gt) for gt in gt_list]
-        print(f'After Removing Pad Tokens..\npred_length: {pred_length}\ngt_length: {gt_length}\n\n')
-        self.file.write(f'After Removing Pad Tokens..\npred_length: {pred_length}\ngt_length: {gt_length}\n\n')
+        if batch_idx == 0:
+           self.file.write(f'After Removing Pad Tokens..\npred_length: {pred_length}\ngt_length: {gt_length}\n\n')
         
         preds = torch.cat(pred_list, dim=0)
         gts = torch.cat(gt_list, dim=0)
@@ -1313,14 +1314,15 @@ class T5JointTuner(T5BaseClass):
 
         return preds, gts 
 
-    def _calculate_loss(self, batch, ret_em=True):
-        sim = self._calculate_similarity(batch)
+    def _calculate_loss(self, batch, batch_idx, ret_em=False):
+        sim = self._calculate_similarity(batch, batch_idx)
         labels = torch.arange(sim.size(0)).long().to(self.device)
         loss = self.loss_fct(sim, labels)
         if ret_em:
-            sub_em = self._calculate_sub_em(sim, labels)
-            self.file.write(f"loss: {loss}\tem: {sub_em}\n")
-            self.file.write('='*80)
+            sub_em = self._calculate_sub_em(sim, labels, batch_idx)
+            if batch_idx == 0:
+               self.file.write(f"loss: {loss}\tem: {sub_em}\n")
+               self.file.write('='*80)
             print(f'loss: {loss}\tem: {sub_em}')
             return loss, sub_em
         return loss, None
@@ -1392,11 +1394,11 @@ class T5JointTuner(T5BaseClass):
         target_mask = torch.cat(target_mask_list, dim=0)
         return target_emb, target_mask
 
-    def _calculate_sub_em(self, sim, labels):
+    def _calculate_sub_em(self, sim, labels, batch_idx):
         top_score = torch.topk(sim, 1)
         indices = top_score.indices.squeeze() 
-        print(f'indices: {indices}\nlabels: {labels}\n\n')
-        self.file.write(f'indices: {indices}\nlabels: {labels}\n\n')
+        if batch_idx == 0:
+           self.file.write(f'indices: {indices}\nlabels: {labels}\n\n')
         correct = torch.eq(indices, labels).sum()
         total = len(indices)
         return correct/total*100
@@ -1405,7 +1407,7 @@ class T5JointTuner(T5BaseClass):
         target_emb, target_mask = self._get_target_embs(batch)
         batch['target_emb'] = target_emb
         batch['target_mask'] = target_mask 
-        loss, _ = self._calculate_loss(batch) 
+        loss, _ = self._calculate_loss(batch, batch_idx) 
         self.log(
             "train_loss",
             loss, 
@@ -1421,7 +1423,7 @@ class T5JointTuner(T5BaseClass):
         target_emb, target_mask = self._get_target_embs(batch)
         batch['target_emb'] = target_emb
         batch['target_mask'] = target_mask 
-        loss, sub_em = self._calculate_loss(batch, ret_em=True)
+        loss, sub_em = self._calculate_loss(batch, batch_idx, ret_em=True)
         self.log(
             "val_loss",
             loss, 
@@ -1677,7 +1679,6 @@ class T5JointTuner(T5BaseClass):
                 print(f"EM: {np.array(_em).mean()}")
                 print(f"Recall: {np.array(_recall).mean()}")
 
-    # TODO
     def test_epoch_end(self, outputs):
         self._save_test(epoch_end=True)
 

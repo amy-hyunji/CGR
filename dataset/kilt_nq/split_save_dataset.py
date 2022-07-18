@@ -158,15 +158,15 @@ if __name__ == "__main__":
    if args.t5:
       print(f'## Loading T5EncoderModel')
       model = T5EncoderModel.from_pretrained(args.emb_path).cuda()
+      tokenizer = AutoTokenizer.from_pretrained('t5-base')
    else:
       model = AutoModel.from_pretrained(args.emb_path).cuda()
-   tokenizer = AutoTokenizer.from_pretrained(args.emb_path)
+      tokenizer = AutoTokenizer.from_pretrained(args.emb_path)
       
    #{'tok_Idlist_dict': tok_Idlist_dict, 'tok_Id_dict': tok_Id_dict,  'tokId_corpus': tokId_corpus, 'corpusId_fileId_dict': corpusId_fileId_dict, 'corpusId_emb_dict': corpusId_emb_dict, 'corpusId_corpus_dict': corpusId_corpus_dict, 'corpusId_tokenList_dict': corpusId_tokenList_dict})
 
    # tok_Idlist_dict -> construct_group -> tokGroupId_tokIdList, tokId_tokGroupId
    # tok_Id_dict
-   """
    print(f'=== Construct Group')
    tok_Idlist_dict = {}; tok_Id_dict = {}; tokId_emb = {}
    for idx in tqdm(range(args.filenum)):
@@ -201,8 +201,6 @@ if __name__ == "__main__":
    del tok_Idlist_dict
    del tokGroupId_tokIdList
    del tok_Id_dict 
-   """
-   tokId_tokGroupId = pickle.load(open(os.path.join(args.save_path, "tokId_tokGroupId.pickle"), "rb"))
 
    # corpusId_tokenList_dict -> construct_group_prefix_tree -> group_tree 
    # construct tokId_corpus, corpusId_fileId_dict, corpusId_emb_dict 

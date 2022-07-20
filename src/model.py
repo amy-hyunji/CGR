@@ -194,7 +194,7 @@ class T5BiEncoder(T5BaseClass):
                 self.model = T5Model.from_pretrained(self.hparams.model_name_or_path)
             else:
                 assert False
-            self.tokenizer = T5Tokenizer.from_pretrained(self.hparams.model_name_or_path)
+            self.tokenizer = T5Tokenizer.from_pretrained(self.hparams.tokenizer_name_or_path)
             if self.print:
                 print(f'@@@ In Training Mode...')
                 print(f'@@@ Loading Model from {self.hparams.model_name_or_path}')
@@ -565,7 +565,7 @@ class T5FineTuner(T5BaseClass):
                     p.requires_grad = False
 
             self.tokenizer = T5Tokenizer.from_pretrained(
-                self.hparams.model_name_or_path
+               self.hparams.tokenizer_name_or_path 
             )
 
             if self.hparams.periflow:
@@ -1212,10 +1212,10 @@ class T5JointTuner(T5BaseClass):
                 self.hparams.model_name_or_path #, config=config
             )
             self.emb_enc = T5EncoderModel.from_pretrained(
-                self.hparams.model_name_or_path
+                self.hparams.doc_encoder_model
             )
             self.tokenizer = T5Tokenizer.from_pretrained(
-                self.hparams.model_name_or_path
+                self.hparams.tokenizer_name_or_path
             )
             
         if self.hparams.do_test:

@@ -89,15 +89,17 @@ def construct_corpus():
    corpusId_emb_dict = {} # {corpusId: {tok: {emb}}}
    tokId_corpus = {} # {tokid: corpusText}
    save_cycle = 50000
+   resume = False
 
    # RESUME! 
    if os.path.exists(args.save_path) and len(os.listdir(args.save_path))>1:
+      resume = True
       fileId = len(os.listdir(args.save_path))
       print(f'=== # of previous files: {fileId}')
       with open(os.path.join(args.save_path, f'{fileId-1}_results.pickle'), 'rb') as f:
          last_tokId = list(pickle.load(f)['tokId_corpus'].keys())[-1]
       tokId = last_tokId + 1 
-      corpus_start = save_cycle*(fileId-1)+1
+      corpus_start = save_cycle*(fileId-1)
       print(f"tokId: {tokId}\tcorpus_start: {corpus_start}")
 
    else:
@@ -108,7 +110,7 @@ def construct_corpus():
    for corpusId in tqdm(range(corpus_num)):
       if corpusId < corpus_start:
          continue
-      if args.split_save and corpusId % save_cycle == 0 and corpusId != 0: 
+      if not resume and args.split_save and corpusId % save_cycle == 0 and corpusId != 0: 
          print(f'== Save fileId: {fileId}!')
          dump(f'{fileId}_results.pickle', {'tokId_emb': tokId_emb, 'tok_Idlist_dict': tok_Idlist_dict, 'tok_Id_dict': tok_Id_dict,  'tokId_corpus': tokId_corpus, 'corpusId_fileId_dict': corpusId_fileId_dict, 'corpusId_emb_dict': corpusId_emb_dict, 'corpusId_corpus_dict': corpusId_corpus_dict, 'corpusId_tokenList_dict': corpusId_tokenList_dict})
          corpusId_corpus_dict = {}
@@ -116,6 +118,7 @@ def construct_corpus():
          corpusId_emb_dict = {}
          tokId_corpus = {}
          fileId += 1
+      resume = False
       elem = corpus_file["corpus"][corpusId]
       context = corpus_file["context"][corpusId]
       _tok_decode, _input_ids, last_hidden_state = encode_context(elem, context, model, tokenizer)

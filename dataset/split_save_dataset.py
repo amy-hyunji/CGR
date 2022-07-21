@@ -52,11 +52,19 @@ def construct_dataset(split):
    df_inputNum = len(df['input'])
    save_dict = {'input': [], 'output': [], 'output_tokid': []}
 
-   for i in range(args.filenum):
-      if i == 0: continue
-      df, save_dict = check_corpusId_emb(i, df, save_dict)
+   for i, (_input, _output) in enumerate(zip(df["input"], df["output"])):  
+      corpusId = corpus.index(_output)
+      if corpusId in corpusId_emb_dict.keys():
+         emb_dict = corpusId_emb_dict[corpusId]
+         output_tok = list(emb_dict.keys())
+         output_emb = list(emb_dict.values())
+         save_dict["input"].append(_input)
+         save_dict["output"].append(_output)
+         save_dict["output_tokid"].append(output_tok)
+      else:
+         print(f"{corpusId} does not exist!")
 
-   assert len(save_dict['input']) == df_inputNum 
+   assert len(save_dict['input']) == df_inputNum, f"len(save_dict[input]): {len(save_dict['input'])} // df_inputNum: {df_inputNum}" 
    return save_dict, f"gr_contextualized_{split}.pickle"
 
 def bi_construct_dataset(split, first_only=False):
@@ -230,7 +238,7 @@ if __name__ == "__main__":
 
    del group_tree 
    del corpusId_tokenList_dict 
-   del corpusId_emb_dict
+   #del corpusId_emb_dict
    del corpusId_fileId_dict 
    del tokId_corpus 
 

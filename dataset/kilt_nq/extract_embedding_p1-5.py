@@ -103,18 +103,21 @@ def construct_corpus():
       tokId = 2
       fileId = 1
       corpus_start = 0
-   
+  
+   s_id = 0
    for corpusId in tqdm(range(corpus_num)):
       if corpusId < corpus_start:
          continue
       if args.split_save and corpusId % save_cycle == 0 and corpusId != 0: 
          print(f'== Save fileId: {fileId}!')
          dump(f'{fileId}_results.pickle', {'tokId_emb': tokId_emb, 'tok_Idlist_dict': tok_Idlist_dict, 'tok_Id_dict': tok_Id_dict,  'tokId_corpus': tokId_corpus, 'corpusId_fileId_dict': corpusId_fileId_dict, 'corpusId_emb_dict': corpusId_emb_dict, 'corpusId_corpus_dict': corpusId_corpus_dict, 'corpusId_tokenList_dict': corpusId_tokenList_dict})
+         if s_id ==2 : sys.exit()
          corpusId_corpus_dict = {}
          corpusId_tokenList_dict = {}
          corpusId_emb_dict = {}
          tokId_corpus = {}
          fileId += 1
+         s_id += 1
       elem = corpus_file["corpus"][corpusId]
       context = corpus_file["context"][corpusId]
       _tok_decode, _input_ids, last_hidden_state = encode_context(elem, context, model, tokenizer)
@@ -317,8 +320,7 @@ if __name__ == "__main__":
    args = parser.parse_args()
 
    if args.split_save and os.path.exists(args.save_path):
-      if input('Are you trying to continue? (y/n)') != "y":
-         assert False 
+      print(f'CONTINUE!!!')
    else:
       assert not os.path.exists(args.save_path), f'{args.save_path} already exists!'
 

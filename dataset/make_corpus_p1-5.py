@@ -2,13 +2,12 @@ import json
 import pandas as pd
 from tqdm import tqdm
 
-#scale = 100
-#df_corpus = pd.read_csv(f'scale_{scale}_kilt_corpus.csv', header=0, names=['corpusId', 'corpus'])
-
-df_corpus = pd.read_csv(f'../kilt_total_corpus.csv', header=0, names=['corpusId', 'corpus'])
+dataset = "hotpot"
+scale = 5
+df_corpus = pd.read_csv(f'kilt_{dataset}/scale_{scale}_kilt_corpus.csv', header=0, names=['corpusId', 'corpus'])
 
 print(f'Open kilt_title_text ... ')
-with open('../kilt_title_text.json', 'r') as f:
+with open('kilt_title_text.json', 'r') as f:
     title_context = json.load(f)
 print(f'Done Opening ..!')
 
@@ -55,8 +54,7 @@ for corpusId in tqdm(df_corpus['corpusId']):
     df_ret.append([corpusId, title, context_list])
 
 df_ret = pd.DataFrame(df_ret, columns=['corpusId', 'corpus', 'context'])
-#df_ret.to_csv(f'scale_{scale}_kilt_corpus_p1-5.csv')
-df_ret.to_csv(f'scale_full_kilt_corpus_p1-5.csv')
+df_ret.to_csv(f'kilt_{dataset}/scale_{scale}_kilt_corpus_p1-5.csv')
 
 print(f'Done Saving!')
 print(f'No Context: {len(set(no_context))}')

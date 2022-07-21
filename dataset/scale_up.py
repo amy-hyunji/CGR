@@ -1,8 +1,18 @@
 import random
 import pandas as pd 
 
-prev_corpus = list(pd.read_csv('nq_toy_corpus.csv')['corpus'])
-total_corpus = list(pd.read_csv('../kilt_total_corpus.csv')['corpus'])
+#dataset = "nq"
+dataset = "hotpot"
+scale = 5
+
+
+total_corpus = list(pd.read_csv('kilt_total_corpus.csv')['corpus'])
+if dataset == "nq":
+   prev_corpus = list(pd.read_csv('kilt_nq/nq_toy_corpus.csv')['corpus'])
+   output_path = f'kilt_nq/scale_{scale}_kilt_corpus.csv'
+elif dataset == "hotpot":
+   prev_corpus = list(pd.read_csv("kilt_hotpot/scale_1_kilt_corpus.csv")["corpus"])
+   output_path = f'kilt_hotpot/scale_{scale}_kilt_corpus.csv'
 
 prev_len = len(prev_corpus)
 scale = 100
@@ -26,7 +36,7 @@ print(f'# of items in new corpus: {len(prev_corpus+additional_corpus)} -> {len(s
 assert len(set(prev_corpus+additional_corpus)) == len(set(prev_corpus))*scale, f"new corpus: {len(set(prev_corpus+additional_corpus))} || prev_corpus: {len(set(prev_corpus))}"
 
 df = pd.DataFrame({'corpus': prev_corpus+additional_corpus})
-df.to_csv(f'scale_{scale}_kilt_corpus.csv')
+df.to_csv(output_path)
 
 
         

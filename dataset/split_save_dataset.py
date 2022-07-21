@@ -156,6 +156,7 @@ if __name__ == "__main__":
    parser.add_argument("--emb_path", default=None, required=True, type=str)
    parser.add_argument("--filenum", default=None, required=True, type=int)
    parser.add_argument("--t5", action='store_true')
+   parser.add_argument("--bi", action='store_true')
    args = parser.parse_args()
 
    corpus_file = pd.read_csv(args.corpus)
@@ -175,83 +176,103 @@ if __name__ == "__main__":
 
    # tok_Idlist_dict -> construct_group -> tokGroupId_tokIdList, tokId_tokGroupId
    # tok_Id_dict
-   print(f'=== Construct Group')
-   tok_Idlist_dict = {}; tok_Id_dict = {}; tokId_emb = {}
-   for idx in tqdm(range(args.filenum)):
-      with open(os.path.join(args.save_path, f"{idx}_results.pickle"), 'rb') as f:
-         f_pickle = pickle.load(f)
-         _tok_Idlist_dict = f_pickle['tok_Idlist_dict']
-         _tok_Id_dict = f_pickle['tok_Id_dict']
+   if "tokId_emb.pickle" in os.listdir(args.save_path):
+      print(f"=== Pass Constructing Group!")
+      tokId_emb = pickle.load(open(os.path.join(args.save_path, "tokId_emb.pickle"), "rb"))
+   else:
+      print(f'=== Construct Group')
+      tok_Idlist_dict = {}; tok_Id_dict = {}; tokId_emb = {}
+      for idx in tqdm(range(args.filenum)):
+         with open(os.path.join(args.save_path, f"{idx}_results.pickle"), 'rb') as f:
+            f_pickle = pickle.load(f)
+            _tok_Idlist_dict = f_pickle['tok_Idlist_dict']
+            _tok_Id_dict = f_pickle['tok_Id_dict']
 
-         if 'tokId_emb' in f_pickle.keys():
-            _tokId_emb = f_pickle['tokId_emb']
-            for t_id, t_emb in _tokId_emb.items():
-               tokId_emb[t_id] = t_emb
-         else:
-            _corpusId_emb_dict = f_pickle['corpusId_emb_dict']
-            for _, emb_dict in _corpusId_emb_dict.items():
-               for t_id, t_emb in emb_dict.items():
-                  tokId_emb[t_id] = t_emb 
-
-         for _tok, _Idlist in _tok_Idlist_dict.items():
-            if _tok in tok_Idlist_dict.keys():
-               tok_Idlist_dict[_tok] = list(set(tok_Idlist_dict[_tok]+_Idlist))
+            if 'tokId_emb' in f_pickle.keys():
+               _tokId_emb = f_pickle['tokId_emb']
+               for t_id, t_emb in _tokId_emb.items():
+                  tokId_emb[t_id] = t_emb
             else:
-               tok_Idlist_dict[_tok] = _Idlist
-         for _tok, _Id in _tok_Id_dict.items():
-            tok_Id_dict[_tok] = _Id
-   tokId_tokGroupId, tokGroupId_tokIdList = construct_group()
-   dump("tokGroupId_tokIdList.pickle", tokGroupId_tokIdList)
-   dump("tokId_tokGroupId.pickle", tokId_tokGroupId)
-   dump("tokId_tokText.pickle", tok_Id_dict)
-   dump("tokId_emb.pickle", tokId_emb)
+               _corpusId_emb_dict = f_pickle['corpusId_emb_dict']
+               for _, emb_dict in _corpusId_emb_dict.items():
+                  for t_id, t_emb in emb_dict.items():
+                     tokId_emb[t_id] = t_emb 
 
-   del tok_Idlist_dict
-   del tokGroupId_tokIdList
-   del tok_Id_dict 
+            for _tok, _Idlist in _tok_Idlist_dict.items():
+               if _tok in tok_Idlist_dict.keys():
+                  tok_Idlist_dict[_tok] = list(set(tok_Idlist_dict[_tok]+_Idlist))
+               else:
+                  tok_Idlist_dict[_tok] = _Idlist
+            for _tok, _Id in _tok_Id_dict.items():
+               tok_Id_dict[_tok] = _Id
+      tokId_tokGroupId, tokGroupId_tokIdList = construct_group()
+      dump("tokGroupId_tokIdList.pickle", tokGroupId_tokIdList)
+      dump("tokId_tokGroupId.pickle", tokId_tokGroupId)
+      dump("tokId_tokText.pickle", tok_Id_dict)
+      dump("tokId_emb.pickle", tokId_emb)
+
+      del tok_Idlist_dict
+      del tokGroupId_tokIdList
+      del tok_Id_dict 
 
    # corpusId_tokenList_dict -> construct_group_prefix_tree -> group_tree 
    # construct tokId_corpus, corpusId_fileId_dict, corpusId_emb_dict 
-   print(f'=== Construct Trie')
-   corpusId_tokenList_dict = {}; tokId_corpus = {}; corpusId_fileId_dict = {}; corpusId_emb_dict = {}
-   for idx in tqdm(range(args.filenum)):
-      if idx == 0: continue
-      with open(os.path.join(args.save_path, f"{idx}_results.pickle"), 'rb') as f:
-         f_pickle = pickle.load(f)
-         _corpusId_tokenList_dict = f_pickle['corpusId_tokenList_dict']
-         _tokId_corpus = f_pickle['tokId_corpus']
-         _corpusId_fileId_dict = f_pickle['corpusId_fileId_dict']
-         _corpusId_emb_dict = f_pickle['corpusId_emb_dict']
-         for _corpusId, _tokenList in _corpusId_tokenList_dict.items():
-            corpusId_tokenList_dict[_corpusId] = _tokenList
-         for _tokId, _corpus in _tokId_corpus.items():
-            tokId_corpus[_tokId] = _corpus 
-         for _cId, _fId in _corpusId_fileId_dict.items():
-            corpusId_fileId_dict[_cId] = _fId
-         for _cId, _emb in _corpusId_emb_dict.items():
-            corpusId_emb_dict[_cId] = _emb
-   group_tree = construct_group_prefix_tree()
-   dump("groupId_tree.pickle", group_tree)
-   dump("tokId_corpus.pickle", tokId_corpus)
-   dump("corpusId_fileId.pickle", corpusId_fileId_dict)
-   dump("corpusId_emb.pickle", corpusId_emb_dict)
+   if "corpusId_emb.pickle" in os.listdir(args.save_path):
+      print(f"=== Pass Constructing trie")
+      corpusId_emb_dict = pickle.load(open(os.path.join(args.save_path, "corpusId_emb_dict.pickle"), "rb"))
+   else:
+      print(f'=== Construct Trie')
+      corpusId_tokenList_dict = {}; tokId_corpus = {}; corpusId_fileId_dict = {}; corpusId_emb_dict = {}
+      for idx in tqdm(range(args.filenum)):
+         if idx == 0: continue
+         with open(os.path.join(args.save_path, f"{idx}_results.pickle"), 'rb') as f:
+            f_pickle = pickle.load(f)
+            _corpusId_tokenList_dict = f_pickle['corpusId_tokenList_dict']
+            _tokId_corpus = f_pickle['tokId_corpus']
+            _corpusId_fileId_dict = f_pickle['corpusId_fileId_dict']
+            _corpusId_emb_dict = f_pickle['corpusId_emb_dict']
+            for _corpusId, _tokenList in _corpusId_tokenList_dict.items():
+               corpusId_tokenList_dict[_corpusId] = _tokenList
+            for _tokId, _corpus in _tokId_corpus.items():
+               tokId_corpus[_tokId] = _corpus 
+            for _cId, _fId in _corpusId_fileId_dict.items():
+               corpusId_fileId_dict[_cId] = _fId
+            for _cId, _emb in _corpusId_emb_dict.items():
+               corpusId_emb_dict[_cId] = _emb
+      group_tree = construct_group_prefix_tree()
+      dump("groupId_tree.pickle", group_tree)
+      dump("tokId_corpus.pickle", tokId_corpus)
+      dump("corpusId_fileId.pickle", corpusId_fileId_dict)
+      dump("corpusId_emb.pickle", corpusId_emb_dict)
 
-   del group_tree 
-   del corpusId_tokenList_dict 
-   #del corpusId_emb_dict
-   del corpusId_fileId_dict 
-   del tokId_corpus 
+      del group_tree 
+      del corpusId_tokenList_dict 
+      #del corpusId_emb_dict
+      del corpusId_fileId_dict 
+      del tokId_corpus 
 
-   ### construct dataset
-   print(f'=== Construct Train Dataset')
-   train_dict, train_fname = construct_dataset('train')
-   dump(train_fname, train_dict)
-   print(f'=== Construct Dev Dataset')
-   dev_dict, dev_fname = construct_dataset('dev')
-   dump(dev_fname, dev_dict)
-   print(f'=== Construct Test Dataset')
-   test_dict, test_fname = construct_dataset('test')
-   dump(test_fname, test_dict)
+   if args.bi:
+      ### construct dataset
+      print(f'=== Construct Bi Train Dataset')
+      train_dict, train_fname = bi_construct_dataset('train')
+      dump(train_fname, train_dict)
+      print(f'=== Construct Bi Dev Dataset')
+      dev_dict, dev_fname = bi_construct_dataset('dev')
+      dump(dev_fname, dev_dict)
+      print(f'=== Construct Bi Test Dataset')
+      test_dict, test_fname = bi_construct_dataset('test')
+      dump(test_fname, test_dict)
+   else:
+      ### construct dataset
+      print(f'=== Construct Train Dataset')
+      train_dict, train_fname = construct_dataset('train')
+      dump(train_fname, train_dict)
+      print(f'=== Construct Dev Dataset')
+      dev_dict, dev_fname = construct_dataset('dev')
+      dump(dev_fname, dev_dict)
+      print(f'=== Construct Test Dataset')
+      test_dict, test_fname = construct_dataset('test')
+      dump(test_fname, test_dict)
 
    print("DONE!!")
 

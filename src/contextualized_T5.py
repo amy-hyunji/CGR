@@ -1730,7 +1730,7 @@ class T5ForConditionalGeneration(T5PreTrainedModel):
         # labels => [bs,  output_token 개수]
         
         if self.train_c_emb:
-            lm_head_tensor = self.lm_head.weight.clone().detach().requires_grad_(False)
+            lm_head_tensor = self.lm_head.weight#.clone().detach().requires_grad_(False)
             lm_head_tensor = lm_head_tensor.to(sequence_output.device)
             lm_logits = torch.einsum("bod,cd->boc", sequence_output, lm_head_tensor) 
         else:

@@ -20,7 +20,7 @@ from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor, Callback, ModelSummary
 from pytorch_lightning.plugins import DDPPlugin, DeepSpeedPlugin
 
-from model import T5BiEncoder, T5FineTuner, T5JointTuner
+from model import T5BiEncoder, T5FineTuner, T5JointTuner, T5MeanTuner
 from pathlib import Path
 from typing import Any, Optional, Union
 from pytorch_lightning.utilities.types import STEP_OUTPUT
@@ -77,15 +77,19 @@ def main(args, train_params):
         model = T5JointTuner(args)
     elif args.model_type == "gr":
         model = T5FineTuner(args)
+    elif args.model_type == "split":
+        model = T5MeanTuner(args)
     else:
         assert False
 
+    """
     total_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     if torch.cuda.current_device() == 0:
         print('='*80)
         print(f"# of trainable parameters: {trainable_params}\n# of total parameters: {total_params}")
         print('='*80)
+    """
 
     if args.periflow:
         print(f'Using Periflow..')
@@ -188,12 +192,12 @@ if __name__ == "__main__":
         val_beam_size=hparam.val_beam_size,
         freeze_encoder=hparam.freeze_encoder,
         freeze_vocab_emb=hparam.freeze_vocab_emb,
-        contextualized_emb_num=hparam.contextualized_emb_num,  # new
         contextualized_file=hparam.contextualized_file,  # new - tokId_emb.pickle
         groupId2tokIdList=hparam.groupId2tokIdList,  # new - tokGroupId_tokIdList.pickle 
         tokId2groupId=hparam.tokId2groupId,  # new - tokId_tokGroupId.pickle 
         tokId2tokText=hparam.tokId2tokText,  # new - tokId_tokText.pickle 
         tokId2corpus=hparam.tokId2corpus,  # new - tokId_corpus.pickle 
+        corpus2EmbMean=hparam.corpus2EmbMean,  # new - tokId_corpus.pickle 
         tree_type=hparam.tree_type,  # new - nodeId_tokIdList.pickle
         tree_path=hparam.tree_path, # new
         nodeId_sup=hparam.nodeId_sup, # new
@@ -205,16 +209,18 @@ if __name__ == "__main__":
         limit_val_batches=hparam.limit_val_batches,
         train_c_emb=hparam.train_c_emb,
         bi_type=hparam.bi_type,
+        bi_loss=hparam.bi_loss if "bi_loss" in hparam else None,
         gr_decoder_only=hparam.gr_decoder_only,
         gr_decoder_only_encoder_ckpt=hparam.gr_decoder_only_encoder_ckpt,
-    )
+    ) 
     args = argparse.Namespace(**args_dict)
     assert not (args.do_train and args.do_test), "Choose between train|test"
     if args.model_type == "gr": assert args.tree_type in ["groupId", "nodeId", "clusterId"] 
-    if args.model_type == "bi": assert args.accelerator == "ddp", "ddp is only supported for bi-encoder!"
+    if args.model_type == "bi": 
+        assert args.accelerator == "ddp", "ddp is only supported for bi-encoder!"
+        assert args.bi_loss is not None
     if args.model_type == "joint" and args.do_test:
         assert args.eval_batch_size == 1, "Batch Size larger than 1 is not implemented yet!"
-    assert args.model_type in ["gr", "bi", "joint"]
 
     if torch.cuda.current_device() == 0:
         print("#" * 80)

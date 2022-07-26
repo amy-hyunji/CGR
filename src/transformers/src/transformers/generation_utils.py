@@ -2184,6 +2184,11 @@ class GenerationMixin:
                     break
 
             model_inputs = self.prepare_inputs_for_generation(input_ids, **model_kwargs)
+            if "decoder_inputs_embeds" in model_kwargs.keys():
+                model_inputs['decoder_inputs_embeds'] = model_kwargs['decoder_inputs_embeds']
+                del model_inputs["decoder_input_ids"]
+            if "decoder_input_ids" in model_kwargs.keys():
+                model_inputs['decoder_input_ids'] = model_kwargs['decoder_input_ids']
 
             outputs = self(
                 **model_inputs,

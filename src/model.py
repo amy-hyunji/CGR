@@ -455,13 +455,13 @@ class T5BiEncoder(T5BaseClass):
             self.test_em_score_list = []
             self.test_recall_score_list = []
 
-        self.contextualized_tokid2emb = pickle.load(open(self.hparams.contextualized_file, "rb"))
+        self.contextualized_tokid2emb = pickle.load(open(os.path.join(self.hparams.dataset, self.hparams.contextualized_file), "rb"))
         self.contextualized_tensor = torch.tensor(list(self.contextualized_tokid2emb.values())).to(self.device)
         if self.hparams.fp16:
             self.contextualized_tensor = self.contextualized_tensor.half()
         self.contextualized_token = list(self.contextualized_tokid2emb.keys())
-        self.tokId2corpus = pickle.load(open(self.hparams.tokId2corpus, "rb"))
         self.corpus2tokId = self._get_corpus2tokId()
+        self.tokId2corpus = pickle.load(open(os.path.join(self.hparams.dataset, self.hparams.tokId2corpus), "rb"))
 
         self.loss_fct = nn.CrossEntropyLoss()
         self.decoder_input_ids, self.decoder_attention_mask = self.get_decoder_input()

@@ -4,6 +4,8 @@ import torch
 import pickle
 import pandas as pd
 
+from tqdm import tqdm
+from collections import defaultdict
 from torch.utils.data import Dataset
 
 class JOINTDataset(Dataset):
@@ -66,7 +68,7 @@ class JOINTDataset(Dataset):
         }
 
 class GENREDataset(Dataset):
-    def __init__(self, tokenizer, split, hparams, tokid2emb):
+    def __init__(self, tokenizer, split, hparams, tokid2emb, corpus_tokenList_dict=None):
         self.hparams = hparams
         if split == "train":
             data_path = self.hparams.train_file
@@ -79,6 +81,11 @@ class GENREDataset(Dataset):
 
         assert data_path.endswith(".pickle"), "Only pickle file is possible!"
         data_dict = pickle.load(open(os.path.join(self.hparams.dataset, data_path), "rb")) # key - input, output, output_tokid, output_tokemb
+        
+        if self.hparams.reload_dataloader_every_n_epochs and corpus_tokenList_dict is not None:
+            for i, _output in enumerate(data_dict["output"]):
+                data_dict["output_tokid"][i] = corpus_tokenList_dict[_output]
+
         self.dataset = pd.DataFrame(data_dict)
         self.len = len(self.dataset)
         if torch.cuda.current_device() == 0:
@@ -136,6 +143,7 @@ class GENREDataset(Dataset):
             print(f"=" * 80)
 
         return source, target, input_, output_
+
 
     def __getitem__(self, idx):
         source, target, input_, output_ = self.convert_to_features(

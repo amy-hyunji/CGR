@@ -21,9 +21,11 @@ from grounded_T5 import T5ForConditionalGeneration as grounded_T5
 from joint_T5 import T5Model as joint_T5
 from split_T5 import T5ForConditionalGeneration as split_T5 
 from contextualized_T5 import T5ForConditionalGeneration as contextualized_T5
+
 from transformers import T5Config, T5Tokenizer, T5Model, T5EncoderModel, T5ForConditionalGeneration, BertTokenizer, Adafactor, AutoTokenizer
 from torch.utils.data import DataLoader
 from itertools import chain
+from tqdm import tqdm
 from collections import defaultdict
 
 from azure.storage.blob import (
@@ -460,8 +462,8 @@ class T5BiEncoder(T5BaseClass):
         if self.hparams.fp16:
             self.contextualized_tensor = self.contextualized_tensor.half()
         self.contextualized_token = list(self.contextualized_tokid2emb.keys())
-        self.corpus2tokId = self._get_corpus2tokId()
         self.tokId2corpus = pickle.load(open(os.path.join(self.hparams.dataset, self.hparams.tokId2corpus), "rb"))
+        self.corpus2tokId = self._get_corpus2tokId()
 
         self.loss_fct = nn.CrossEntropyLoss()
         self.decoder_input_ids, self.decoder_attention_mask = self.get_decoder_input()
@@ -783,6 +785,7 @@ class T5FineTuner(T5grTuner):
         # If in training mode, load ckpt for training
         if self.hparams.do_train:
             if self.hparams.train_c_emb:
+                assert not self.hparams.reload_dataloader_every_n_epochs
                 self.model = contextualized_T5.from_pretrained(
                     self.hparams.model_name_or_path, config=self.config, ignore_mismatched_sizes=True
                 )
@@ -879,13 +882,166 @@ class T5FineTuner(T5grTuner):
         self.cnt_over = 0
         self.len_test_dataset = len(self.test_dataloader())
 
+    def _encode_list(self, sen_list):
+        _tok = self.tokenizer(
+                    sen_list, 
+                    return_tensors='pt', 
+                    add_special_tokens=False, 
+                    max_length=self.hparams.max_context_length,
+                    padding="max_length",
+                    truncation=True
+                    )
+        _input_ids = _tok['input_ids'].to(self.device)
+        _attention_mask = _tok["attention_mask"].to(self.device)
+        _tok_decode = [self.tokenizer.convert_ids_to_tokens(_ids) for _ids in _input_ids]
+        encoder = self.model.get_encoder().eval()
+        model_ret = encoder(input_ids=_input_ids, attention_mask=_attention_mask, return_dict=True)
+        last_hidden_state = [state.detach().cpu().numpy() for state in model_ret["last_hidden_state"]] 
+        _input_ids = _input_ids.detach().cpu().numpy()
+        return _tok_decode, _input_ids, last_hidden_state
+
+    def _construct_sp(self):
+        tokId_emb = {} # {tokid: emb}
+        tok_Idlist_dict = defaultdict(list) # {tok_text: [Idlist of the tok]}
+        tok_Id_dict = {} # {Id: tok_text}
+
+        # tokId = 0 -> <pad> token 
+        _tok_decode, _input_ids, last_hidden_state = self._encode_list(["<pad>", "</s>"])
+        assert len(_tok_decode) == 2
+        
+        tok_Idlist_dict[_tok_decode[0][0]].append(0)
+        tok_Id_dict[0] = _tok_decode[0][0] 
+        assert _input_ids[0][0] == 0
+        tokId_emb[0] = last_hidden_state[0][0]
+
+        tok_Idlist_dict[_tok_decode[1][0]].append(1)
+        tok_Id_dict[1] = _tok_decode[1][0]
+        assert _input_ids[1][0] == 1
+        tokId_emb[1] = last_hidden_state[1][0]
+        
+        return tok_Idlist_dict, tok_Id_dict, tokId_emb
+
+    def _dump_corpus(self, corpus):
+
+        tok_Idlist_dict, tok_Id_dict, tokId_emb = self._construct_sp()
+        cur_tokId = 2; corpusId = 0
+        corpusId_tokenList_dict = {}; corpus_tokenList_dict = {}
+        print(f"Done Dumping SP tokens!\nStart dumping corpus!")
+        for i in tqdm(range(0, len(corpus), self.hparams.dump_batch_size)):
+            _corpus = corpus[i:i+self.hparams.dump_batch_size]
+            tok_decode_list, _, last_hidden_state_list = self._encode_list(_corpus)
+
+            for elem, tok_decode, last_hidden_state in zip(_corpus, tok_decode_list, last_hidden_state_list):
+                assert len(tok_decode) == len(last_hidden_state)
+                _tok_list = []
+                for i, (_tok, _last_hidden_state) in enumerate(zip(tok_decode, last_hidden_state)):
+                    if _tok == "<pad>": break
+                    tok_Id_dict[cur_tokId] = _tok
+                    tok_Idlist_dict[_tok].append(cur_tokId)
+                    if self.hparams.fp16:
+                        tokId_emb[cur_tokId] = _last_hidden_state
+                    _tok_list.append(cur_tokId)
+                    cur_tokId += 1
+
+                _tok_list.append(1)
+                corpusId_tokenList_dict[corpusId] = _tok_list
+                corpus_tokenList_dict[elem] = _tok_list
+                corpusId += 1
+
+        return tok_Idlist_dict, tok_Id_dict, tokId_emb, corpusId_tokenList_dict, corpus_tokenList_dict 
+
+    def _construct_group(self, tok_Idlist_dict):
+        tokId_tokGroupId = {}
+        tokGroupId_tokIdList = {}
+        tokGroupId = 2 ## assert tokGroupId 1 is </s> for generate()
+        tokTextList = list(tok_Idlist_dict.keys())
+        assert len(tokTextList) == len(set(tokTextList))
+        for tokText, tokIdList in tok_Idlist_dict.items():
+            if tokText == "</s>":
+                print(f"Found </s> and set it to 1!!!")
+                tokGroupId_tokIdList[1] = tokIdList  
+                for tokId in tokIdList:
+                    assert tokId not in tokId_tokGroupId.keys()
+                    tokId_tokGroupId[tokId] = 1d 
+            elif tokText == "<pad>":
+                print(f"Found <pad> and set it to 0!!!")
+                tokGroupId_tokIdList[0] = tokIdList  
+                for tokId in tokIdList:
+                    assert tokId not in tokId_tokGroupId.keys()
+                    tokId_tokGroupId[tokId] = 0 
+            else:
+                tokGroupId_tokIdList[tokGroupId] = tokIdList
+                for tokId in tokIdList:
+                    assert tokId not in tokId_tokGroupId.keys()
+                    tokId_tokGroupId[tokId] = tokGroupId
+                tokGroupId += 1
+        return tokId_tokGroupId, tokGroupId_tokIdList
+
+    def _construct_group_prefix_tree(self, corpusId_tokenList_dict, tokId_tokGroupId):
+        sys.setrecursionlimit(900000000)
+
+        constrained_dict = {}
+        for corpusId, tokIdList in corpusId_tokenList_dict.items():
+            cur_dict = constrained_dict # cur_dict[-2]: the node number
+            #tokIdList = list(corpusDict.keys())
+            tokGroupIdList = [tokId_tokGroupId[el] for el in tokIdList]
+            tokGroupIdList = [0] + tokGroupIdList
+            
+            for i in range(len(tokGroupIdList)-1):
+                prev = tokGroupIdList[i]
+                cur = tokGroupIdList[i+1]
+                
+                if i == len(tokGroupIdList)-2:
+                    if prev in cur_dict.keys():
+                        if cur not in cur_dict[prev].keys():
+                            cur_dict[prev][cur] = {} 
+                    else:
+                        cur_dict[prev] = {cur: {}}
+                else:
+                    if prev in cur_dict.keys():
+                        pass
+                    else:
+                        cur_dict[prev] = {}
+                    cur_dict = cur_dict[prev] 
+        return constrained_dict
+
+    def _dump_new_dataset(self):
+        corpus = list(pd.read_csv(self.hparams.corpus_file).fillna("")["corpus"])
+        tok_Idlist_dict, tok_Id_dict, tokId_emb, corpusId_tokenList_dict, corpus_tokenList_dict = self._dump_corpus(corpus) 
+        assert len(tokId_emb) == self.contextualized_emb_num
+        os.makedirs(self.hparams.output_dir, exist_ok=True)
+        with open(os.path.join(self.hparams.output_dir, 'temp_tokId_emb.pickle'), "wb") as f:
+            pickle.dump(tokId_emb, f)
+        self.model.set_contextualized_file(os.path.join(self.hparams.output_dir, "temp_tokId_emb.pickle"))
+        tokId_tokGroupId, tokGroupId_tokIdList = self._construct_group(tok_Idlist_dict)
+        groupId_tree = self._construct_group_prefix_tree(corpusId_tokenList_dict, tokId_tokGroupId)
+        self.model = self.model.train().to(self.device)
+        return tok_Id_dict,tokId_tokGroupId, tokGroupId_tokIdList, groupId_tree, tokId_emb, corpusId_tokenList_dict, corpus_tokenList_dict
+
     def _get_dataset(self, split):
-        dataset = GENREDataset(
-            tokenizer=self.tokenizer,
-            split=split,
-            hparams=self.hparams,
-            tokid2emb=self.contextualized_tokid2emb 
-        )
+        if self.hparams.reload_dataloader_every_n_epochs:
+            if self.print:
+                print(f"**** Dumping Dataset for Epoch {self.current_epoch}")
+            if self.current_epoch != 0:
+                self.tokId2tokText, self.tokId2groupId, self.groupId2tokId, self.trie, self.contextualized_tokid2emb, corpusId_tokenList_dict, corpus_tokenList_dict = self._dump_new_dataset()
+            else:
+                corpus_tokenList_dict = None
+            
+            dataset = GENREDataset(
+                tokenizer=self.tokenizer,
+                split=split,
+                hparams=self.hparams,
+                tokid2emb=self.contextualized_tokid2emb,
+                corpus_tokenList_dict=corpus_tokenList_dict
+            ) 
+
+        else:
+            dataset = GENREDataset(
+                tokenizer=self.tokenizer,
+                split=split,
+                hparams=self.hparams,
+                tokid2emb=self.contextualized_tokid2emb 
+            )
         return dataset
 
     def _get_max_tokId_from_tokIdList(self, tokIdList, score):
@@ -1029,7 +1185,7 @@ class T5FineTuner(T5grTuner):
             batch["source_ids"],
             attention_mask=batch["source_mask"],
             use_cache=True,
-            decoder_attention_mask=batch["target_mask"],
+            #decoder_attention_mask=batch["target_mask"],
             max_length=self.hparams.max_output_length,
             num_beams=self.hparams.val_beam_size,
             num_return_sequences=self.hparams.val_beam_size,

@@ -160,10 +160,10 @@ if __name__ == "__main__":
         dataset=hparam.dataset,
         model_name_or_path=hparam.model,
         tokenizer_name_or_path=hparam.tokenizer,
-        doc_encoder_model=hparam.doc_encoder_model,
+        doc_encoder_model=hparam.doc_encoder_model if "doc_encoder_model" in hparam else None,
         max_input_length=hparam.max_input_length,
         max_output_length=hparam.max_output_length,
-        max_context_length=hparam.max_context_length,
+        max_context_length=hparam.max_context_length if "max_context_length" in hparam else None,
         learning_rate=hparam.learning_rate,
         lr_scheduler=hparam.lr_scheduler,  # exponential, constant
         weight_decay=0.0,
@@ -173,6 +173,7 @@ if __name__ == "__main__":
         num_train_epochs=hparam.num_train_epochs,
         train_batch_size=hparam.train_batch_size,
         eval_batch_size=hparam.eval_batch_size,
+        dump_batch_size=hparam.dump_batch_size if "dump_batch_size" in hparam else None,
         gradient_accumulation_steps=hparam.gradient_accumulation_steps,
         n_gpu=hparam.n_gpu,
         num_workers=hparam.num_workers,
@@ -184,6 +185,7 @@ if __name__ == "__main__":
         train_file=hparam.train_file,
         dev_file=hparam.dev_file,
         test_file=arg_.test_file if arg_.test_file else hparam.test_file,
+        corpus_file=hparam.corpus_file if "corpus_file" in hparam else None,
         constrained_decoding=True,
         do_train=hparam.do_train,
         do_test=hparam.do_test,
@@ -197,7 +199,7 @@ if __name__ == "__main__":
         tokId2groupId=hparam.tokId2groupId,  # new - tokId_tokGroupId.pickle 
         tokId2tokText=hparam.tokId2tokText,  # new - tokId_tokText.pickle 
         tokId2corpus=hparam.tokId2corpus,  # new - tokId_corpus.pickle 
-        corpus2EmbMean=hparam.corpus2EmbMean,  # new - tokId_corpus.pickle 
+        corpus2EmbMean=hparam.corpus2EmbMean if "corpus2EmbMean" in hparam else None,  # new - tokId_corpus.pickle 
         tree_type=hparam.tree_type,  # new - nodeId_tokIdList.pickle
         tree_path=hparam.tree_path, # new
         nodeId_sup=hparam.nodeId_sup, # new
@@ -212,10 +214,13 @@ if __name__ == "__main__":
         bi_loss=hparam.bi_loss if "bi_loss" in hparam else None,
         gr_decoder_only=hparam.gr_decoder_only,
         gr_decoder_only_encoder_ckpt=hparam.gr_decoder_only_encoder_ckpt,
+        reload_dataloader_every_n_epochs=hparam.reload_dataloader_every_n_epochs if "reload_dataloader_every_n_epochs" in hparam else False,
     ) 
     args = argparse.Namespace(**args_dict)
     assert not (args.do_train and args.do_test), "Choose between train|test"
-    if args.model_type == "gr": assert args.tree_type in ["groupId", "nodeId", "clusterId"] 
+    if args.model_type == "gr": 
+        assert args.tree_type in ["groupId", "nodeId", "clusterId"] 
+        if args.reload_dataloader_every_n_epochs != 0: assert args.train_c_emb == False
     if args.model_type == "bi": 
         assert args.accelerator == "ddp", "ddp is only supported for bi-encoder!"
         assert args.bi_loss is not None
@@ -297,6 +302,7 @@ if __name__ == "__main__":
         logger=wandb_logger,
         check_val_every_n_epoch=args.check_val_every_n_epoch,
         callbacks=callbacks,
-        limit_val_batches=args.limit_val_batches
+        limit_val_batches=args.limit_val_batches,
+        reload_dataloaders_every_n_epochs=args.reload_dataloader_every_n_epochs
     )
     main(args, train_params)

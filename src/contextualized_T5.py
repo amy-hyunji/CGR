@@ -248,7 +248,7 @@ class T5LayerNorm(nn.Module):
         Construct a layernorm module in the T5 style. No bias and no subtraction of mean.
         """
         super().__init__()
-        self.weight = nn.Parameter(torch.ones(hidden_size))
+        self.weight = nn.Parameter(torch.ones(hidden_size))#.to(torch.cuda.current_device()))#.to(torch.cuda.current_device())
         self.variance_epsilon = eps
 
     def forward(self, hidden_states):
@@ -351,10 +351,10 @@ class T5Attention(nn.Module):
         self.inner_dim = self.n_heads * self.key_value_proj_dim
 
         # Mesh TensorFlow initialization to avoid scaling before softmax
-        self.q = nn.Linear(self.d_model, self.inner_dim, bias=False)
-        self.k = nn.Linear(self.d_model, self.inner_dim, bias=False)
-        self.v = nn.Linear(self.d_model, self.inner_dim, bias=False)
-        self.o = nn.Linear(self.inner_dim, self.d_model, bias=False)
+        self.q = nn.Linear(self.d_model, self.inner_dim, bias=False)#.cuda()
+        self.k = nn.Linear(self.d_model, self.inner_dim, bias=False)#.cuda()
+        self.v = nn.Linear(self.d_model, self.inner_dim, bias=False)#.cuda()
+        self.o = nn.Linear(self.inner_dim, self.d_model, bias=False)#.cuda()
 
         if self.has_relative_attention_bias:
             self.relative_attention_bias = nn.Embedding(self.relative_attention_num_buckets, self.n_heads)
@@ -857,6 +857,9 @@ class T5Stack(T5PreTrainedModel):
         self.model_parallel = False
         self.device_map = None
         self.gradient_checkpointing = False
+
+    def update_embed_tokens(self, emb_tokens):
+        self.embed_tokens=emb_tokens
 
     @add_start_docstrings(PARALLELIZE_DOCSTRING)
     def parallelize(self, device_map=None):
@@ -1537,15 +1540,15 @@ class T5ForConditionalGeneration(T5PreTrainedModel):
         encoder_config.is_encoder_decoder = False
         self.encoder = T5Stack(encoder_config, self.shared, cond=True)
 
-        decoder_config = copy.deepcopy(config)
-        decoder_config.is_decoder = True
-        decoder_config.is_encoder_decoder = False
-        decoder_config.num_layers = config.num_decoder_layers
+        self.decoder_config = copy.deepcopy(config)
+        self.decoder_config.is_decoder = True
+        self.decoder_config.is_encoder_decoder = False
+        self.decoder_config.num_layers = config.num_decoder_layers
         
         if self.train_c_emb:
-            self.decoder = T5Stack(decoder_config, self.lm_head, cond=True, train_c_emb=True)
+            self.decoder = T5Stack(self.decoder_config, self.lm_head, cond=True, train_c_emb=True)
         else:
-            self.decoder = T5Stack(decoder_config, self.dec_shared, cond=True)
+            self.decoder = T5Stack(self.decoder_config, self.dec_shared, cond=True)
 
 
         # Initialize weights and apply final processing
@@ -1579,6 +1582,10 @@ class T5ForConditionalGeneration(T5PreTrainedModel):
         self.device_map = None
         torch.cuda.empty_cache()
 
+    def set_contextualized_file(self, contextualized_file):
+        print(f"### Set to NEW contextualized file")
+        self.dec_shared, self.lm_head = self.set_lm_head(contextualized_file) 
+        self.decoder.update_embed_tokens(self.dec_shared) #= T5Stack(self.decoder_config, self.dec_shared, cond=True).cuda()
 
     def get_input_embeddings(self):
         return self.shared

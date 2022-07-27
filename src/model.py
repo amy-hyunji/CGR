@@ -1,6 +1,7 @@
 import os
 import re
 import sys
+import h5py
 import json
 import uuid
 import copy

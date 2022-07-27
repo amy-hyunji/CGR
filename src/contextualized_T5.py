@@ -1596,8 +1596,8 @@ class T5ForConditionalGeneration(T5PreTrainedModel):
         self.encoder.set_input_embeddings(new_embeddings)
         self.decoder.set_input_embeddings(new_embeddings)
 
-    def set_lm_head(self, file):
-        tokid_emb_dict = pickle.load(open(file, "rb"))
+    def set_lm_head(self, tokid_emb_dict):
+        #tokid_emb_dict = pickle.load(open(file, "rb"))
         contextualized_emb_list = list(tokid_emb_dict.values()) 
         if self.train_c_emb:
             contextualized_emb_list = nn.Embedding.from_pretrained(torch.FloatTensor(contextualized_emb_list), freeze=self.do_test)

@@ -882,21 +882,34 @@ class T5FineTuner(T5grTuner):
         self.cnt_over = 0
         self.len_test_dataset = len(self.test_dataloader())
 
-    def _encode_list(self, sen_list):
+    def _encode_list(self, sen_list, title_list):
+        if title_list is not None:        
+            context_list = [" ".join([_title, _sen]).strip() for (_title, _sen) in zip(title_list, sen_list)]
+            title_tok = [len(self.tokenizer(_title, return_tensors='pt', add_special_tokens=False).input_ids[0]) for _title in title_list]
+        else:
+            context_list = sen_list
+            title_tok = None
+
         _tok = self.tokenizer(
-                    sen_list, 
+                    context_list, 
                     return_tensors='pt', 
                     add_special_tokens=False, 
                     max_length=self.hparams.max_context_length,
                     padding="max_length",
                     truncation=True
                     )
+
         _input_ids = _tok['input_ids'].to(self.device)
         _attention_mask = _tok["attention_mask"].to(self.device)
-        _tok_decode = [self.tokenizer.convert_ids_to_tokens(_ids) for _ids in _input_ids]
         encoder = self.model.get_encoder().eval()
         model_ret = encoder(input_ids=_input_ids, attention_mask=_attention_mask, return_dict=True)
-        last_hidden_state = [state.detach().cpu().numpy() for state in model_ret["last_hidden_state"]] 
+        if title_tok is not None:
+            assert len(title_tok) == len(model_ret['last_hidden_state'])
+            last_hidden_state = [state[:toklen].detach().cpu().numpy() for (state, toklen) in zip(model_ret['last_hidden_state'], title_tok)]
+            _tok_decode = [self.tokenizer.convert_ids_to_tokens(_ids)[:toklen] for (_ids, toklen) in zip(_input_ids, title_tok)]
+        else:
+            last_hidden_state = [state.detach().cpu().numpy() for state in model_ret["last_hidden_state"]] 
+            _tok_decode = [self.tokenizer.convert_ids_to_tokens(_ids) for _ids in _input_ids]
         _input_ids = _input_ids.detach().cpu().numpy()
         return _tok_decode, _input_ids, last_hidden_state
 
@@ -906,7 +919,7 @@ class T5FineTuner(T5grTuner):
         tok_Id_dict = {} # {Id: tok_text}
 
         # tokId = 0 -> <pad> token 
-        _tok_decode, _input_ids, last_hidden_state = self._encode_list(["<pad>", "</s>"])
+        _tok_decode, _input_ids, last_hidden_state = self._encode_list(["<pad>", "</s>"], None)
         assert len(_tok_decode) == 2
         
         tok_Idlist_dict[_tok_decode[0][0]].append(0)
@@ -921,7 +934,7 @@ class T5FineTuner(T5grTuner):
         
         return tok_Idlist_dict, tok_Id_dict, tokId_emb
 
-    def _dump_corpus(self, corpus):
+    def _dump_corpus(self, corpus, context):
 
         tok_Idlist_dict, tok_Id_dict, tokId_emb = self._construct_sp()
         cur_tokId = 2; corpusId = 0
@@ -929,7 +942,11 @@ class T5FineTuner(T5grTuner):
         print(f"Done Dumping SP tokens!\nStart dumping corpus!")
         for i in tqdm(range(0, len(corpus), self.hparams.dump_batch_size)):
             _corpus = corpus[i:i+self.hparams.dump_batch_size]
-            tok_decode_list, _, last_hidden_state_list = self._encode_list(_corpus)
+            if context is not None:
+                _context = context[i:i+self.hparams.dump_batch_size]
+            else:
+                _context = None
+            tok_decode_list, _, last_hidden_state_list = self._encode_list(_corpus, _context)
 
             for elem, tok_decode, last_hidden_state in zip(_corpus, tok_decode_list, last_hidden_state_list):
                 assert len(tok_decode) == len(last_hidden_state)
@@ -962,7 +979,7 @@ class T5FineTuner(T5grTuner):
                 tokGroupId_tokIdList[1] = tokIdList  
                 for tokId in tokIdList:
                     assert tokId not in tokId_tokGroupId.keys()
-                    tokId_tokGroupId[tokId] = 1d 
+                    tokId_tokGroupId[tokId] = 1 
             elif tokText == "<pad>":
                 print(f"Found <pad> and set it to 0!!!")
                 tokGroupId_tokIdList[0] = tokIdList  
@@ -1006,8 +1023,17 @@ class T5FineTuner(T5grTuner):
         return constrained_dict
 
     def _dump_new_dataset(self):
-        corpus = list(pd.read_csv(self.hparams.corpus_file).fillna("")["corpus"])
-        tok_Idlist_dict, tok_Id_dict, tokId_emb, corpusId_tokenList_dict, corpus_tokenList_dict = self._dump_corpus(corpus) 
+        df = pd.read_csv(self.hparams.corpus_file)
+        if "context" in df.keys():
+            print(f'### Using corpus with paragraph')
+            corpus_file = df.fillna('')
+            corpus = corpus_file["corpus"][corpusId]
+            context = corpus_file["context"][corpusId]
+        else:
+            print(f'### Using corpus withOUT paragraph')
+            corpus = list(df.fillna("")["corpus"])
+            context = None
+        tok_Idlist_dict, tok_Id_dict, tokId_emb, corpusId_tokenList_dict, corpus_tokenList_dict = self._dump_corpus(corpus, context) 
         assert len(tokId_emb) == self.contextualized_emb_num
         os.makedirs(self.hparams.output_dir, exist_ok=True)
         with open(os.path.join(self.hparams.output_dir, 'temp_tokId_emb.pickle'), "wb") as f:

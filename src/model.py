@@ -215,7 +215,7 @@ class T5grTuner(T5BaseClass):
             {"contextualized_emb_num": self.contextualized_emb_num}
         )
         self.config.update(
-            {"contextualized_file": self.contextualized_tokid2emb}
+            {"contextualized_file": os.path.join(self.hparams.dataset, self.hparams.contextualized_file)}#self.contextualized_tokid2emb}
         )  # tokId_emb.pickle
         self.config.update({"freeze_vocab_emb": self.hparams.freeze_vocab_emb})
 
@@ -1044,10 +1044,10 @@ class T5FineTuner(T5grTuner):
             context = None
         tok_Idlist_dict, tok_Id_dict, tokId_emb, corpusId_tokenList_dict, corpus_tokenList_dict = self._dump_corpus(corpus, context) 
         assert len(tokId_emb) == self.contextualized_emb_num
-        # os.makedirs(self.hparams.output_dir, exist_ok=True)
-        # with open(os.path.join(self.hparams.output_dir, 'temp_tokId_emb.pickle'), "wb") as f:
-        #     pickle.dump(tokId_emb, f)
-        self.model.set_contextualized_file(tokId_emb) #(os.path.join(self.hparams.output_dir, "temp_tokId_emb.pickle"))
+        os.makedirs(self.hparams.output_dir, exist_ok=True)
+        with open(os.path.join(self.hparams.output_dir, 'temp_tokId_emb.pickle'), "wb") as f:
+            pickle.dump(tokId_emb, f)
+        self.model.set_contextualized_file(os.path.join(self.hparams.output_dir, "temp_tokId_emb.pickle"))
         tokId_tokGroupId, tokGroupId_tokIdList = self._construct_group(tok_Idlist_dict)
         groupId_tree = self._construct_group_prefix_tree(corpusId_tokenList_dict, tokId_tokGroupId)
         self.model = self.model.train().to(self.device)

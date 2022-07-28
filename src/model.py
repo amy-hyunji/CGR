@@ -891,12 +891,13 @@ class T5FineTuner(T5grTuner):
         self.cnt_over = 0
         self.len_test_dataset = len(self.test_dataloader())
 
-    def _encode_list(self, sen_list, title_list):
-        if title_list is not None:        
-            context_list = [" ".join([_title, _sen]).strip() for (_title, _sen) in zip(title_list, sen_list)]
+    def _encode_list(self, title_list, context_list):
+        if context_list is not None:        
+            context_list = [" ".join([_title, _sen]).strip() for (_title, _sen) in zip(title_list, context_list)]
             title_tok = [len(self.tokenizer(_title, return_tensors='pt', add_special_tokens=False).input_ids[0]) for _title in title_list]
+            #print("title_tok: ", title_tok)
         else:
-            context_list = sen_list
+            context_list = title_list
             title_tok = None
 
         _tok = self.tokenizer(
@@ -940,7 +941,8 @@ class T5FineTuner(T5grTuner):
         tok_Id_dict[1] = _tok_decode[1][0]
         assert _input_ids[1][0] == 1
         tokId_emb[1] = last_hidden_state[1][0]
-        
+       
+        assert len(tokId_emb) == 2
         return tok_Idlist_dict, tok_Id_dict, tokId_emb
 
     def _dump_corpus(self, corpus, context):
@@ -964,8 +966,7 @@ class T5FineTuner(T5grTuner):
                     if _tok == "<pad>": break
                     tok_Id_dict[cur_tokId] = _tok
                     tok_Idlist_dict[_tok].append(cur_tokId)
-                    if self.hparams.fp16:
-                        tokId_emb[cur_tokId] = _last_hidden_state
+                    tokId_emb[cur_tokId] = _last_hidden_state
                     _tok_list.append(cur_tokId)
                     cur_tokId += 1
 
@@ -1034,16 +1035,17 @@ class T5FineTuner(T5grTuner):
     def _dump_new_dataset(self):
         df = pd.read_csv(self.hparams.corpus_file)
         if "context" in df.keys():
-            print(f'### Using corpus with paragraph')
+            print(f'### Using corpus with paragraph: {len(df)}')
             corpus_file = df.fillna('')
             corpus = corpus_file["corpus"]
             context = corpus_file["context"]
+            assert len(corpus) == len(context)
         else:
-            print(f'### Using corpus withOUT paragraph')
+            print(f'### Using corpus withOUT paragraph: {len(df)}')
             corpus = list(df.fillna("")["corpus"])
             context = None
         tok_Idlist_dict, tok_Id_dict, tokId_emb, corpusId_tokenList_dict, corpus_tokenList_dict = self._dump_corpus(corpus, context) 
-        assert len(tokId_emb) == self.contextualized_emb_num
+        assert len(tokId_emb) == self.contextualized_emb_num, f"# of tokId_emb: {len(tokId_emb.keys())} // contextualized_emb_num: {self.contextualized_emb_num}"
         os.makedirs(self.hparams.output_dir, exist_ok=True)
         with open(os.path.join(self.hparams.output_dir, 'temp_tokId_emb.pickle'), "wb") as f:
             pickle.dump(tokId_emb, f)

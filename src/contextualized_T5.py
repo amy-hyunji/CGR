@@ -17,6 +17,7 @@
 
 import os
 import sys
+import h5py
 import copy
 import math
 import pickle
@@ -1597,7 +1598,15 @@ class T5ForConditionalGeneration(T5PreTrainedModel):
         self.decoder.set_input_embeddings(new_embeddings)
 
     def set_lm_head(self, file):
-        tokid_emb_dict = pickle.load(open(file, "rb"))
+        if file.endswith('.pickle'):
+           tokid_emb_dict = pickle.load(open(file, "rb"))
+        elif file.endswith('.hdf5'):
+           f = h5py.File(file, "r")
+           tokid_emb_dict = {}
+           for id in f.keys():
+              tokid_emb_dict[int(id)] = f[id]['emb'][()]
+        else:
+            assert False
         contextualized_emb_list = list(tokid_emb_dict.values()) 
         if self.train_c_emb:
             contextualized_emb_list = nn.Embedding.from_pretrained(torch.FloatTensor(contextualized_emb_list), freeze=self.do_test)

@@ -1,4 +1,5 @@
 import os
+import h5py
 import pickle
 import argparse
 import numpy as np
@@ -74,17 +75,78 @@ def do_total_cluster():
 
    return tokId2clusterId, cluster_tree
 
-def do_cluster():
+def _get_emb(id):
+   ''' 
+   if args.is_split:
+      return tokId_embs[str(id)]["emb"][()]
+   else:
+      return tokId_embs[id]
+   '''
+   return tokId_embs[id]
+  
+def split_do_cluster():
+
+   tokText2clusterIdList = defaultdict(list)
+   tokId2clusterId = {}
+   tokGroupId2clusterIdList = defaultdict(list)
+   clusterId2tokGroupId = {}
+   clusterId2tokText = {}
+   clusterId2clusterEmb = {}
+   clusterId = 0
+
+   for tokGroupId, id_list in tqdm(tokGroupId_tokIdList.items()):
+      text = tokId_tokText[id_list[0]]
+      emb_list = [tokId_embs[str(id)]['emb'][()] for id in id_list]
+    
+      # do cluster
+      if len(emb_list) > args.cluster_num:
+         df = pd.DataFrame(emb_list) 
+         if args.cluster_method == "k-means":
+            model = KMeans(n_clusters=args.cluster_num, algorithm='auto')
+            model.fit(df)
+            predicts = np.array(model.predict(df))
+            centers = model.cluster_centers_
+         else:
+            assert False 
+
+      else:
+         predicts = np.array([i for i  in range(len(id_list))])
+         centers = np.array(emb_list)
+      
+      clusterIdDict = {}
+      for i, center in enumerate(centers):
+         clusterIdDict[i] = clusterId 
+         clusterId2tokText[clusterId] = text
+         clusterId2clusterEmb[clusterId] = center
+         clusterId += 1
+
+      for _predict, _id in zip(predicts, id_list):
+         _group = tokId_tokGroupId[_id]
+         _clusterId = clusterIdDict[_predict]
+         tokGroupId2clusterIdList[_group].append(_clusterId)
+         clusterId2tokGroupId[_clusterId] = _group
+         tokId2clusterId[_id] = _clusterId
+         tokText2clusterIdList[text].append(_clusterId)
+
+      if text == "<pad>" or text == "</s>":
+         assert len(id_list) == 1 and len(tokText2clusterIdList[text]) == 1
+      if clusterId == 1: assert tokId2clusterId[0] == 0
+      if clusterId == 2: assert tokId2clusterId[1] == 1
+
+   return tokGroupId2clusterIdList, clusterId2tokGroupId, clusterId2tokText, tokText2clusterIdList, tokId2clusterId, clusterId2clusterEmb
+
+def no_split_do_cluster():
    no_cluster = 0
    total_cluster = 0
    tokText_emb = {}
 
    for id, text in tokId_tokText.items():
        if text in tokText_emb.keys():
-           tokText_emb[text].append([id, tokId_embs[id]])
+           tokText_emb[text].append([id, _get_emb(id)])
        else:
-           tokText_emb[text] = [[id, tokId_embs[id]]]
+           tokText_emb[text] = [[id, _get_emb(id)]]
    print(f'keys in tokText_emb: {len(tokText_emb.keys())}')
+
    tokText2clusterIdList = defaultdict(list)
    tokId2clusterId = {}
    tokGroupId2clusterIdList = defaultdict(list)
@@ -92,6 +154,8 @@ def do_cluster():
    clusterId2tokText = {}
    clusterId2clusterEmb = {}
    clusterId = 0 # 0,1 is for <pad> and </s>
+
+
    for text, val in tqdm(tokText_emb.items()):
       #print(f'Working on ID: {id} and Text: {text}')
       #print(f'# of embeddings: {len(tokText_emb[text])}')
@@ -100,7 +164,7 @@ def do_cluster():
 
       prev = False
 
-      if len(val) > args.cluster_num:
+      if len(emb_list) > args.cluster_num:
          prev = True
          # reduce the number of embedings to cluster_num by kmeans 
          df = pd.DataFrame(emb_list)
@@ -184,7 +248,19 @@ if __name__ == "__main__":
    parser.add_argument('--basedir', default=None, required=True, type=str)
    args = parser.parse_args()
 
-   tokId_embs = pickle.load(open(os.path.join(args.basedir,'tokId_emb.pickle'), 'rb'))
+   """
+   if args.is_split:
+      tokId_embs = {}
+      f = h5py.File(os.path.join(args.basedir, "tokId_emb.hdf5"), "r")
+      for id in f.keys():
+         tokId_embs[int(id)] = f[id]["emb"][()]
+   else:
+      tokId_embs = pickle.load(open(os.path.join(args.basedir,'tokId_emb.pickle'), 'rb'))
+   """
+   if args.is_split:
+      tokId_embs = h5py.File(os.path.join(args.basedir, "tokId_emb.hdf5"), "r")
+   else:
+      tokId_embs = pickle.load(open(os.path.join(args.basedir, "tokId_emb.pickle"), "rb"))
    tokId_corpus = pickle.load(open(os.path.join(args.basedir,'tokId_corpus.pickle'), 'rb'))
    tokId_tokText = pickle.load(open(os.path.join(args.basedir, 'tokId_tokText.pickle'), 'rb'))
    tokId_tokGroupId = pickle.load(open(os.path.join(args.basedir, "tokId_tokGroupId.pickle"), 'rb'))
@@ -202,9 +278,13 @@ if __name__ == "__main__":
       assert False
 
    if args.do_total:
+      if args.is_split: assert False
       tokId2clusterId, cluster_tree = do_total_cluster()
    else:
-      tokGroupId2clusterIdList, clusterId2tokGroupId, clusterId2tokText, tokText2clusterIdList, tokId2clusterId, clusterId2clusterEmb = do_cluster() 
+      if args.is_split:
+         tokGroupId2clusterIdList, clusterId2tokGroupId, clusterId2tokText, tokText2clusterIdList, tokId2clusterId, clusterId2clusterEmb = split_do_cluster() 
+      else:
+         tokGroupId2clusterIdList, clusterId2tokGroupId, clusterId2tokText, tokText2clusterIdList, tokId2clusterId, clusterId2clusterEmb = no_split_do_cluster() 
 
    print('Done clustering!!')
 

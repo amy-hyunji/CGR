@@ -20,13 +20,13 @@ from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor, Callback, ModelSummary
 from pytorch_lightning.plugins import DDPPlugin, DeepSpeedPlugin
 
-from model import T5BiEncoder, T5FineTuner, T5JointTuner, T5MeanTuner
+from model import T5BiEncoder, T5FineTuner#, T5JointTuner
 from pathlib import Path
 from typing import Any, Optional, Union
 from pytorch_lightning.utilities.types import STEP_OUTPUT
 
-from knockknock import slack_sender
-from slack import get_webhook_url, get_channel
+#from knockknock import slack_sender
+#from slack import get_webhook_url, get_channel
 
 
 def set_seed(seed):
@@ -67,7 +67,7 @@ class PeriFlowTrainer(Trainer):
         super().save_checkpoint(filepath, weights_only=weights_only, storage_options=storage_options)
         pf.upload_checkpoint()
 
-@slack_sender(webhook_url=get_webhook_url(), channel=get_channel())
+#@slack_sender(webhook_url=get_webhook_url(), channel=get_channel())
 def main(args, train_params):
     sys.setrecursionlimit(10000)
     set_seed(args.seed)
@@ -77,19 +77,15 @@ def main(args, train_params):
         model = T5JointTuner(args)
     elif args.model_type == "gr":
         model = T5FineTuner(args)
-    elif args.model_type == "split":
-        model = T5MeanTuner(args)
     else:
         assert False
 
-    """
     total_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     if torch.cuda.current_device() == 0:
         print('='*80)
         print(f"# of trainable parameters: {trainable_params}\n# of total parameters: {total_params}")
         print('='*80)
-    """
 
     if args.periflow:
         print(f'Using Periflow..')
@@ -138,10 +134,9 @@ def main(args, train_params):
 
 
 if __name__ == "__main__":
+    os.environ["CUDA_VISIBLE_DEVICES"]="3"
     parser = ArgumentParser()
     parser.add_argument("--config", default=None, required=True, type=str)
-    parser.add_argument("--test_file", default=None, type=str)
-    parser.add_argument("--test_name", default=None, type=str)
     arg_ = parser.parse_args()
 
     with open(arg_.config) as config_file:
@@ -159,11 +154,9 @@ if __name__ == "__main__":
         output_dir=hparam.output_dir,
         dataset=hparam.dataset,
         model_name_or_path=hparam.model,
-        tokenizer_name_or_path=hparam.tokenizer,
-        doc_encoder_model=hparam.doc_encoder_model if "doc_encoder_model" in hparam else None,
+        tokenizer_name_or_path=hparam.model,
         max_input_length=hparam.max_input_length,
         max_output_length=hparam.max_output_length,
-        max_context_length=hparam.max_context_length if "max_context_length" in hparam else None,
         learning_rate=hparam.learning_rate,
         lr_scheduler=hparam.lr_scheduler,  # exponential, constant
         weight_decay=0.0,
@@ -173,7 +166,6 @@ if __name__ == "__main__":
         num_train_epochs=hparam.num_train_epochs,
         train_batch_size=hparam.train_batch_size,
         eval_batch_size=hparam.eval_batch_size,
-        dump_batch_size=hparam.dump_batch_size if "dump_batch_size" in hparam else None,
         gradient_accumulation_steps=hparam.gradient_accumulation_steps,
         n_gpu=hparam.n_gpu,
         num_workers=hparam.num_workers,
@@ -184,48 +176,41 @@ if __name__ == "__main__":
         check_val_every_n_epoch=hparam.check_val_every_n_epoch,
         train_file=hparam.train_file,
         dev_file=hparam.dev_file,
-        test_file=arg_.test_file if arg_.test_file else hparam.test_file,
-        corpus_file=hparam.corpus_file if "corpus_file" in hparam else None,
+        test_file=hparam.test_file,
         constrained_decoding=True,
         do_train=hparam.do_train,
         do_test=hparam.do_test,
         test_model_path=hparam.test_model_path,
-        test_name=arg_.test_name if arg_.test_name else hparam.test_name,
+        test_name=hparam.test_name,
         val_beam_size=hparam.val_beam_size,
         freeze_encoder=hparam.freeze_encoder,
         freeze_vocab_emb=hparam.freeze_vocab_emb,
+        contextualized_emb_num=hparam.contextualized_emb_num,  # new
         contextualized_file=hparam.contextualized_file,  # new - tokId_emb.pickle
         groupId2tokIdList=hparam.groupId2tokIdList,  # new - tokGroupId_tokIdList.pickle 
         tokId2groupId=hparam.tokId2groupId,  # new - tokId_tokGroupId.pickle 
         tokId2tokText=hparam.tokId2tokText,  # new - tokId_tokText.pickle 
         tokId2corpus=hparam.tokId2corpus,  # new - tokId_corpus.pickle 
-        corpus2EmbMean=hparam.corpus2EmbMean if "corpus2EmbMean" in hparam else None,  # new - tokId_corpus.pickle 
         tree_type=hparam.tree_type,  # new - nodeId_tokIdList.pickle
         tree_path=hparam.tree_path, # new
+        count_tree=hparam.count_tree,
         nodeId_sup=hparam.nodeId_sup, # new
         embedding_model=hparam.embedding_model, # new - model used to extract embedding
         max_beam_search=hparam.max_beam_search, # new - select a token which has maximum score in groupId
+        count_beam_search=hparam.count_beam_search, # new
         model_type=hparam.model_type, # new - bi-encoder Training
         periflow=hparam.periflow, # new - periflow
         periflow_dir=hparam.periflow_dir, # new - directory of periflow
         limit_val_batches=hparam.limit_val_batches,
         train_c_emb=hparam.train_c_emb,
         bi_type=hparam.bi_type,
-        bi_loss=hparam.bi_loss if "bi_loss" in hparam else None,
         gr_decoder_only=hparam.gr_decoder_only,
         gr_decoder_only_encoder_ckpt=hparam.gr_decoder_only_encoder_ckpt,
-        reload_dataloader_every_n_epochs=hparam.reload_dataloader_every_n_epochs if "reload_dataloader_every_n_epochs" in hparam else False,
-    ) 
+    )
     args = argparse.Namespace(**args_dict)
     assert not (args.do_train and args.do_test), "Choose between train|test"
-    if args.model_type == "gr": 
-        assert args.tree_type in ["groupId", "nodeId", "clusterId"] 
-        if args.reload_dataloader_every_n_epochs != 0: assert args.train_c_emb == False
-    if args.model_type == "bi": 
-        assert args.accelerator == "ddp", "ddp is only supported for bi-encoder!"
-        assert args.bi_loss is not None
-    if args.model_type == "joint" and args.do_test:
-        assert args.eval_batch_size == 1, "Batch Size larger than 1 is not implemented yet!"
+    assert args.tree_type in ["groupId", "nodeId", "clusterId"]
+    if args.model_type == "bi": assert args.accelerator == "ddp", "ddp is only supported for bi-encoder!"
 
     if torch.cuda.current_device() == 0:
         print("#" * 80)
@@ -302,7 +287,6 @@ if __name__ == "__main__":
         logger=wandb_logger,
         check_val_every_n_epoch=args.check_val_every_n_epoch,
         callbacks=callbacks,
-        limit_val_batches=args.limit_val_batches,
-        reload_dataloaders_every_n_epochs=args.reload_dataloader_every_n_epochs
+        limit_val_batches=args.limit_val_batches
     )
     main(args, train_params)

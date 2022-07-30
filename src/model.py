@@ -28,6 +28,8 @@ from torch.utils.data import DataLoader
 from itertools import chain
 from tqdm import tqdm
 from collections import defaultdict
+from sklearn.cluster import KMeans, DBSCAN
+from sklearn.mixture import GaussianMixture 
 
 from azure.storage.blob import (
     BlobServiceClient,
@@ -301,7 +303,7 @@ class T5grTuner(T5BaseClass):
 
         if self.hparams.reload_dataloader_every_n_epochs:
             print(f'### Dumping Contextualized Embedding from Test CKPT!')
-            self.tokId2tokText, self.tokId2groupId, self.groupId2tokId, self.trie, self.contextualized_tokid2emb, corpusId_tokenList_dict, corpus_tokenList_dict = self._dump_new_dataset()
+            self.tokId2tokText, self.tokId2groupId, self.groupId2tokId, self.trie, self.contextualized_tokid2emb, corpus_tokenList_dict = self._dump_new_dataset()
 
         ret_dict = self._test_step(batch, batch_idx, return_elem=True)
         if ret_dict is None: return None 
@@ -897,12 +899,13 @@ class T5FineTuner(T5grTuner):
         self.cnt_over = 0
         self.len_test_dataset = len(self.test_dataloader())
 
-    def _encode_list(self, sen_list, title_list):
-        if title_list is not None:        
-            context_list = [" ".join([_title, _sen]).strip() for (_title, _sen) in zip(title_list, sen_list)]
+    def _encode_list(self, title_list, context_list):
+        if context_list is not None:        
+            context_list = [" ".join([_title, _sen]).strip() for (_title, _sen) in zip(title_list, context_list)]
             title_tok = [len(self.tokenizer(_title, return_tensors='pt', add_special_tokens=False).input_ids[0]) for _title in title_list]
+            #print("title_tok: ", title_tok)
         else:
-            context_list = sen_list
+            context_list = title_list
             title_tok = None
 
         _tok = self.tokenizer(
@@ -952,7 +955,7 @@ class T5FineTuner(T5grTuner):
         else:
             self._add_id4hdf5(f, 0, last_hidden_state[0][0])
             self._add_id4hdf5(f, 1, last_hidden_state[1][0])
-            return tok_Idlist_dict, None, tokId_emb
+            return tok_Idlist_dict, tok_Id_dict, None
         
 
     def _add_id4hdf5(self, f, _id, _data):
@@ -961,12 +964,13 @@ class T5FineTuner(T5grTuner):
         return
 
     def _dump_cluster_corpus(self, corpus, context):
-        dump_path = os.path.join(self.hparams.output_dir "temp_tokId_emb.hdf5")
+        os.makedirs(self.hparams.output_dir, exist_ok=True)
+        dump_path = os.path.join(self.hparams.output_dir, "temp_tokId_emb.hdf5")
         if os.path.exists(dump_path):
             os.system(f'rm {dump_path}')
         f = h5py.File(dump_path, 'w', libver='latest')
 
-        tok_Idlist_dict, _, tokId_emb = self._construct_sp(f) 
+        tok_Idlist_dict, tok_Id_dict, _ = self._construct_sp(f) 
         cur_tokId=2; corpusId=0
         corpusId_tokenList_dict = {}; corpus_tokenList_dict = {}
         print(f"Done Dumping SP tokens!\nStart dumping corpus!")
@@ -985,8 +989,7 @@ class T5FineTuner(T5grTuner):
                     if _tok == "<pad>": break
                     tok_Id_dict[cur_tokId] = _tok
                     tok_Idlist_dict[_tok].append(cur_tokId)
-                    if self.hparams.fp16:
-                        tokId_emb[cur_tokId] = _last_hidden_state
+                    self._add_id4hdf5(f, cur_tokId, _last_hidden_state)
                     _tok_list.append(cur_tokId)
                     cur_tokId += 1
 
@@ -995,7 +998,8 @@ class T5FineTuner(T5grTuner):
                 corpus_tokenList_dict[elem] = _tok_list
                 corpusId += 1
 
-        return tok_Idlist_dict, tok_Id_dict, tokId_emb, corpusId_tokenList_dict, corpus_tokenList_dict 
+
+        return tok_Idlist_dict, tok_Id_dict, dump_path, corpusId_tokenList_dict, corpus_tokenList_dict 
 
 
     def _dump_corpus(self, corpus, context):
@@ -1019,8 +1023,7 @@ class T5FineTuner(T5grTuner):
                     if _tok == "<pad>": break
                     tok_Id_dict[cur_tokId] = _tok
                     tok_Idlist_dict[_tok].append(cur_tokId)
-                    if self.hparams.fp16:
-                        tokId_emb[cur_tokId] = _last_hidden_state
+                    tokId_emb[cur_tokId] = _last_hidden_state
                     _tok_list.append(cur_tokId)
                     cur_tokId += 1
 
@@ -1086,38 +1089,107 @@ class T5FineTuner(T5grTuner):
                     cur_dict = cur_dict[prev] 
         return constrained_dict
 
+    def _do_cluster(self, tokGroupId_tokIdList, tokId_tokGroupId, tokId_embs, tokId_tokText):
+        assert self.hparams.cluster_num > 0
+        tokText2clusterIdList = defaultdict(list)
+        tokId2clusterId = {}
+        tokGroupId2clusterIdList = defaultdict(list)
+        clusterId2tokGroupId = {}
+        clusterId2tokText = {}
+        clusterId2clusterEmb = {}
+        clusterId = 0
+
+        for tokGroupId, id_list in tqdm(tokGroupId_tokIdList.items()):
+            text = tokId_tokText[id_list[0]]
+            emb_list = [tokId_embs[str(id)]['emb'][()] for id in id_list]
+            #emb_list = [tokId_embs[id] for id in id_list]
+            
+            # do cluster
+            if len(emb_list) > self.hparams.cluster_num:
+                df = pd.DataFrame(emb_list) 
+                kmeans = KMeans(n_clusters=self.hparams.cluster_num, algorithm='auto')
+                kmeans.fit(df)
+                predicts = np.array(kmeans.predict(df))
+                centers = kmeans.cluster_centers_
+
+            else:
+                predicts = np.array([i for i  in range(len(id_list))])
+                centers = np.array(emb_list)
+            
+            clusterIdDict = {}
+            for i, center in enumerate(centers):
+                clusterIdDict[i] = clusterId 
+                clusterId2tokText[clusterId] = text
+                clusterId2clusterEmb[clusterId] = center 
+                clusterId += 1
+
+            for _predict, _id in zip(predicts, id_list):
+                _group = tokId_tokGroupId[_id]
+                _clusterId = clusterIdDict[_predict]
+                tokGroupId2clusterIdList[_group].append(_clusterId)
+                clusterId2tokGroupId[_clusterId] = _group
+                tokId2clusterId[_id] = _clusterId
+                tokText2clusterIdList[text].append(_clusterId)
+
+            if text == "<pad>" or text == "</s>":
+                assert len(id_list) == 1 and len(tokText2clusterIdList[text]) == 1
+            if clusterId == 1: assert tokId2clusterId[0] == 0
+            if clusterId == 2: assert tokId2clusterId[1] == 1
+
+        return tokGroupId2clusterIdList, clusterId2tokGroupId, clusterId2tokText, tokText2clusterIdList, tokId2clusterId, clusterId2clusterEmb
+
+
+
     def _dump_new_dataset(self):
         df = pd.read_csv(self.hparams.corpus_file)
         if "context" in df.keys():
-            print(f'### Using corpus with paragraph')
+            print(f'### Using corpus with paragraph: {len(df)}')
             corpus_file = df.fillna('')
             corpus = corpus_file["corpus"]
             context = corpus_file["context"]
+            assert len(corpus) == len(context)
         else:
-            print(f'### Using corpus withOUT paragraph')
+            print(f'### Using corpus withOUT paragraph: {len(df)}')
             corpus = list(df.fillna("")["corpus"])
             context = None
         
         if self.hparams.cluster_num == -1:
             tok_Idlist_dict, tok_Id_dict, tokId_emb, corpusId_tokenList_dict, corpus_tokenList_dict = self._dump_corpus(corpus, context) 
+            assert len(tokId_emb) == self.contextualized_emb_num, f"# of tokId_emb: {len(tokId_emb.keys())} // contextualized_emb_num: {self.contextualized_emb_num}"
+            os.makedirs(self.hparams.output_dir, exist_ok=True)
+            with open(os.path.join(self.hparams.output_dir, 'temp_tokId_emb.pickle'), "wb") as f:
+                pickle.dump(tokId_emb, f)
+            self.model.set_contextualized_file(os.path.join(self.hparams.output_dir, "temp_tokId_emb.pickle"))
+            tokId_tokGroupId, tokGroupId_tokIdList = self._construct_group(tok_Idlist_dict)
+            groupId_tree = self._construct_group_prefix_tree(corpusId_tokenList_dict, tokId_tokGroupId)
+            self.model = self.model.train().to(self.device)
+            return tok_Id_dict, tokId_tokGroupId, tokGroupId_tokIdList, groupId_tree, tokId_emb, corpus_tokenList_dict
+        
         else:
-            tok_Idlist_dict, tok_Id_dict, tokId_emb, corpusId_tokenList_dict, corpus_tokenList_dict = self._dump_cluster_corpus(corpus, context) 
-        assert len(tokId_emb) == self.contextualized_emb_num
-        os.makedirs(self.hparams.output_dir, exist_ok=True)
-        with open(os.path.join(self.hparams.output_dir, 'temp_tokId_emb.pickle'), "wb") as f:
-            pickle.dump(tokId_emb, f)
-        self.model.set_contextualized_file(os.path.join(self.hparams.output_dir, "temp_tokId_emb.pickle"))
-        tokId_tokGroupId, tokGroupId_tokIdList = self._construct_group(tok_Idlist_dict)
-        groupId_tree = self._construct_group_prefix_tree(corpusId_tokenList_dict, tokId_tokGroupId)
-        self.model = self.model.train().to(self.device)
-        return tok_Id_dict,tokId_tokGroupId, tokGroupId_tokIdList, groupId_tree, tokId_emb, corpusId_tokenList_dict, corpus_tokenList_dict
+            tok_Idlist_dict, tok_Id_dict, dump_path, corpusId_tokenList_dict, corpus_tokenList_dict = self._dump_cluster_corpus(corpus, context) 
+            tokId_emb = h5py.File(dump_path, 'r')
+            #tok_Idlist_dict, tok_Id_dict, tokId_emb, corpusId_tokenList_dict, corpus_tokenList_dict = self._dump_corpus(corpus, context) 
+            tokId_tokGroupId, tokGroupId_tokIdList = self._construct_group(tok_Idlist_dict)
+            groupId_tree = self._construct_group_prefix_tree(corpusId_tokenList_dict, tokId_tokGroupId)
+            tokGroupId2clusterIdList, clusterId2tokGroupId, clusterId2tokText, tokText2clusterIdList, tokId2clusterId, clusterId2clusterEmb = self._do_cluster(tokGroupId_tokIdList, tokId_tokGroupId, tokId_emb, tok_Id_dict)
+            corpus_clusterList_dict = self._construct_corpus2clusterList(corpus_tokenList_dict, tokId2clusterId)
+            with open(os.path.join(self.hparams.output_dir, 'temp_clusterId_emb.pickle'), "wb") as f:
+                pickle.dump(clusterId2clusterEmb, f)
+            self.model.set_contextualized_file(os.path.join(self.hparams.output_dir, "temp_clusterId_emb.pickle"))
+            assert len(clusterId2clusterEmb.keys()) == self.contextualized_emb_num, f"# of clusterId2clusterEmb: {len(clusterId2clusterEmb.keys())} // contextualized_emb_num: {self.contextualized_emb_num}"
+            return clusterId2tokText, clusterId2tokGroupId, tokGroupId2clusterIdList, groupId_tree, clusterId2clusterEmb, corpus_clusterList_dict 
+
+    def _construct_corpus2clusterList(self, corpus_tokenList_dict, tokId2clusterId):
+        corpus_clusterList_dict = {}
+        for sen, tokenList in corpus_tokenList_dict.items():
+            corpus_clusterList_dict[sen] = [tokId2clusterId[el] for el in tokenList] 
+        return corpus_clusterList_dict
 
     def _get_dataset(self, split):
         if self.hparams.reload_dataloader_every_n_epochs:
-            if self.print:
-                print(f"**** Dumping Dataset for Epoch {self.current_epoch}")
             if self.current_epoch != 0:
-                self.tokId2tokText, self.tokId2groupId, self.groupId2tokId, self.trie, self.contextualized_tokid2emb, corpusId_tokenList_dict, corpus_tokenList_dict = self._dump_new_dataset()
+                if self.print: print(f"**** Dumping Dataset for Epoch {self.current_epoch}")
+                self.tokId2tokText, self.tokId2groupId, self.groupId2tokId, self.trie, self.contextualized_tokid2emb, corpus_tokenList_dict = self._dump_new_dataset()
             else:
                 corpus_tokenList_dict = None
             

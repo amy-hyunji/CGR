@@ -1,7 +1,10 @@
 import os
 import sys
+import h5py
+import torch
 import argparse 
 import pickle
+import numpy as np
 import pandas as pd
 from argparse import ArgumentParser
 from transformers import AutoTokenizer, AutoModel, T5EncoderModel, T5Tokenizer
@@ -52,6 +55,11 @@ def construct_dataset(split):
    df_inputNum = len(df['input'])
    save_dict = {'input': [], 'output': [], 'output_tokid': []}
 
+   for i in tqdm(range(args.filenum)):
+      if i == 0: continue
+      check_corpusId_emb(i, df, save_dict)      
+
+   """
    for i, (_input, _output) in enumerate(zip(df["input"], df["output"])):  
       corpusId = corpus.index(_output)
       if corpusId in corpusId_emb_dict.keys():
@@ -63,6 +71,7 @@ def construct_dataset(split):
          save_dict["output_tokid"].append(output_tok)
       else:
          print(f"{corpusId} does not exist!")
+   """
 
    assert len(save_dict['input']) == df_inputNum, f"len(save_dict[input]): {len(save_dict['input'])} // df_inputNum: {df_inputNum}" 
    return save_dict, f"gr_contextualized_{split}.pickle"
@@ -176,27 +185,17 @@ if __name__ == "__main__":
 
    # tok_Idlist_dict -> construct_group -> tokGroupId_tokIdList, tokId_tokGroupId
    # tok_Id_dict
-   if "tokId_emb.pickle" in os.listdir(args.save_path):
+   if "tokId_tokGroupId.pickle" in os.listdir(args.save_path):
       print(f"=== Pass Constructing Group!")
-      tokId_emb = pickle.load(open(os.path.join(args.save_path, "tokId_emb.pickle"), "rb"))
+      tokId_tokGroupId = pickle.load(open(os.path.join(args.save_path, "tokId_tokGroupId.pickle"), 'rb')) 
    else:
       print(f'=== Construct Group')
-      tok_Idlist_dict = {}; tok_Id_dict = {}; tokId_emb = {}
+      tok_Idlist_dict = {}; tok_Id_dict = {}
       for idx in tqdm(range(args.filenum)):
          with open(os.path.join(args.save_path, f"{idx}_results.pickle"), 'rb') as f:
             f_pickle = pickle.load(f)
             _tok_Idlist_dict = f_pickle['tok_Idlist_dict']
             _tok_Id_dict = f_pickle['tok_Id_dict']
-
-            if 'tokId_emb' in f_pickle.keys():
-               _tokId_emb = f_pickle['tokId_emb']
-               for t_id, t_emb in _tokId_emb.items():
-                  tokId_emb[t_id] = t_emb
-            else:
-               _corpusId_emb_dict = f_pickle['corpusId_emb_dict']
-               for _, emb_dict in _corpusId_emb_dict.items():
-                  for t_id, t_emb in emb_dict.items():
-                     tokId_emb[t_id] = t_emb 
 
             for _tok, _Idlist in _tok_Idlist_dict.items():
                if _tok in tok_Idlist_dict.keys():
@@ -206,20 +205,24 @@ if __name__ == "__main__":
             for _tok, _Id in _tok_Id_dict.items():
                tok_Id_dict[_tok] = _Id
       tokId_tokGroupId, tokGroupId_tokIdList = construct_group()
-      dump("tokGroupId_tokIdList.pickle", tokGroupId_tokIdList)
-      dump("tokId_tokGroupId.pickle", tokId_tokGroupId)
-      dump("tokId_tokText.pickle", tok_Id_dict)
-      dump("tokId_emb.pickle", tokId_emb)
-
       del tok_Idlist_dict
+      print(f'dump tokGroupId_tokIdList')
+      dump("tokGroupId_tokIdList.pickle", tokGroupId_tokIdList)
       del tokGroupId_tokIdList
+      print(f'dump tokId_tokGroupId')
+      dump("tokId_tokGroupId.pickle", tokId_tokGroupId)
+      tokId_tokGroupId
+      print(f'dump tokId_tokText')
+      dump("tokId_tokText.pickle", tok_Id_dict)
       del tok_Id_dict 
+      print('DONE')
+
 
    # corpusId_tokenList_dict -> construct_group_prefix_tree -> group_tree 
    # construct tokId_corpus, corpusId_fileId_dict, corpusId_emb_dict 
    if "corpusId_emb.pickle" in os.listdir(args.save_path):
       print(f"=== Pass Constructing trie")
-      corpusId_emb_dict = pickle.load(open(os.path.join(args.save_path, "corpusId_emb_dict.pickle"), "rb"))
+      corpusId_emb_dict = pickle.load(open(os.path.join(args.save_path, "corpusId_emb.pickle"), "rb"))
    else:
       print(f'=== Construct Trie')
       corpusId_tokenList_dict = {}; tokId_corpus = {}; corpusId_fileId_dict = {}; corpusId_emb_dict = {}
@@ -230,26 +233,54 @@ if __name__ == "__main__":
             _corpusId_tokenList_dict = f_pickle['corpusId_tokenList_dict']
             _tokId_corpus = f_pickle['tokId_corpus']
             _corpusId_fileId_dict = f_pickle['corpusId_fileId_dict']
-            _corpusId_emb_dict = f_pickle['corpusId_emb_dict']
             for _corpusId, _tokenList in _corpusId_tokenList_dict.items():
                corpusId_tokenList_dict[_corpusId] = _tokenList
             for _tokId, _corpus in _tokId_corpus.items():
-               tokId_corpus[_tokId] = _corpus 
+               tokId_corpus[_tokId] = _corpus
             for _cId, _fId in _corpusId_fileId_dict.items():
-               corpusId_fileId_dict[_cId] = _fId
-            for _cId, _emb in _corpusId_emb_dict.items():
-               corpusId_emb_dict[_cId] = _emb
+               corpusId_fileId_dict[_cId] = _fId 
       group_tree = construct_group_prefix_tree()
-      dump("groupId_tree.pickle", group_tree)
-      dump("tokId_corpus.pickle", tokId_corpus)
-      dump("corpusId_fileId.pickle", corpusId_fileId_dict)
-      dump("corpusId_emb.pickle", corpusId_emb_dict)
-
-      del group_tree 
       del corpusId_tokenList_dict 
-      #del corpusId_emb_dict
-      del corpusId_fileId_dict 
+      dump("groupId_tree.pickle", group_tree)
+      del group_tree 
+      dump("tokId_corpus.pickle", tokId_corpus)
       del tokId_corpus 
+      dump("corpusId_fileId.pickle", corpusId_fileId_dict)
+      del corpusId_fileId_dict 
+
+   """
+   Dump corpusId_emb // tokId_emb
+   """
+   tokId_emb_hdf5 = os.path.join(args.save_path, "tokId_emb.hdf5")
+   #corpusId_emb_hdf5 = os.path.join(args.save_path, "corpusId_emb.hdf5")
+
+   if os.path.exists(tokId_emb_hdf5):
+      print(f"Remove tokId_emb.hdf5")
+      os.system(f"rm {tokId_emb_hdf5}")
+   f = h5py.File(tokId_emb_hdf5, "w") 
+
+   for fname in tqdm(os.listdir(args.save_path)):
+      if "_results" not in fname:
+         continue
+      else:
+         fid = int(fname.split("_results")[0])
+         f_pickle = pickle.load(open(os.path.join(args.save_path, fname), "rb"))
+
+         if 'tokId_emb' in f_pickle.keys():
+               _tokId_emb = f_pickle['tokId_emb']
+               for t_id, t_emb in tqdm(_tokId_emb.items()):
+                  if str(t_id) in f.keys(): continue
+                  group = f.create_group(str(t_id))
+                  group.create_dataset("emb", data=t_emb) 
+                  #tokId_emb[t_id] = torch.tensor(t_emb).half()
+         else:
+               assert False
+               _corpusId_emb_dict = f_pickle['corpusId_emb_dict']
+               for _, emb_dict in _corpusId_emb_dict.items():
+                  for t_id, t_emb in emb_dict.items():
+                     group = tokId_emb_hdf5.create_group(str(t_id))
+                     group.create_dataset("emb", data=t_emb)
+                     #tokId_emb[t_id] = torch.tensor(t_emb).half() 
 
    if args.bi:
       ### construct dataset

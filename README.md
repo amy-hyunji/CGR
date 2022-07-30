@@ -33,17 +33,17 @@ dir: `./src/config/full/gr`<br/>
 `scale3_org_nq_toy_bi_p1-5_full_p1-5_ckpt_cluster_5_train.json`: scale3, beam20, subtree constraint 사용x<br/><br/>
 
 ### dataset ###
-dir: `./dataset`
+dir: `./dataset`<br/>
 `emb_analysis.ipynb`: ["Enc-Dec", "Enc-mean", "Enc-first"] 비교<br/>
 `make_candidate.py`: nq_toy_p1-5_cand.json 사용할때 필요한 tokId2candidate.pickle를 만들기<br/>
 `make_count_subtree.sh, make_count_subtree.py`: cluster_5(groupId마다 n_cluster=5)인 세팅에서 subtree에 나오는 title 개수 미리 계산, f"{args.cluster_method}_clusterId_count_subtree_{args.cluster_num}.pickle" 꼴로 저장, 각 노드마다 [-1]에 subtree에 있는 title 개수 저장<br/><br/>
 
 ### transformers ###
-dir: `./src`
+dir: `./src`<br/>
 `loss_transformers`: modeling_t5.py에 실험했던 loss들 구현<br/>
 `total_cluster_transformers`: modeling_t5.py의 def _shift_right(), generation_utils.py의 def beam_search()에 pad_token_id(13382), eos_token_id(21) 지정<br/>
 `subtree_transformers`: generation_utils.py의 def beam_search() 수정, generation_beam_search.py의 class BeamSearchScorer() - def process() 수정<br/><br/>
 
 ### model.py ###
-dir: `./src`
+dir: `./src`<br/>
 `model_py_total_cluster_ver.py`: total_cluster 돌릴 때 pad_token_id, eos_token_id이 0,1이 아니라 13382,21이므로 model.py에서 이를 반영(total_cluster 돌릴 때 model.py를 model_py_total_cluster_ver.py로 바꿔서 돌려야합니다.)<br/><br/>

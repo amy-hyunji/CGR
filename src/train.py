@@ -262,10 +262,10 @@ if __name__ == "__main__":
             ckpt_path = None
     else:
         checkpoint_callback = ModelCheckpoint(
-            monitor="val em",
+            monitor="val_em",
             mode="max",
             dirpath=args.output_dir,
-            filename="{epoch:02d}-{val_loss:.2f}",
+            filename="{epoch:02d}-{val_em:.2f}",
             save_top_k=5,
         )
     callbacks.append(checkpoint_callback)

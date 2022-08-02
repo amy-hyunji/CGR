@@ -300,7 +300,7 @@ class T5grTuner(T5BaseClass):
         self.em_score_list = []
         self.recall_score_list = []
         self.log(
-            "val em",
+            "val_em",
             avg_em,
             on_step=False,
             on_epoch=True,
@@ -320,10 +320,12 @@ class T5grTuner(T5BaseClass):
         return
 
     def test_step(self, batch, batch_idx):
-
+    
+        """
         if self.hparams.reload_dataloader_every_n_epochs:
             print(f'### Dumping Contextualized Embedding from Test CKPT!')
             self.tokId2tokText, self.tokId2groupId, self.groupId2tokId, self.trie, self.contextualized_tokid2emb, self.corpus_tokenList_dict = self._dump_new_dataset(base=False)
+        """
 
         ret_dict = self._test_step(batch, batch_idx, return_elem=True)
         if ret_dict is None: return None 
@@ -654,7 +656,7 @@ class T5BiEncoder(T5BaseClass):
         self.em_score_list = []
         self.recall_score_list = []
         self.log(
-            "val em",
+            "val_em",
             avg_em,
             on_step=False,
             on_epoch=True,
@@ -1204,8 +1206,9 @@ class T5FineTuner(T5grTuner):
             corpus_clusterList_dict = self._construct_corpus2clusterList(corpus_tokenList_dict, tokId2clusterId)
             with open(os.path.join(self.hparams.output_dir, 'temp_clusterId_emb.pickle'), "wb") as f:
                 pickle.dump(clusterId2clusterEmb, f)
-            if not base: self.model.set_contextualized_file(os.path.join(self.hparams.output_dir, "temp_clusterId_emb.pickle"))
-            assert len(clusterId2clusterEmb.keys()) == self.contextualized_emb_num, f"# of clusterId2clusterEmb: {len(clusterId2clusterEmb.keys())} // contextualized_emb_num: {self.contextualized_emb_num}"
+            if not base: 
+                self.model.set_contextualized_file(os.path.join(self.hparams.output_dir, "temp_clusterId_emb.pickle"))
+                assert len(clusterId2clusterEmb.keys()) == self.contextualized_emb_num, f"# of clusterId2clusterEmb: {len(clusterId2clusterEmb.keys())} // contextualized_emb_num: {self.contextualized_emb_num}"
             return clusterId2tokText, clusterId2tokGroupId, tokGroupId2clusterIdList, groupId_tree, clusterId2clusterEmb, corpus_clusterList_dict 
 
     def _construct_corpus2clusterList(self, corpus_tokenList_dict, tokId2clusterId):
@@ -1215,7 +1218,7 @@ class T5FineTuner(T5grTuner):
         return corpus_clusterList_dict
 
     def _get_dataset(self, split):
-        if self.hparams.reload_dataloader_every_n_epochs:
+        if self.hparams.reload_dataloader_every_n_epochs and split!="test":
             if self.current_epoch != 0:
                 if self.print: print(f"**** Dumping Dataset for Epoch {self.current_epoch}")
                 self.tokId2tokText, self.tokId2groupId, self.groupId2tokId, self.trie, self.contextualized_tokid2emb, self.corpus_tokenList_dict = self._dump_new_dataset(base=False)
@@ -1362,7 +1365,7 @@ class T5FineTuner(T5grTuner):
         for idx, (_query, _pred, _gt) in enumerate(zip(query, preds, gt_text)):
             _em = self._calculate_em(_pred[0], _gt)
             _recall = self._calculate_recall(_pred, _gt)
-            if self.print and idx == 0:
+            if self.print and self.current_epoch==0 and idx == 0:
                 print(f"$" * 50)
                 print(f"query: {_query}\npreds: {_pred}\ngt: {_gt}")
                 print(f"em: {_em} // recall: {_recall}")
@@ -1427,7 +1430,6 @@ class T5FineTuner(T5grTuner):
             return em_list, recall_list
 
 
-
     def _find_unique_path(self, seq, trie):
         _ids = seq.tolist()
         _ids = [int(elem) for elem in _ids]
@@ -1466,7 +1468,7 @@ class T5FineTuner(T5grTuner):
             generated_ids.append(1)
         return generated_ids
 
-
+    
     def _test_step(self, batch, batch_idx, return_elem=False):
        
         # for case where it resume test 
@@ -1510,6 +1512,7 @@ class T5FineTuner(T5grTuner):
                 ),
                 early_stopping=True,
             )
+
             _generated_text = self.ids_to_text(_generated_ids)
             inum = len(_generated_ids) // self.hparams.val_beam_size
             assert inum == len(test_output) 
@@ -1525,11 +1528,11 @@ class T5FineTuner(T5grTuner):
                 ].detach().cpu().numpy().tolist()
                 for i in range(inum)
             ]
-            """ 
+            '''   
             for b_texts, b_ids in zip(generated_text, generated_ids):
                 for _text, _ids in zip(b_texts, b_ids):
                     g_ids = [self.tokId2groupId[el] for el in _ids]
-            """
+            ''' 
             print(f"prediction: {generated_text}")
             print("*"*80) 
             for bid, (batch_text, batch_ids) in enumerate(zip(generated_text, generated_ids)):
@@ -1573,11 +1576,11 @@ class T5FineTuner(T5grTuner):
                     over[bid] = 1
             if over.count(1) == test_num:
                 break
-            """
+            ''' 
             if (over.count(1) == test_num) or (self.cnt_over == self.len_test_dataset):
                 self.cnt_over += over.count(1)
                 break
-            """
+            ''' 
             
         for i in range(len(unique_pred_list)):
             unique_pred_list[i] = unique_pred_list[i][:self.hparams.val_beam_size]
@@ -1606,7 +1609,83 @@ class T5FineTuner(T5grTuner):
             }
         else:
             return em_list, recall_list
+    
+    """
+    def _test_step(self, batch, batch_idx, return_elem=False):
+       
+        # for case where it resume test 
+        test_input = []
+        for _input in batch['input']:
+            if _input in self.test_input_list: continue
+            else: test_input.append(_input) 
+        test_num = len(test_input)
+        start_num = len(batch['input'])-test_num
+        if test_num == 0: return None
 
+        test_output = batch['output'][start_num:]
+        test_source_ids = batch['source_ids'][start_num:]
+        test_source_masks = batch['source_mask'][start_num:]
+        test_target_ids = batch['target_ids'][start_num:]
+        test_target_masks = batch['target_mask'][start_num:]
+        assert len(test_output) == test_num, f'test_output: {len(test_output)}\ttest_num: {test_num}'
+
+        _trie_list = [copy.deepcopy(self.trie) for _ in range(test_num)]
+        
+        #unique_pred = []; unique_ids = []
+        unique_pred_list = [[] for _ in range(test_num)] 
+        unique_ids_list = [[] for _ in range(test_num)] 
+        over = [0]*test_num
+        
+        _generated_ids = self.model.generate(
+            test_source_ids, 
+            attention_mask=test_source_masks,
+            use_cache=True,
+            decoder_attention_mask=test_target_masks,
+            max_length=self.hparams.max_output_length,
+            num_beams=self.hparams.val_beam_size,
+            num_return_sequences=self.hparams.val_beam_size,
+            early_stopping=True,
+        )
+
+        _generated_text = self.ids_to_text(_generated_ids)
+        inum = len(_generated_ids) // self.hparams.val_beam_size
+        assert inum == len(test_output) 
+        generated_text = [
+            _generated_text[
+                i * self.hparams.val_beam_size : (i + 1) * self.hparams.val_beam_size
+            ]
+            for i in range(inum)
+        ]
+        generated_ids = [
+            _generated_ids[
+                i * self.hparams.val_beam_size : (i+1) * self.hparams.val_beam_size
+            ].detach().cpu().numpy().tolist()
+            for i in range(inum)
+        ]
+
+        #self._flush_first_beam_dict()
+        #if self.print: print(f"## UNIQUE PRED: {unique_pred[:self.hparams.val_beam_size]}")
+        em_list, recall_list = self.calculate_scores(
+            generated_text, batch["output"], batch["input"], batch_idx
+        )
+        if return_elem:
+            assert (
+                len(list(test_input))
+                == len(list(generated_text))
+                == len(list(em_list))
+            )
+            return {
+                "input": list(test_input),
+                "gt": list(test_output),
+                "gt_tok": [el.detach().cpu().numpy().tolist() for el in test_target_ids],
+                "pred": list(generated_text),
+                "pred_tok": list(generated_ids),
+                "em": list(em_list),
+                "recall": list(recall_list),
+            }
+        else:
+            return em_list, recall_list
+    """
 
 class T5JointTuner(T5BaseClass):
     def __init__(self, args):
@@ -1861,7 +1940,7 @@ class T5JointTuner(T5BaseClass):
             sync_dist=True,
         )
         self.log(
-            "val em",
+            "val_em",
             avg_em, 
             on_step=False,
             on_epoch=True,

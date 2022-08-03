@@ -117,7 +117,6 @@ class GENREDataset(Dataset):
             source = self.source_dict[input_]
 
         target = batch["output_tokid"]  # load from file
-        
         if len(target) > self.hparams.max_output_length:
             target = target[: self.hparams.max_output_length]
             att = [1] * self.hparams.max_output_length

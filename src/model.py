@@ -200,7 +200,12 @@ class T5grTuner(T5BaseClass):
         self.config = T5Config.from_pretrained(self.hparams.model_name_or_path)
         if self.hparams.contextualized_file is None:
             print(f'No Given Contextualized Dataset File!\nConstruct New One :)')
-            self.tokId2tokText, self.tokId2groupId, self.groupId2tokId, self.trie, self.contextualized_tokid2emb, self.corpus_tokenList_dict = self._dump_new_dataset(base=True)
+            if self.hparams.do_train:
+               print(f'*** Construct from Base Model!')
+               self.tokId2tokText, self.tokId2groupId, self.groupId2tokId, self.trie, self.contextualized_tokid2emb, self.corpus_tokenList_dict = self._dump_new_dataset(path="base")
+            else:
+               print(f'*** Construct from Trained Model!')
+               self.tokId2tokText, self.tokId2groupId, self.groupId2tokId, self.trie, self.contextualized_tokid2emb, self.corpus_tokenList_dict = self._dump_new_dataset(path="test")
             if self.hparams.cluster_num > 0:
                 self.config.update(
                     {'contextualized_file': os.path.join(self.hparams.output_dir, "temp_clusterId_emb.pickle")}
@@ -1162,7 +1167,7 @@ class T5FineTuner(T5grTuner):
 
 
 
-    def _dump_new_dataset(self, base=False):
+    def _dump_new_dataset(self, path=None):
         df = pd.read_csv(self.hparams.corpus_file)
         if "context" in df.keys():
             print(f'### Using corpus with paragraph: {len(df)}')
@@ -1175,13 +1180,19 @@ class T5FineTuner(T5grTuner):
             corpus = list(df.fillna("")["corpus"])
             context = None
 
-        if base:
+        if path == "base":
             _model = T5EncoderModel.from_pretrained('t5-base').cuda()
-            print(f'=== Model in {_model.device} ===')
+            if self.print: print(f'=== Model in {_model.device} ===')
             _tokenizer = T5Tokenizer.from_pretrained('t5-base') 
-        else:
+        elif path == "test":
+            _model = T5EncoderModel.from_pretrained(self.hparams.test_model_path).cuda()
+            if self.print: print(f'=== Model in {_model.device} ===')
+            _tokenizer = T5Tokenizer.from_pretrained(self.hparams.test_model_path)
+        elif path is None:
             _model = self.model
             _tokenizer = self.tokenizer
+        else:
+            assert False
 
         if self.hparams.cluster_num == -1:
             tok_Idlist_dict, tok_Id_dict, tokId_emb, corpusId_tokenList_dict, corpus_tokenList_dict = self._dump_corpus(corpus, context, _model, _tokenizer) 
@@ -1190,7 +1201,7 @@ class T5FineTuner(T5grTuner):
                 pickle.dump(tokId_emb, f)
             tokId_tokGroupId, tokGroupId_tokIdList = self._construct_group(tok_Idlist_dict)
             groupId_tree = self._construct_group_prefix_tree(corpusId_tokenList_dict, tokId_tokGroupId)
-            if not base: 
+            if path is None: 
                 assert len(tokId_emb) == self.contextualized_emb_num, f"# of tokId_emb: {len(tokId_emb.keys())} // contextualized_emb_num: {self.contextualized_emb_num}"
                 self.model.set_contextualized_file(os.path.join(self.hparams.output_dir, "temp_tokId_emb.pickle"))
                 self.model = self.model.train().to(self.device)
@@ -1206,7 +1217,7 @@ class T5FineTuner(T5grTuner):
             corpus_clusterList_dict = self._construct_corpus2clusterList(corpus_tokenList_dict, tokId2clusterId)
             with open(os.path.join(self.hparams.output_dir, 'temp_clusterId_emb.pickle'), "wb") as f:
                 pickle.dump(clusterId2clusterEmb, f)
-            if not base: 
+            if path is None: 
                 self.model.set_contextualized_file(os.path.join(self.hparams.output_dir, "temp_clusterId_emb.pickle"))
                 assert len(clusterId2clusterEmb.keys()) == self.contextualized_emb_num, f"# of clusterId2clusterEmb: {len(clusterId2clusterEmb.keys())} // contextualized_emb_num: {self.contextualized_emb_num}"
             return clusterId2tokText, clusterId2tokGroupId, tokGroupId2clusterIdList, groupId_tree, clusterId2clusterEmb, corpus_clusterList_dict 
@@ -1218,10 +1229,10 @@ class T5FineTuner(T5grTuner):
         return corpus_clusterList_dict
 
     def _get_dataset(self, split):
-        if self.hparams.reload_dataloader_every_n_epochs and split!="test":
-            if self.current_epoch != 0:
+        if self.hparams.reload_dataloader_every_n_epochs:
+            if split!="test" and self.current_epoch != 0:
                 if self.print: print(f"**** Dumping Dataset for Epoch {self.current_epoch}")
-                self.tokId2tokText, self.tokId2groupId, self.groupId2tokId, self.trie, self.contextualized_tokid2emb, self.corpus_tokenList_dict = self._dump_new_dataset(base=False)
+                self.tokId2tokText, self.tokId2groupId, self.groupId2tokId, self.trie, self.contextualized_tokid2emb, self.corpus_tokenList_dict = self._dump_new_dataset(path=None)
             
             dataset = GENREDataset(
                 tokenizer=self.tokenizer,
@@ -1230,7 +1241,6 @@ class T5FineTuner(T5grTuner):
                 tokid2emb=self.contextualized_tokid2emb,
                 corpus_tokenList_dict=self.corpus_tokenList_dict
             ) 
-
         else:
             dataset = GENREDataset(
                 tokenizer=self.tokenizer,

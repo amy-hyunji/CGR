@@ -1274,6 +1274,7 @@ class T5FineTuner(T5grTuner):
                 assert len(tokId_emb) == self.contextualized_emb_num, f"# of tokId_emb: {len(tokId_emb.keys())} // contextualized_emb_num: {self.contextualized_emb_num}"
                 self.model.set_contextualized_file(os.path.join(self.hparams.output_dir, "temp_tokId_emb.pickle"))
                 self.model = self.model.train().to(self.device)
+            del _model; del _tokenizer
             return tok_Id_dict, tokId_tokGroupId, tokGroupId_tokIdList, groupId_tree, tokId_emb, corpus_tokenList_dict
         
         else:
@@ -1290,6 +1291,7 @@ class T5FineTuner(T5grTuner):
                 assert len(clusterId2clusterEmb.keys()) == self.contextualized_emb_num, f"# of clusterId2clusterEmb: {len(clusterId2clusterEmb.keys())} // contextualized_emb_num: {self.contextualized_emb_num}"
                 self.model.set_contextualized_file(os.path.join(self.hparams.output_dir, "temp_clusterId_emb.pickle"))
                 self.model = self.model.train().to(self.device)
+            del _model; del _tokenizer
             return clusterId2tokText, clusterId2tokGroupId, tokGroupId2clusterIdList, groupId_tree, clusterId2clusterEmb, corpus_clusterList_dict 
 
     def _construct_corpus2clusterList(self, corpus_tokenList_dict, tokId2clusterId):

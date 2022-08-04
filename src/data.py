@@ -86,7 +86,19 @@ class GENREDataset(Dataset):
             for i, _output in enumerate(data_dict["output"]):
                 data_dict["output_tokid"][i] = corpus_tokenList_dict[_output]
 
-        self.dataset = pd.DataFrame(data_dict)
+        if split == "test":
+            self.dataset = {'input': [], 'output': [], 'output_tokid': []}
+            for _input, _output, _output_tok_id in zip(data_dict['input'], data_dict['output'], data_dict['output_tokid']):
+                if _input in self.dataset['input']: 
+                    continue 
+                else:
+                    self.dataset['input'].append(_input)
+                    self.dataset['output'].append(_output)
+                    self.dataset['output_tokid'].append(_output_tok_id)
+            self.dataset = pd.DataFrame(self.dataset)
+        else:
+            self.dataset = pd.DataFrame(data_dict)
+
         self.len = len(self.dataset)
         if torch.cuda.current_device() == 0:
             print(

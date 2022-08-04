@@ -197,15 +197,29 @@ class T5grTuner(T5BaseClass):
         self.save_hyperparameters(args)
 
         os.makedirs(self.hparams.output_dir, exist_ok=True)
+        os.makedirs(self.hparams.dataset, exist_ok=True)
         self.config = T5Config.from_pretrained(self.hparams.model_name_or_path)
         if self.hparams.contextualized_file is None:
-            print(f'No Given Contextualized Dataset File!\nConstruct New One :)')
             if self.hparams.do_train:
-               print(f'*** Construct from Base Model!')
-               self.tokId2tokText, self.tokId2groupId, self.groupId2tokId, self.trie, self.contextualized_tokid2emb, self.corpus_tokenList_dict = self._dump_new_dataset(path="base")
-            else:
-               print(f'*** Construct from Trained Model!')
-               self.tokId2tokText, self.tokId2groupId, self.groupId2tokId, self.trie, self.contextualized_tokid2emb, self.corpus_tokenList_dict = self._dump_new_dataset(path="test")
+                if self.hparams.resume_from_checkpoint is None:
+                    if self.hparams.cluster_num > 0 and f"k-means_corpus_tokenList_{self.hparams.cluster_num}.pickle" in os.listdir(self.hparams.dataset):
+                        print(f'***** Loading Dataset from Local!!')
+                        self.tokId2tokText, self.tokId2groupId, self.groupId2tokId, self.trie, self.contextualized_tokid2emb, self.corpus_tokenList_dict = self._load_dataset(epoch=0)
+                    if self.hparams.cluster_num == -1 and "corpus_tokenList.pickle" in os.listdir(self.hparams.dataset):
+                        print(f'***** Loading Dataset from Local!!')
+                        self.tokId2tokText, self.tokId2groupId, self.groupId2tokId, self.trie, self.contextualized_tokid2emb, self.corpus_tokenList_dict = self._load_dataset(epoch=0)
+                    else:
+                        print(f'***** Constructing New One :) !!')
+                        self.tokId2tokText, self.tokId2groupId, self.groupId2tokId, self.trie, self.contextualized_tokid2emb, self.corpus_tokenList_dict = self._dump_new_dataset(path="base")
+                        self._dump_all(path="base")
+
+                else:
+                    load_epoch = int(self.hparams.resume_from_checkpoint.split('/')[-1].split('=')[1].split('-')[0])
+                    print(f'***** Loading Dataset from Epoch: {load_epoch}!!')
+                    self.tokId2tokText, self.tokId2groupId, self.groupId2tokId, self.trie, self.contextualized_tokid2emb, self.corpus_tokenList_dict = self._load_dataset(epoch=load_epoch)
+            
+            if self.hparams.do_test:
+                self.tokId2tokText, self.tokId2groupId, self.groupId2tokId, self.trie, self.contextualized_tokid2emb, self.corpus_tokenList_dict = self._dump_new_dataset(path="test")
             if self.hparams.cluster_num > 0:
                 self.config.update(
                     {'contextualized_file': os.path.join(self.hparams.output_dir, "temp_clusterId_emb.pickle")}
@@ -251,6 +265,55 @@ class T5grTuner(T5BaseClass):
             self.corpus_tokenList_dict = None
 
         self.save_epoch = []
+
+    def _load_dataset(self, epoch):
+        if epoch == 0:
+            load_path = self.hparams.dataset
+        else:
+            load_path = os.path.join(self.hparams.output_dir, f"best_tfmr_{epoch}")
+
+        if self.hparams.cluster_num > 0:
+            tokId2tokText = pickle.load(open(os.path.join(load_path, f'k-means_clusterId_tokText_{self.hparams.cluster_num}.pickle'), 'rb'))
+            tokId2groupId = pickle.load(open(os.path.join(load_path, f'k-means_clusterId_tokGroupId_{self.hparams.cluster_num}.pickle'), 'rb'))
+            groupId2tokId = pickle.load(open(os.path.join(load_path, f'k-means_tokGroupId_clusterIdList_{self.hparams.cluster_num}.pickle'), 'rb'))
+            trie = pickle.load(open(os.path.join(load_path, 'groupId_tree.pickle'), 'rb'))
+            contextualized_tokid2emb = pickle.load(open(os.path.join(load_path, f'k-means_clusterId_clusterEmb_{self.hparams.cluster_num}.pickle'), 'rb'))
+            corpus_tokenList_dict = pickle.load(open(os.path.join(load_path, f'k-means_corpus_tokenList_{self.hparams.cluster_num}.pickle'), 'rb'))
+        else:
+            tokId2tokText = pickle.load(open(os.path.join(load_path, 'tokId_tokText.pickle'), 'rb'))
+            tokId2groupId = pickle.load(open(os.path.join(load_path, 'tokId_tokGroupId.pickle'), 'rb'))
+            groupId2tokId = pickle.load(open(os.path.join(load_path, 'tokGroupId_tokIdList.pickle'), 'rb'))
+            trie = pickle.load(open(os.path.join(load_path, 'groupId_tree.pickle'), 'rb'))
+            contextualized_tokid2emb = pickle.load(open(os.path.join(load_path, 'tokId_emb.pickle'), 'rb'))
+            corpus_tokenList_dict = pickle.load(open(os.path.join(load_path, 'corpus_tokenList.pickle'), 'rb'))
+        return tokId2tokText, tokId2groupId, groupId2tokId, trie, contextualized_tokid2emb, corpus_tokenList_dict
+
+    def _dump_all(self, path):
+        if self.hparams.cluster_num > 0:
+            self._dump(f'k-means_clusterId_tokText_{self.hparams.cluster_num}', self.tokId2tokText, path)
+            self._dump(f'k-means_clusterId_tokGroupId_{self.hparams.cluster_num}', self.tokId2groupId, path)
+            self._dump(f'k-means_tokGroupId_clusterIdList_{self.hparams.cluster_num}', self.groupId2tokId, path)
+            self._dump('groupId_tree', self.trie, path)
+            self._dump(f'k-means_clusterId_clusterEmb_{self.hparams.cluster_num}', self.contextualized_tokid2emb, path)
+            self._dump(f'k-means_corpus_tokenList_{self.hparams.cluster_num}', self.corpus_tokenList_dict, path)
+        else:
+            self._dump('tokId_tokText', self.tokId2tokText, path)
+            self._dump('tokId_tokGroupId', self.tokId2groupId, path)
+            self._dump('tokGroupId_tokIdList', self.groupId2tokId, path)
+            self._dump('groupId_tree', self.trie, path)
+            self._dump('tokId_emb', self.contextualized_tokid2emb, path)
+            self._dump('corpus_tokenList', self.corpus_tokenList_dict, path) 
+
+    def _dump(self, f_name, value, path):
+        if path == "base":
+            save_path = self.hparams.dataset 
+        else:
+            save_path = path
+        
+        os.makedirs(save_path, exist_ok=True)
+
+        with open(os.path.join(save_path, f"{f_name}.pickle"), 'wb') as f:
+            pickle.dump(value, f)
 
     def ids_to_text(self, _generated_ids):
         generated_ids = []
@@ -431,12 +494,14 @@ class T5grTuner(T5BaseClass):
         else:
             raise NotImplementedError("Choose lr_schduler from (constant|exponential)")
 
+    # TODO: do dumping in best_tfmr
     def on_save_checkpoint(self, checkpoint):
         save_path = os.path.join(
             self.hparams.output_dir, f"best_tfmr_{self.current_epoch}"
         )
         self.model.save_pretrained(save_path)
         self.tokenizer.save_pretrained(save_path)
+        self._dump_all(save_path)
 
         self.save_epoch.append(self.current_epoch)
         if len(self.save_epoch) > 5:
@@ -1182,11 +1247,15 @@ class T5FineTuner(T5grTuner):
 
         if path == "base":
             _model = T5EncoderModel.from_pretrained('t5-base').cuda()
-            if self.print: print(f'=== Model in {_model.device} ===')
+            if self.print: 
+                print(f'=== Model in {_model.device} ===')
+                print(f'*** Construct from Base Model!')
             _tokenizer = T5Tokenizer.from_pretrained('t5-base') 
         elif path == "test":
             _model = T5EncoderModel.from_pretrained(self.hparams.test_model_path).cuda()
-            if self.print: print(f'=== Model in {_model.device} ===')
+            if self.print: 
+                print(f'=== Model in {_model.device} ===')
+                print(f'*** Construct from Test Model: {self.hparams.test_model_path}!')
             _tokenizer = T5Tokenizer.from_pretrained(self.hparams.test_model_path)
         elif path is None:
             _model = self.model
@@ -1218,8 +1287,9 @@ class T5FineTuner(T5grTuner):
             with open(os.path.join(self.hparams.output_dir, 'temp_clusterId_emb.pickle'), "wb") as f:
                 pickle.dump(clusterId2clusterEmb, f)
             if path is None: 
-                self.model.set_contextualized_file(os.path.join(self.hparams.output_dir, "temp_clusterId_emb.pickle"))
                 assert len(clusterId2clusterEmb.keys()) == self.contextualized_emb_num, f"# of clusterId2clusterEmb: {len(clusterId2clusterEmb.keys())} // contextualized_emb_num: {self.contextualized_emb_num}"
+                self.model.set_contextualized_file(os.path.join(self.hparams.output_dir, "temp_clusterId_emb.pickle"))
+                self.model = self.model.train().to(self.device)
             return clusterId2tokText, clusterId2tokGroupId, tokGroupId2clusterIdList, groupId_tree, clusterId2clusterEmb, corpus_clusterList_dict 
 
     def _construct_corpus2clusterList(self, corpus_tokenList_dict, tokId2clusterId):

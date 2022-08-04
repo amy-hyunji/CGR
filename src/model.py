@@ -219,7 +219,17 @@ class T5grTuner(T5BaseClass):
                     self.tokId2tokText, self.tokId2groupId, self.groupId2tokId, self.trie, self.contextualized_tokid2emb, self.corpus_tokenList_dict = self._load_dataset(epoch=load_epoch)
             
             if self.hparams.do_test:
-                self.tokId2tokText, self.tokId2groupId, self.groupId2tokId, self.trie, self.contextualized_tokid2emb, self.corpus_tokenList_dict = self._dump_new_dataset(path="test")
+                test_epoch = int(self.hparams.test_model_path.split('_')[-1])
+                if self.hparams.cluster_num > 0 and f"k-means_corpus_tokenList_{self.hparams.cluster_num}.pickle" in os.listdir(self.hparams.test_model_path):
+                    print(f'***** Loading Dataset from Local!!')
+                    self.tokId2tokText, self.tokId2groupId, self.groupId2tokId, self.trie, self.contextualized_tokid2emb, self.corpus_tokenList_dict = self._load_dataset(epoch=test_epoch)
+                if self.hparams.cluster_num == -1 and "corpus_tokenList.pickle" in os.listdir(self.hparams.test_model_path):
+                    print(f'***** Loading Dataset from Local!!')
+                    self.tokId2tokText, self.tokId2groupId, self.groupId2tokId, self.trie, self.contextualized_tokid2emb, self.corpus_tokenList_dict = self._load_dataset(epoch=test_epoch)
+                else:
+                    print(f'***** Constructing New One :) !!')
+                    self.tokId2tokText, self.tokId2groupId, self.groupId2tokId, self.trie, self.contextualized_tokid2emb, self.corpus_tokenList_dict = self._dump_new_dataset(path="test")
+                    self._dump_all(path="test")
             if self.hparams.cluster_num > 0:
                 self.config.update(
                     {'contextualized_file': os.path.join(self.hparams.output_dir, "temp_clusterId_emb.pickle")}
@@ -306,7 +316,9 @@ class T5grTuner(T5BaseClass):
 
     def _dump(self, f_name, value, path):
         if path == "base":
-            save_path = self.hparams.dataset 
+            save_path = self.hparams.dataset
+        elif path == "test":
+            save_path = self.hparams.test_model_path
         else:
             save_path = path
         

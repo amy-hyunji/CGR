@@ -1627,8 +1627,6 @@ class T5FineTuner(T5grTuner):
                 for _text, _ids in zip(b_texts, b_ids):
                     g_ids = [self.tokId2groupId[el] for el in _ids]
             ''' 
-            print(f"prediction: {generated_text}")
-            print("*"*80) 
             for bid, (batch_text, batch_ids) in enumerate(zip(generated_text, generated_ids)):
                 if over[bid] == 1: continue
                 ### iterate over batch (val_beam_size)

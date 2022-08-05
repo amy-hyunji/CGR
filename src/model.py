@@ -38,6 +38,30 @@ from azure.storage.blob import (
     __version__,
 )
 
+class FaissKMeans:
+    def __init__(self, n_clusters=10, n_init=10, max_iter=30):
+        import faiss
+        self.n_clusters = n_clusters
+        self.n_init = n_init
+        self.max_iter = max_iter
+        self.kmeans = None
+        self.cluster_centers_ = None
+        self.inertia_ = None
+
+    def fit(self, X, y):
+        self.kmeans = faiss.Kmeans(d=X.shape[1],
+                                   k=self.n_clusters,
+                                   niter=self.max_iter,
+                                   nredo=self.n_init)
+        self.kmeans.train(X.astype(np.float32))
+        self.cluster_centers_ = self.kmeans.centroids
+        self.inertia_ = self.kmeans.obj[-1]
+        return self.cluster_centers_
+
+    def predict(self, X):
+        ret = self.kmeans.index.search(X.astype(np.float32), 1)[1]
+        return [elem[0] for elem in ret]
+
 class T5BaseClass(pl.LightningModule):
     def __init__(self):
         super(T5BaseClass, self).__init__()
@@ -1036,7 +1060,7 @@ class T5FineTuner(T5grTuner):
         _input_ids = _input_ids.detach().cpu().numpy()
         return _tok_decode, _input_ids, last_hidden_state
 
-    def _construct_sp(self, model, tokenizer, f=None):
+    def _construct_sp(self, model, tokenizer, dump_path=None):
         tokId_emb = {} # {tokid: emb}
         tok_Idlist_dict = defaultdict(list) # {tok_text: [Idlist of the tok]}
         tok_Id_dict = {} # {Id: tok_text}
@@ -1053,28 +1077,28 @@ class T5FineTuner(T5grTuner):
         tok_Id_dict[1] = _tok_decode[1][0]
         assert _input_ids[1][0] == 1
 
-        if f is None:
+        if dump_path is None:
             tokId_emb[0] = last_hidden_state[0][0]
             tokId_emb[1] = last_hidden_state[1][0]
             return tok_Idlist_dict, tok_Id_dict, tokId_emb
         else:
-            self._add_id4hdf5(f, 0, last_hidden_state[0][0])
-            self._add_id4hdf5(f, 1, last_hidden_state[1][0])
+            self._add_id4hdf5(dump_path, 0, last_hidden_state[0][0])
+            self._add_id4hdf5(dump_path, 1, last_hidden_state[1][0])
             return tok_Idlist_dict, tok_Id_dict, None
         
 
-    def _add_id4hdf5(self, f, _id, _data):
-        _group = f.create_group(str(_id))
-        _group.create_dataset("emb", data=_data)
+    def _add_id4hdf5(self, dump_path, _id, _data):
+        with h5py.File(dump_path, 'w', libver='latest') as f:
+           _group = f.create_group(str(_id))
+           _group.create_dataset("emb", data=_data)
         return
 
     def _dump_cluster_corpus(self, corpus, context, model, tokenizer):
         dump_path = os.path.join(self.hparams.output_dir, "temp_tokId_emb.hdf5")
         if os.path.exists(dump_path):
             os.system(f'rm {dump_path}')
-        f = h5py.File(dump_path, 'w', libver='latest')
 
-        tok_Idlist_dict, tok_Id_dict, _ = self._construct_sp(model, tokenizer, f) 
+        tok_Idlist_dict, tok_Id_dict, _ = self._construct_sp(model, tokenizer, dump_path) 
         cur_tokId=2; corpusId=0
         corpusId_tokenList_dict = {}; corpus_tokenList_dict = {}
         print(f"Done Dumping SP tokens!\nStart dumping corpus!")
@@ -1093,7 +1117,7 @@ class T5FineTuner(T5grTuner):
                     if _tok == "<pad>": break
                     tok_Id_dict[cur_tokId] = _tok
                     tok_Idlist_dict[_tok].append(cur_tokId)
-                    self._add_id4hdf5(f, cur_tokId, _last_hidden_state)
+                    self._add_id4hdf5(dump_path, cur_tokId, _last_hidden_state)
                     _tok_list.append(cur_tokId)
                     cur_tokId += 1
 
@@ -1215,7 +1239,12 @@ class T5FineTuner(T5grTuner):
                 kmeans.fit(df)
                 predicts = np.array(kmeans.predict(df))
                 centers = kmeans.cluster_centers_
-
+                """ 
+                kmeans = FaissKMeans(n_clusters=self.hparams.cluster_num)
+                centers = kmeans.fit(np.array(emb_list), np.array(id_list))
+                predicts = np.array(kmeans.predict(np.array(emb_list)))
+                """
+            
             else:
                 predicts = np.array([i for i  in range(len(id_list))])
                 centers = np.array(emb_list)

@@ -10,9 +10,9 @@ total_corpus = list(pd.read_csv('kilt_total_corpus.csv')['corpus'])
 if dataset == "nq":
    prev_corpus = list(pd.read_csv('kilt_nq/nq_toy_corpus.csv')['corpus'])
    output_path = f'kilt_nq/scale_{scale}_kilt_corpus.csv'
-elif dataset == "hotpot":
-   prev_corpus = list(pd.read_csv("kilt_hotpot/scale_1_kilt_corpus.csv")["corpus"])
-   output_path = f'kilt_hotpot/scale_{scale}_kilt_corpus.csv'
+else:
+   prev_corpus = list(pd.read_csv(f"kilt_{dataset}/scale_1_kilt_corpus.csv")["corpus"])
+   output_path = f'kilt_{dataset}/scale_{scale}_kilt_corpus.csv'
 
 prev_len = len(prev_corpus)
 

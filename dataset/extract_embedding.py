@@ -7,6 +7,9 @@ from argparse import ArgumentParser
 from transformers import AutoTokenizer, AutoModel, T5EncoderModel, T5Tokenizer
 from tqdm import tqdm
 
+from knockknock import slack_sender
+from slack import get_webhook_url, get_channel
+
 def insert(d, k, v):
    if k not in d.keys():
       d[k] = set([v])

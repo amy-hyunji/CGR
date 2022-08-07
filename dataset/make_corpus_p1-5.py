@@ -30,20 +30,24 @@ no_context = []
 
 for corpusId in tqdm(df_corpus['corpusId']):
     title = df_corpus['corpus'][corpusId]
-    context = title2text[title]
-    if title != text_normalize(context[0]): 
-        print(f'##{title}## || ##{text_normalize(context[0])}##')
-        print(title, text_normalize(context[0]))
-        title2text[title][0] = title
+    if title not in title2text.keys():
+        context = title 
+        context_list = [title] 
+    else:
+        context = title2text[title]
+        if title != text_normalize(context[0]): 
+            print(f'##{title}## || ##{text_normalize(context[0])}##')
+            print(title, text_normalize(context[0]))
+            title2text[title][0] = title
 
-    context_list = []
-    for text in context[1:]:
-        if len(context_list) == 5:
-            break 
-        text = text.strip()
-        if "::::" in text:
-            continue 
-        context_list.append(text)
+        context_list = []
+        for text in context[1:]:
+            if len(context_list) == 5:
+                break 
+            text = text.strip()
+            if "::::" in text:
+                continue 
+            context_list.append(text)
 
     if len(context_list) == 0:
         no_context.append(title)

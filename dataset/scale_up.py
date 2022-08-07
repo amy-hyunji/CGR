@@ -3,7 +3,7 @@ import pandas as pd
 
 #dataset = "nq"
 dataset = "hotpot"
-scale = 5
+scale =20 
 
 
 total_corpus = list(pd.read_csv('kilt_total_corpus.csv')['corpus'])
@@ -15,7 +15,6 @@ elif dataset == "hotpot":
    output_path = f'kilt_hotpot/scale_{scale}_kilt_corpus.csv'
 
 prev_len = len(prev_corpus)
-scale = 100
 
 random.shuffle(total_corpus)
 additional_corpus = []

@@ -3,7 +3,7 @@ import pandas as pd
 from tqdm import tqdm
 
 dataset = "hotpot"
-scale = 5
+scale = 20 
 df_corpus = pd.read_csv(f'kilt_{dataset}/scale_{scale}_kilt_corpus.csv', header=0, names=['corpusId', 'corpus'])
 
 print(f'Open kilt_title_text ... ')

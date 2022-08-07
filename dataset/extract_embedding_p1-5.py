@@ -38,7 +38,7 @@ def dump(fname, file):
       pickle.dump(file, f)
 
 def encode_sp(sen, model, tokenizer):
-   _tok = tokenizer(sen, return_tensors='pt', add_special_tokens=False, max_length=4000)
+   _tok = tokenizer(sen, return_tensors='pt', add_special_tokens=False, max_length=2000)
    _input_ids = _tok['input_ids'].cuda()
    _attention_mask = _tok["attention_mask"].cuda()
    _tok_decode = tokenizer.convert_ids_to_tokens(_input_ids[0])
@@ -106,20 +106,21 @@ def construct_corpus():
       tokId = 2
       fileId = 1
       corpus_start = 0
-   
+  
    for corpusId in tqdm(range(corpus_num)):
       if corpusId < corpus_start:
          continue
       if not resume and args.split_save and corpusId % save_cycle == 0 and corpusId != 0: 
          print(f'== Save fileId: {fileId}!')
          dump(f'{fileId}_results.pickle', {'tokId_emb': tokId_emb, 'tok_Idlist_dict': tok_Idlist_dict, 'tok_Id_dict': tok_Id_dict,  'tokId_corpus': tokId_corpus, 'corpusId_fileId_dict': corpusId_fileId_dict, 'corpusId_emb_dict': corpusId_emb_dict, 'corpusId_corpus_dict': corpusId_corpus_dict, 'corpusId_tokenList_dict': corpusId_tokenList_dict})
+         sys.exit()
          corpusId_corpus_dict = {}
          corpusId_tokenList_dict = {}
          corpusId_emb_dict = {}
          tokId_corpus = {}
          fileId += 1
       resume = False
-      elem = corpus_file["corpus"][corpusId]
+      elem = corpus_file["corpus"][corpusId] # title
       context = corpus_file["context"][corpusId]
       _tok_decode, _input_ids, last_hidden_state = encode_context(elem, context, model, tokenizer)
 

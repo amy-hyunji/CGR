@@ -23,6 +23,7 @@ import math
 import pickle
 import warnings
 import numpy
+import numpy as np
 from typing import Optional, Tuple, Union
 
 import torch
@@ -1604,7 +1605,8 @@ class T5ForConditionalGeneration(T5PreTrainedModel):
            f = h5py.File(file, "r")
            tokid_emb_dict = {}
            for id in f.keys():
-              tokid_emb_dict[int(id)] = f[id]['emb'][()]
+#              tokid_emb_dict[int(id)] = f[id]['emb'][()]
+              tokid_emb_dict[int(id)] = np.array(f.get(str(id))) #f[id]['emb'][()]
         else:
             assert False
         contextualized_emb_list = list(tokid_emb_dict.values()) 

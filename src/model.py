@@ -24,7 +24,9 @@ from joint_T5 import T5Model as joint_T5
 from split_T5 import T5ForConditionalGeneration as split_T5 
 from contextualized_T5 import T5ForConditionalGeneration as contextualized_T5
 
-from transformers import T5Config, T5Tokenizer, T5Model, T5EncoderModel, T5ForConditionalGeneration, BertTokenizer, Adafactor, AutoTokenizer
+from transformers import T5Config, T5Tokenizer, T5Model, T5EncoderModel, T5ForConditionalGeneration 
+from transformers import BartConfig, BartTokenizer, BartModel, BartEncoderModel, BartForConditionalGeneration 
+from transformers import BertTokenizer, Adafactor, AutoTokenizer
 from torch.utils.data import DataLoader
 from itertools import chain
 from tqdm import tqdm
@@ -488,7 +490,7 @@ class T5AsyncBaseTuner(T5BaseClass):
             f = h5py.File(os.path.join(self.hparams.dataset, self.hparams.contextualized_file), "r")
             self.contextualized_tokid2emb = {}
             for id in f.keys():
-                self.contextualized_tokid2emb[int(id)] = self._get_id4hdf5(f, id) 
+                self.contextualized_tokid2emb[int(id)] = self._get_emb_from_file(hf=f, _id=id, path=None, file_type="hdf5") 
             self.config.update(
                 {"contextualized_file": os.path.join(self.hparams.dataset, self.hparams.contextualized_file)}#self.contextualized_tokid2emb}
             )  # tokId_emb.pickle
@@ -1616,6 +1618,7 @@ class T5AsyncTuner(T5AsyncBaseTuner):
                 self.model = contextualized_T5.from_pretrained(
                     self.hparams.model_name_or_path, config=self.config
                 )
+            assert self.model.get_dim() == self.hparams.model_dim
 
             self.tokenizer = T5Tokenizer.from_pretrained(
                 self.hparams.tokenizer_name_or_path
@@ -1714,7 +1717,7 @@ class T5AsyncTuner(T5AsyncBaseTuner):
         _input_ids = _input_ids.detach().cpu().numpy()
         return _tok_decode, _input_ids, last_hidden_state
 
-    def _construct_sp(self, model, tokenizer, dump_path=None):
+    def _construct_sp(self, model, tokenizer, dump_path=None, fh=None):
         tokId_emb = {} # {tokid: emb}
         tok_Idlist_dict = defaultdict(list) # {tok_text: [Idlist of the tok]}
         tok_Id_dict = {} # {Id: tok_text}
@@ -1731,33 +1734,60 @@ class T5AsyncTuner(T5AsyncBaseTuner):
         tok_Id_dict[1] = _tok_decode[1][0]
         assert _input_ids[1][0] == 1
 
-        if dump_path is None:
+        if self.hparams.do_save is None: assert dump_path is None
+
+        if self.hparams.do_save is None:
             tokId_emb[0] = last_hidden_state[0][0]
             tokId_emb[1] = last_hidden_state[1][0]
-        else:
+        elif self.hparams.do_save == "hdf5":
             self._add_id4hdf5(dump_path, 0, last_hidden_state[0][0])
             self._add_id4hdf5(dump_path, 1, last_hidden_state[1][0])
+        elif self.hparams.do_save == "dat":
+            fh[0][:] = last_hidden_state[0][0]
+            fh[1][:] = last_hidden_state[1][0]
+            fh.flush()
+        else:
+            raise NotImplementedError("Check the saving type")
         return tok_Idlist_dict, tok_Id_dict, tokId_emb 
-        
-    def _get_id4hdf5(self, hf, _id):
-        #return hf[_id]["emb"][()]
-        return np.array(hf.get(str(_id)))
+
+    def _get_dtype(self):
+        if self.hparams.fp16:
+            return "float16"
+        else:
+            return "float32"
+
+    def _get_emb_from_file(self, hf, _id, file_type):
+        if file_type == "hdf5":
+            return np.array(hf.get(str(_id)))
+        elif file_type == "dat":
+            return hf[_id][:]
+            #return np.memmap(path, dtype=self._get_dtype(), mode="r+", shape=(self.hparams.tok_num, self.hparams.model_dim))[_id][:]
+        else:
+            assert False
 
     def _add_id4hdf5(self, dump_path, _id, _data):
         f = h5py.File(dump_path, 'w', libver='latest') 
-        #_group = f.create_group(str(_id))
-        #_group.create_dataset("emb", data=_data)
         f.create_dataset(str(_id), data=_data)
         f.close()
         return
 
     def _dump_cluster_corpus(self, corpus, context, model, tokenizer):
-        assert self.hparams.do_save
-        dump_path = os.path.join(self.hparams.dataset, "temp_tokId_emb.hdf5")
+        if self.hparams.do_save == "hdf5":
+            dump_path = os.path.join(self.hparams.dataset, "temp_tokId_emb.hdf5")
+            if os.path.exists(dump_path): os.system(f'rm {dump_path}')
+            fh = None
+        elif self.hparams.do_save == "dat":
+            dump_path = os.path.join(self.hparams.dataset, "temp_tokId_emb.dat")
+            if os.path.exists(dump_path): os.system(f'rm {dump_path}')
+            fh = np.memmap(dump_path, dtype=self._get_dtype(), mode="w+", shape=(self.hparams.tok_num, self.hparams.model_dim))
+            fh.flush()
+        elif self.hparams.do_save == "pickle":
+            assert False 
+        else:
+            raise NotImplementedError("Check the saving type")
         print(f"================= Saving at {dump_path}")
-        if os.path.exists(dump_path):
-            os.system(f'rm {dump_path}')
-        tok_Idlist_dict, tok_Id_dict, _ = self._construct_sp(model, tokenizer, dump_path) 
+
+        tok_Idlist_dict, tok_Id_dict, _ = self._construct_sp(model, tokenizer, dump_path, fh) 
         cur_tokId=2; corpusId=0
         corpusId_tokenList_dict = {}; corpus_tokenList_dict = {}
         print(f"Done Dumping SP tokens!\nStart dumping corpus!")
@@ -1776,7 +1806,14 @@ class T5AsyncTuner(T5AsyncBaseTuner):
                     if _tok == "<pad>": break
                     tok_Id_dict[cur_tokId] = _tok
                     tok_Idlist_dict[_tok].append(cur_tokId)
-                    self._add_id4hdf5(dump_path, cur_tokId, _last_hidden_state)
+
+                    if self.hparams.do_save == "hdf5":
+                        self._add_id4hdf5(dump_path, cur_tokId, _last_hidden_state)
+                    elif self.hparams.do_save == "dat":
+                        fh[cur_tokId][:] = _last_hidden_state
+                    else:
+                        assert False
+                    
                     _tok_list.append(cur_tokId)
                     cur_tokId += 1
 
@@ -1784,7 +1821,8 @@ class T5AsyncTuner(T5AsyncBaseTuner):
                 corpusId_tokenList_dict[corpusId] = _tok_list
                 corpus_tokenList_dict[elem] = _tok_list
                 corpusId += 1
-
+        if self.hparams.do_save == "dat":
+            fh.flush()
 
         return tok_Idlist_dict, tok_Id_dict, dump_path, corpusId_tokenList_dict, corpus_tokenList_dict 
 
@@ -1973,7 +2011,7 @@ class T5AsyncTuner(T5AsyncBaseTuner):
                     cur_dict = cur_dict[prev] 
         return constrained_dict
 
-    def _do_cluster(self, tokGroupId_tokIdList, tokId_tokGroupId, tokId_embs, tokId_tokText, not_hdf5=False):
+    def _do_cluster(self, tokGroupId_tokIdList, tokId_tokGroupId, tokId_embs, tokId_tokText, load_file=False):
         assert self.hparams.cluster_num > 0
         tokText2clusterIdList = defaultdict(list)
         tokId2clusterId = {}
@@ -1983,13 +2021,25 @@ class T5AsyncTuner(T5AsyncBaseTuner):
         clusterId2clusterEmb = {}
         clusterId = 0
 
+        if self.hparams.do_save == "hdf5":
+            tokId_embs = h5py.File(tokId_embs, 'r')
+        elif self.hparams.do_save == "dat":
+            tokId_embs = np.memmap(tokId_embs, dtype=self._get_dtype(), mode="r+", shape=(self.hparams.tok_num, self.hparams.model_dim))
+        else:
+            assert False
+
         for tokGroupId, id_list in tqdm(tokGroupId_tokIdList.items()):
             text = tokId_tokText[id_list[0]]
-            if not_hdf5:
+            if not load_file:
                 emb_list = [tokId_embs[id] for id in id_list]
             else:
-                emb_list = [self._get_id4hdf5(tokId_embs, id) for id in id_list]
-            
+                if self.hparams.do_save == "hdf5":
+                    emb_list = [self._get_emb_from_file(hf=tokId_embs, _id=id, file_type="hdf5") for id in id_list]
+                elif self.hparams.do_save == "dat":
+                    emb_list = [self._get_emb_from_file(hf=tokId_embs, _id=id, file_type="dat") for id in id_list]
+                else:
+                    assert False
+
             # do cluster
             if len(emb_list) > self.hparams.cluster_num:
                 df = pd.DataFrame(emb_list) 
@@ -2124,14 +2174,14 @@ class T5AsyncTuner(T5AsyncBaseTuner):
             return tok_Id_dict, tokId_tokGroupId, tokGroupId_tokIdList, groupId_tree, tokId_emb, corpus_tokenList_dict
         
         else:
-            if self.hparams.do_save:
+            if self.hparams.do_save is not None:
                 tok_Idlist_dict, tok_Id_dict, dump_path, corpusId_tokenList_dict, corpus_tokenList_dict = self._dump_cluster_corpus(corpus, context, _model, _tokenizer) 
                 print(f'$$$$ DONE dumping embedding!!')
-                tokId_emb = h5py.File(dump_path, 'r')
+                #tokId_emb = h5py.File(dump_path, 'r')
                 tokId_tokGroupId, tokGroupId_tokIdList = self._construct_group(tok_Idlist_dict)
                 groupId_tree = self._construct_group_prefix_tree(corpusId_tokenList_dict, tokId_tokGroupId)
                 print(f'$$$$ DONE dumping group Info!!')
-                tokGroupId2clusterIdList, clusterId2tokGroupId, clusterId2tokText, tokText2clusterIdList, tokId2clusterId, clusterId2clusterEmb = self._do_cluster(tokGroupId_tokIdList, tokId_tokGroupId, tokId_emb, tok_Id_dict)
+                tokGroupId2clusterIdList, clusterId2tokGroupId, clusterId2tokText, tokText2clusterIdList, tokId2clusterId, clusterId2clusterEmb = self._do_cluster(tokGroupId_tokIdList, tokId_tokGroupId, dump_path, tok_Id_dict, load_file=True)
                 corpus_clusterList_dict = self._construct_corpus2clusterList(corpus_tokenList_dict, tokId2clusterId)
                 print(f'$$$$ DONE dumping cluster Info!!')
                 with open(os.path.join(self.hparams.dataset, 'temp_clusterId_emb.pickle'), "wb") as f:
@@ -2147,7 +2197,7 @@ class T5AsyncTuner(T5AsyncBaseTuner):
                 tokId_tokGroupId, tokGroupId_tokIdList = self._construct_group(tok_Idlist_dict)
                 groupId_tree = self._construct_group_prefix_tree(corpusId_tokenList_dict, tokId_tokGroupId)
                 print(f'$$$$ DONE dumping group Info!!')
-                tokGroupId2clusterIdList, clusterId2tokGroupId, clusterId2tokText, tokText2clusterIdList, tokId2clusterId, clusterId2clusterEmb = self._do_cluster(tokGroupId_tokIdList, tokId_tokGroupId, tokId_emb, tok_Id_dict, not_hdf5=True)
+                tokGroupId2clusterIdList, clusterId2tokGroupId, clusterId2tokText, tokText2clusterIdList, tokId2clusterId, clusterId2clusterEmb = self._do_cluster(tokGroupId_tokIdList, tokId_tokGroupId, tokId_emb, tok_Id_dict)
                 corpus_clusterList_dict = self._construct_corpus2clusterList(corpus_tokenList_dict, tokId2clusterId)
                 print(f'$$$$ DONE dumping cluster Info!!')
                 with open(os.path.join(self.hparams.dataset, 'temp_clusterId_emb.pickle'), "wb") as f:

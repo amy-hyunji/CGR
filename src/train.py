@@ -139,6 +139,10 @@ def main(args, train_params):
         )
     return args.output_dir
 
+def _count_toknum(args):
+    corpus = pd.read_csv(args.corpus_file)["corpus"] 
+    for elem in corpus:
+        tok = T 
 
 if __name__ == "__main__":
     parser = ArgumentParser()
@@ -219,7 +223,9 @@ if __name__ == "__main__":
         gr_decoder_only_encoder_ckpt=hparam.gr_decoder_only_encoder_ckpt,
         reload_dataloader_every_n_epochs=hparam.reload_dataloader_every_n_epochs if "reload_dataloader_every_n_epochs" in hparam else False,
         cluster_num=hparam.cluster_num if "cluster_num" in hparam else -1,
-        do_save=hparam.do_save if "do_save" in hparam else False 
+        do_save=hparam.do_save if "do_save" in hparam else None,
+        tok_num=hparam.tok_num if "tok_num" in hparam else None,
+        model_dim=hparam.model_dim if "model_dim" in hparam else None 
     ) 
     args = argparse.Namespace(**args_dict)
     assert not (args.do_train and args.do_test), "Choose between train|test"
@@ -235,7 +241,10 @@ if __name__ == "__main__":
     if args.model_type == "async":
         assert args.reload_dataloader_every_n_epochs is not False 
         assert args.train_c_emb is False
-
+        assert args.do_save in ["dat", None]
+        assert args.model_dim is not None
+        if args.do_save == "dat": assert args.tok_num is not None 
+        
     if torch.cuda.current_device() == 0:
         print("#" * 80)
         print(args)

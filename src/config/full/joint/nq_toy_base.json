@@ -13,7 +13,7 @@
     "gradient_accumulation_steps": 1,
     "n_gpu": 1,
     "num_workers": 0,
-    "resume_from_checkpoint": null,
+    "resume_from_checkpoint": "../outputs/joint/nq_toy_base/epoch=10-val_loss=0.22.ckpt",
     "train_file": "nq_toy_train_p1-5.csv",
     "dev_file": "nq_toy_dev_p1-5.csv",
     "test_file": "nq_toy_test_p1-5.csv",

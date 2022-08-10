@@ -2,9 +2,12 @@ import json
 import pandas as pd
 from tqdm import tqdm
 
-dataset = "hotpot"
-scale = 20 
-df_corpus = pd.read_csv(f'kilt_{dataset}/scale_{scale}_kilt_corpus.csv', header=0, names=['corpusId', 'corpus'])
+dataset = "nq"
+scale = "full" 
+if scale == "full":
+   df_corpus = pd.read_csv(f'kilt_total_corpus.csv', header=0, names=['corpusId', 'corpus'])
+else:
+   df_corpus = pd.read_csv(f'kilt_{dataset}/scale_{scale}_kilt_corpus.csv', header=0, names=['corpusId', 'corpus'])
 
 print(f'Open kilt_title_text ... ')
 with open('kilt_title_text.json', 'r') as f:
@@ -53,12 +56,19 @@ for corpusId in tqdm(df_corpus['corpusId']):
         no_context.append(title)
 
     assert len(context_list) <= 5 
-    context_list = " ".join(context_list)
+    try: 
+        context_list = " ".join(context_list)
+    except:
+        print(f'context_list')
+        context_list = ""
     context_list = context_list.strip() 
     df_ret.append([corpusId, title, context_list])
 
 df_ret = pd.DataFrame(df_ret, columns=['corpusId', 'corpus', 'context'])
-df_ret.to_csv(f'kilt_{dataset}/scale_{scale}_kilt_corpus_p1-5.csv')
+if scale == "full":
+   df_ret.to_csv(f'kilt_total_corpus_p1-5.csv')
+else:
+   df_ret.to_csv(f'kilt_{dataset}/scale_{scale}_kilt_corpus_p1-5.csv')
 
 print(f'Done Saving!')
 print(f'No Context: {len(set(no_context))}')

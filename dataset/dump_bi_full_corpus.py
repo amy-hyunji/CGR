@@ -94,7 +94,6 @@ def t5_construct_corpus(_model, _tokenizer, _corpus, _context, emb_f):
                     break 
                 tokId2tokText[cur_tokId] = _tok 
                 tokText2tokIdList[_tok].append(cur_tokId)
-                tokId_emb[cur_tokId] = _last_hidden_state 
                 _tok_list.append(cur_tokId)
                 tokId2corpus[cur_tokId] = elem
                 emb_f[cur_tokId][:] = _last_hidden_state
@@ -181,7 +180,6 @@ def bart_construct_corpus(_model, _tokenizer, _corpus, _context, emb_f):
                 if _tok == "<pad>": break 
                 tokId2tokText[cur_tokId] = _tok 
                 tokText2tokIdList[_tok].append(cur_tokId)
-                tokId_emb[cur_tokId] = _last_hidden_state 
                 _tok_list.append(cur_tokId)
                 tokId2corpus[cur_tokId] = elem
                 emb_f[cur_tokId][:] = _last_hidden_state
@@ -203,7 +201,6 @@ if __name__ == "__main__":
     parser.add_argument("--save_path", default=None, required=True, type=str)
     parser.add_argument("--emb_path", default=None, required=True, type=str)
     parser.add_argument("--dump_batch", default=10, type=int)
-    parser.add_argument("--idx", default=-1, type=int)
     parser.add_argument("--t5", action='store_true')
     parser.add_argument("--bart", action='store_true')
     args = parser.parse_args()
@@ -217,7 +214,7 @@ if __name__ == "__main__":
     corpus_num = len(corpus)
     print(f"corpus_num: {corpus_num}")
 
-    emb_f = os.path.join(args.save_path, f"tokId_emb_{args.idx}.dat")
+    emb_f = os.path.join(args.save_path, f"tokId_emb.dat")
     if os.path.exists(emb_f): os.system(f"rm {emb_f}")
     emb_f = np.memmap(emb_f, dtype="float32", mode="w+", shape=(36909000, 1024))
     emb_f.flush()

@@ -4,7 +4,7 @@ import argparse
 import pickle
 import pandas as pd
 from argparse import ArgumentParser
-from transformers import AutoTokenizer, AutoModel, T5EncoderModel, T5Tokenizer
+from transformers import BartModel, BartTokenizer, AutoTokenizer, AutoModel, T5EncoderModel, T5Tokenizer
 from tqdm import tqdm
 
 from knockknock import slack_sender
@@ -38,13 +38,13 @@ def dump(fname, file):
       pickle.dump(file, f)
 
 def encode_sp(sen, model, tokenizer):
-   _tok = tokenizer(sen, return_tensors='pt', add_special_tokens=False, max_length=2000)
+   _tok = tokenizer(sen, return_tensors='pt', add_special_tokens=False, max_length=3500, truncation=True)
    _input_ids = _tok['input_ids'].cuda()
    _attention_mask = _tok["attention_mask"].cuda()
    _tok_decode = tokenizer.convert_ids_to_tokens(_input_ids[0])
    model_ret = model(input_ids=_input_ids, attention_mask=_attention_mask, return_dict=True)
    last_hidden_state = model_ret['last_hidden_state'][0]
-   last_hidden_state = last_hidden_state.detach().cpu().numpy()
+   last_hidden_state = last_hidden_state.detach().cpu().numpy() 
    _input_ids = _input_ids.detach().cpu().numpy()
    return _tok_decode, _input_ids, last_hidden_state
 
@@ -57,7 +57,48 @@ def encode_context(title, context, model, tokenizer):
    last_hidden_state_title = last_hidden_state_context[:len(_input_ids_title[0])]
    return _tok_decode_title, _input_ids_title, last_hidden_state_title
 
-def construct_sp():
+def bart_construct_sp():
+   tokId_emb = {} # {tokid: emb}
+   tok_Idlist_dict = {} # {tok_text: [Idlist of the tok]}
+   tok_Id_dict = {} # {Id: tok_text}
+
+   # tokId = 0 -> <s> token 
+   _tok_decode, _input_ids, last_hidden_state = encode_sp("<s>", model, tokenizer)
+   assert len(_tok_decode) == 1
+   tok_Idlist_dict[_tok_decode[0]] = [0]
+   tok_Id_dict[0] = _tok_decode[0] 
+   assert _input_ids[0][0] == 0
+   tokId_emb[0] = last_hidden_state[0]
+
+   # tokId = 1 -> <pad> token
+   _tok_decode, _input_ids, last_hidden_state = encode_sp("<pad>", model, tokenizer)
+   assert _tok_decode[0] == "<pad>"
+   assert len(_tok_decode) == 1
+   tok_Idlist_dict[_tok_decode[0]] = [1]
+   tok_Id_dict[1] = _tok_decode[0] 
+   assert _input_ids[0][0] == 1
+   tokId_emb[1] = last_hidden_state[0]
+   
+   _tok_decode, _input_ids, last_hidden_state = encode_sp("</s>", model, tokenizer)
+   assert len(_tok_decode) == 1
+   tok_Idlist_dict[_tok_decode[0]] = [2]
+   tok_Id_dict[2] = _tok_decode[0] 
+   assert _input_ids[0][0] == 2
+   tokId_emb[2] = last_hidden_state[0]
+
+   _tok_decode, _input_ids, last_hidden_state = encode_sp("<unk>", model, tokenizer)
+   assert len(_tok_decode) == 1
+   tok_Idlist_dict[_tok_decode[0]] = [3]
+   tok_Id_dict[3] = _tok_decode[0] 
+   assert _input_ids[0][0] == 3
+   tokId_emb[3] = last_hidden_state[0]
+
+   model.resize_token_embeddings(len(tokenizer))
+
+   return tok_Idlist_dict, tok_Id_dict, tokId_emb
+
+
+def t5_construct_sp():
 
    tokId_emb = {} # {tokid: emb}
    tok_Idlist_dict = {} # {tok_text: [Idlist of the tok]}
@@ -82,13 +123,12 @@ def construct_sp():
    return tok_Idlist_dict, tok_Id_dict, tokId_emb
 
 @slack_sender(webhook_url=get_webhook_url(), channel=get_channel())
-def construct_corpus():
+def bart_construct_corpus():
    corpusId_corpus_dict = {} # {corpusId: corpus} 
    corpusId_fileId_dict = {} # {corpusId: fileId} 
    corpusId_tokenList_dict = {} # {corpusId: [tok]} 
    corpusId_emb_dict = {} # {corpusId: {tok: {emb}}}
    tokId_corpus = {} # {tokid: corpusText}
-   save_cycle = 50000
    resume = False
 
    # RESUME! 
@@ -99,21 +139,24 @@ def construct_corpus():
       with open(os.path.join(args.save_path, f'{fileId-1}_results.pickle'), 'rb') as f:
          last_tokId = list(pickle.load(f)['tokId_corpus'].keys())[-1]
       tokId = last_tokId + 1 
-      corpus_start = save_cycle*(fileId-1)
+      corpus_start = args.save_cycle*(fileId-1)
       print(f"tokId: {tokId}\tcorpus_start: {corpus_start}")
 
    else:
-      tokId = 2
+      tokId = 4
       fileId = 1
       corpus_start = 0
-  
+ 
+   local_run = 0 
    for corpusId in tqdm(range(corpus_num)):
       if corpusId < corpus_start:
          continue
-      if not resume and args.split_save and corpusId % save_cycle == 0 and corpusId != 0: 
+      if not resume and args.split_save and corpusId % args.save_cycle == 0 and corpusId != 0: 
          print(f'== Save fileId: {fileId}!')
+         local_run += 1
          dump(f'{fileId}_results.pickle', {'tokId_emb': tokId_emb, 'tok_Idlist_dict': tok_Idlist_dict, 'tok_Id_dict': tok_Id_dict,  'tokId_corpus': tokId_corpus, 'corpusId_fileId_dict': corpusId_fileId_dict, 'corpusId_emb_dict': corpusId_emb_dict, 'corpusId_corpus_dict': corpusId_corpus_dict, 'corpusId_tokenList_dict': corpusId_tokenList_dict})
-         sys.exit()
+         if local_run == 3:
+            sys.exit()
          corpusId_corpus_dict = {}
          corpusId_tokenList_dict = {}
          corpusId_emb_dict = {}
@@ -147,7 +190,83 @@ def construct_corpus():
       corpusId_emb_dict[corpusId] = _tok_dict
       corpusId_tokenList_dict[corpusId] = list(_tok_dict.keys()) 
 
-   print(f'tokId: {tokId}')
+   if args.split_save:
+      print(f'== Save fileId: {fileId}!')
+      dump(f'{fileId}_results.pickle', {'tokId_emb': tokId_emb, 'tok_Idlist_dict': tok_Idlist_dict, 'tok_Id_dict': tok_Id_dict,  'tokId_corpus': tokId_corpus, 'corpusId_fileId_dict': corpusId_fileId_dict, 'corpusId_emb_dict': corpusId_emb_dict, 'corpusId_corpus_dict': corpusId_corpus_dict, 'corpusId_tokenList_dict': corpusId_tokenList_dict})
+
+      return corpusId_corpus_dict, corpusId_fileId_dict, tokId_corpus, corpusId_tokenList_dict 
+   else:
+      return corpusId_corpus_dict, corpusId_emb_dict, tokId_corpus, corpusId_tokenList_dict 
+
+
+
+@slack_sender(webhook_url=get_webhook_url(), channel=get_channel())
+def t5_construct_corpus():
+   corpusId_corpus_dict = {} # {corpusId: corpus} 
+   corpusId_fileId_dict = {} # {corpusId: fileId} 
+   corpusId_tokenList_dict = {} # {corpusId: [tok]} 
+   corpusId_emb_dict = {} # {corpusId: {tok: {emb}}}
+   tokId_corpus = {} # {tokid: corpusText}
+   resume = False
+
+   # RESUME! 
+   if os.path.exists(args.save_path) and len(os.listdir(args.save_path))>1:
+      resume = True
+      fileId = len(os.listdir(args.save_path))
+      print(f'=== # of previous files: {fileId}')
+      with open(os.path.join(args.save_path, f'{fileId-1}_results.pickle'), 'rb') as f:
+         last_tokId = list(pickle.load(f)['tokId_corpus'].keys())[-1]
+      tokId = last_tokId + 1 
+      corpus_start = args.save_cycle*(fileId-1)
+      print(f"tokId: {tokId}\tcorpus_start: {corpus_start}")
+
+   else:
+      tokId = 2
+      fileId = 1
+      corpus_start = 0
+ 
+   local_run = 0 
+   for corpusId in tqdm(range(corpus_num)):
+      if corpusId < corpus_start:
+         continue
+      if not resume and args.split_save and corpusId % args.save_cycle == 0 and corpusId != 0: 
+         print(f'== Save fileId: {fileId}!')
+         local_run += 1
+         dump(f'{fileId}_results.pickle', {'tokId_emb': tokId_emb, 'tok_Idlist_dict': tok_Idlist_dict, 'tok_Id_dict': tok_Id_dict,  'tokId_corpus': tokId_corpus, 'corpusId_fileId_dict': corpusId_fileId_dict, 'corpusId_emb_dict': corpusId_emb_dict, 'corpusId_corpus_dict': corpusId_corpus_dict, 'corpusId_tokenList_dict': corpusId_tokenList_dict})
+         if local_run == args.stop_freq:
+            sys.exit()
+         corpusId_corpus_dict = {}
+         corpusId_tokenList_dict = {}
+         corpusId_emb_dict = {}
+         tokId_corpus = {}
+         fileId += 1
+      resume = False
+      elem = corpus_file["corpus"][corpusId] # title
+      context = corpus_file["context"][corpusId]
+      _tok_decode, _input_ids, last_hidden_state = encode_context(elem, context, model, tokenizer)
+
+      _tok_dict = {}
+      assert len(_input_ids[0])==len(last_hidden_state)==len(_tok_decode)
+
+      for tok_pos, (_text, _ids, _emb) in enumerate(zip(_tok_decode, _input_ids[0], last_hidden_state)):
+         tok_Id_dict[tokId] = _text 
+         if _text not in tok_Idlist_dict.keys():
+            tok_Idlist_dict[_text] = [tokId]
+         else:
+            tok_Idlist_dict[_text].append(tokId)
+         _tok_dict[tokId] = _emb
+         tokId_corpus[tokId] = elem 
+         tokId_emb[tokId] = _emb
+         tokId += 1
+         
+         # Add EOS Token 
+         if tok_pos == len(_tok_decode)-1:
+            _tok_dict[1] = tokId_emb[1]
+
+      corpusId_corpus_dict[corpusId] = elem
+      corpusId_fileId_dict[corpusId] = fileId
+      corpusId_emb_dict[corpusId] = _tok_dict
+      corpusId_tokenList_dict[corpusId] = list(_tok_dict.keys()) 
 
    if args.split_save:
       print(f'== Save fileId: {fileId}!')
@@ -203,8 +322,53 @@ def bi_construct_dataset(split, first_only=False):
             save_dict['output_tokid'].append([_tok])
    return save_dict, f"bi_contextualized_first_only_{first_only}_{split}.pickle" 
 
+def bart_construct_group():
+   tokGroupId_tok_dict = {}
+   tokId_tokGroupId = {}
+   tokGroupId_tokIdList = {}
+   tokGroupId = 4 ## assert tokGroupId 1 is </s> for generate()
+   tokTextList = list(tok_Idlist_dict.keys())
+   assert len(tokTextList) == len(set(tokTextList))
+   for tokText, tokIdList in tok_Idlist_dict.items():
+      if tokText == "</s>":
+         print(f"Found </s> and set it to 2!!!")
+         tokGroupId_tok_dict[2] = tokText 
+         tokGroupId_tokIdList[2] = tokIdList  
+         for tokId in tokIdList:
+            assert tokId not in tokId_tokGroupId.keys()
+            tokId_tokGroupId[tokId] = 2 
+      elif tokText == "<pad>":
+         print(f"Found <pad> and set it to 1!!!")
+         tokGroupId_tok_dict[1] = tokText 
+         tokGroupId_tokIdList[1] = tokIdList  
+         for tokId in tokIdList:
+            assert tokId not in tokId_tokGroupId.keys()
+            tokId_tokGroupId[tokId] = 1 
+      elif tokText == "<s>":
+         print(f"Found <s> and set it to 0!!!")
+         tokGroupId_tok_dict[0] = tokText 
+         tokGroupId_tokIdList[0] = tokIdList  
+         for tokId in tokIdList:
+            assert tokId not in tokId_tokGroupId.keys()
+            tokId_tokGroupId[tokId] = 0 
+      elif tokText == "<unk>":
+         print(f"Found <pad> and set it to 3!!!")
+         tokGroupId_tok_dict[3] = tokText 
+         tokGroupId_tokIdList[3] = tokIdList  
+         for tokId in tokIdList:
+            assert tokId not in tokId_tokGroupId.keys()
+            tokId_tokGroupId[tokId] = 3 
+      else:
+         tokGroupId_tok_dict[tokGroupId] = tokText
+         tokGroupId_tokIdList[tokGroupId] = tokIdList
+         for tokId in tokIdList:
+            assert tokId not in tokId_tokGroupId.keys()
+            tokId_tokGroupId[tokId] = tokGroupId
+         tokGroupId += 1
+   return tokGroupId_tok_dict, tokId_tokGroupId, tokGroupId_tokIdList
 
-def construct_group():
+
+def t5_construct_group():
    tokGroupId_tok_dict = {}
    tokId_tokGroupId = {}
    tokGroupId_tokIdList = {}
@@ -316,9 +480,12 @@ if __name__ == "__main__":
    parser.add_argument("--save_path", default=None, required=True, type=str)
    parser.add_argument("--emb_path", default=None, required=True, type=str)
    parser.add_argument("--t5", action='store_true')
+   parser.add_argument("--bart", action='store_true')
    parser.add_argument("--bi", action='store_true')
    parser.add_argument("--first_only", action='store_true')
    parser.add_argument("--split_save", action='store_true')
+   parser.add_argument("--save_cycle", default=50000, type=int)
+   parser.add_argument("--stop_freq", default=3, type=int)
    args = parser.parse_args()
 
    if args.split_save and os.path.exists(args.save_path):
@@ -334,28 +501,50 @@ if __name__ == "__main__":
    corpus_file = pd.read_csv(args.corpus)
    corpus_file = corpus_file.fillna("")
    corpus = list(corpus_file['corpus'])
+   print(f"### Loading Full Corpus")
    corpus_num = len(corpus)
    print(f"corpus_num: {corpus_num}")
 
    if args.t5:
       print(f'## Loading T5EncoderModel')
       model = T5EncoderModel.from_pretrained(args.emb_path).cuda()
+      tokenizer = AutoTokenizer.from_pretrained(args.emb_path)
+   elif args.bart:
+      print(f'## Loading BartModel')
+      model = BartModel.from_pretrained(args.emb_path).get_encoder().cuda()
+      tokenizer = BartTokenizer.from_pretrained(args.emb_path)
+      #model.resize_token_embeddings(len(tokenizer))
    else:
-      model = AutoModel.from_pretrained(args.emb_path).cuda()
-   tokenizer = AutoTokenizer.from_pretrained("t5-base")
+      assert False
+
+
 
    # add pad and </s>
-   tok_Idlist_dict, tok_Id_dict, tokId_emb = construct_sp()
+   if args.t5:
+      tok_Idlist_dict, tok_Id_dict, tokId_emb = t5_construct_sp()
+   elif args.bart:
+      tok_Idlist_dict, tok_Id_dict, tokId_emb = bart_construct_sp()
+      assert len(tokId_emb.keys()) == 4
+   else:
+      assert False
+
    if args.split_save:
       dump(f'0_results.pickle', {'tok_Idlist_dict': tok_Idlist_dict, 'tok_Id_dict': tok_Id_dict, 'tokId_emb': tokId_emb})
-   # add the rest - corpusId_emb_dict 
-   if args.split_save:
-      construct_corpus()
+      if args.t5:
+         t5_construct_corpus()
+      elif args.bart:
+         bart_construct_corpus()
    else:
-      corpusId_corpus_dict, corpusId_emb_dict, tokId_corpus, corpusId_tokenList_dict = construct_corpus()
+      if args.t5:
+         corpusId_corpus_dict, corpusId_emb_dict, tokId_corpus, corpusId_tokenList_dict = t5_construct_corpus()
+         tokGroupId_tok_dict, tokId_tokGroupId, tokGroupId_tokIdList = t5_construct_group()
+      elif args.bart:
+         corpusId_corpus_dict, corpusId_emb_dict, tokId_corpus, corpusId_tokenList_dict = bart_construct_corpus()
+         tokGroupId_tok_dict, tokId_tokGroupId, tokGroupId_tokIdList = bart_construct_group()
+      else:
+         assert False
 
       # Grouping
-      tokGroupId_tok_dict, tokId_tokGroupId, tokGroupId_tokIdList = construct_group()
 
       # construct corpus_tree
       group_tree = construct_group_prefix_tree()
@@ -377,7 +566,6 @@ if __name__ == "__main__":
       dump("tokId_tokGroupId.pickle", tokId_tokGroupId)
       dump("tokId_tokText.pickle", tok_Id_dict)
       dump("tokId_corpus.pickle", tokId_corpus)
-      dump("corpusId_fileId.pickle", corpusId_fileId_dict)
       dump("groupId_tree.pickle", group_tree)
       dump("corpusId_emb.pickle", corpusId_emb_dict)
       dump("tokId_emb.pickle", tokId_emb)

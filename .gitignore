@@ -4,8 +4,12 @@ pf-template/
 .vscode/
 __pycache__/
 dataset/kilt_nq/*.csv
-dataset/kilt_nq/*.pickle
-dataset/kilt_nq/*.sh
+dataset/kilt_hotpot
+dataset/kilt_trivia
+dataset/kilt_fever
+dataset/kilt_wow
+dataset/kilt_trex
+dataset/kilt_nq
 dataset/*.json
 dataset/*.csv
 slack.py

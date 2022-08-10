@@ -20,7 +20,7 @@ from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor, Callback, ModelSummary
 from pytorch_lightning.plugins import DDPPlugin, DeepSpeedPlugin
 
-from model import T5BiEncoder, T5FineTuner, T5JointTuner, T5MeanTuner
+from model import T5BiEncoder, T5FineTuner, T5JointTuner, T5MeanTuner, T5AsyncTuner
 from pathlib import Path
 from typing import Any, Optional, Union
 from pytorch_lightning.utilities.types import STEP_OUTPUT
@@ -78,7 +78,10 @@ def main(args, train_params):
     elif args.model_type == "gr":
         model = T5FineTuner(args)
     elif args.model_type == "split":
+        assert False
         model = T5MeanTuner(args)
+    elif args.model_type == "async":
+        model = T5AsyncTuner(args)
     else:
         assert False
 
@@ -136,6 +139,10 @@ def main(args, train_params):
         )
     return args.output_dir
 
+def _count_toknum(args):
+    corpus = pd.read_csv(args.corpus_file)["corpus"] 
+    for elem in corpus:
+        tok = T 
 
 if __name__ == "__main__":
     parser = ArgumentParser()
@@ -216,19 +223,28 @@ if __name__ == "__main__":
         gr_decoder_only_encoder_ckpt=hparam.gr_decoder_only_encoder_ckpt,
         reload_dataloader_every_n_epochs=hparam.reload_dataloader_every_n_epochs if "reload_dataloader_every_n_epochs" in hparam else False,
         cluster_num=hparam.cluster_num if "cluster_num" in hparam else -1,
-        do_save=hparam.do_save if "do_save" in hparam else False 
+        do_save=hparam.do_save if "do_save" in hparam else None,
+        tok_num=hparam.tok_num if "tok_num" in hparam else None,
+        model_dim=hparam.model_dim if "model_dim" in hparam else None 
     ) 
     args = argparse.Namespace(**args_dict)
     assert not (args.do_train and args.do_test), "Choose between train|test"
+    assert args.model_type in ["gr", "bi", "joint", "async", "split"]
     if args.model_type == "gr": 
         assert args.tree_type in ["groupId", "nodeId", "clusterId"] 
-        if args.reload_dataloader_every_n_epochs != 0: assert args.train_c_emb == False
+        assert args.reload_dataloader_every_n_epochs is False
     if args.model_type == "bi": 
         assert args.accelerator == "ddp", "ddp is only supported for bi-encoder!"
         assert args.bi_loss is not None
     if args.model_type == "joint" and args.do_test:
         assert args.eval_batch_size == 1, "Batch Size larger than 1 is not implemented yet!"
-
+    if args.model_type == "async":
+        assert args.reload_dataloader_every_n_epochs is not False 
+        assert args.train_c_emb is False
+        assert args.do_save in ["dat", None]
+        assert args.model_dim is not None
+        if args.do_save == "dat": assert args.tok_num is not None 
+        
     if torch.cuda.current_device() == 0:
         print("#" * 80)
         print(args)

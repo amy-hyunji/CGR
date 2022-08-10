@@ -2,8 +2,8 @@ import json
 import pandas as pd
 from tqdm import tqdm
 
-dataset = "hotpot"
-scale = 20 
+dataset = "aida"
+scale = 5 
 df_corpus = pd.read_csv(f'kilt_{dataset}/scale_{scale}_kilt_corpus.csv', header=0, names=['corpusId', 'corpus'])
 
 print(f'Open kilt_title_text ... ')

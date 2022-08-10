@@ -1752,6 +1752,7 @@ class T5ForConditionalGeneration(T5PreTrainedModel):
         else:
             if self.lm_head.get_device() != sequence_output.get_device():
                 self.lm_head = self.lm_head.to(sequence_output.device)
+               #print(f'type of sequence_output: {sequence_output.type()}\ntype of self.lm_head: {self.lm_head.type()}')
             lm_logits = torch.einsum("bod,cd->boc", sequence_output, self.lm_head) 
 
         loss = None

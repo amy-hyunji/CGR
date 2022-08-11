@@ -25,7 +25,7 @@ job_setting:
     #   - NODE_RANK: Index of the current node.
     #   - NPROC_PER_NODE: The number of processes in the current node.
     command: >
-      cd /workspace/src && pip install -r requirements.txt && cd transformers && pip install -e . && cd ../ && python train.py --config config/periflow/nq_toy_only_first.json
+      cd /workspace/t_src && pip install -r requirements.txt && cd transformers && pip install -e . && cd ../ && python train.py --config config/periflow/nq_toy_bi_first_only.json
   
   # Path to mount your workspace volume
   workspace:

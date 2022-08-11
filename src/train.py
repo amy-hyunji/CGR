@@ -19,7 +19,7 @@ from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor, Callback
 from pytorch_lightning.plugins import DDPPlugin, DeepSpeedPlugin
 
-from model import T5BiEncoder, T5FineTuner
+from model import T5BiEncoder, T5FineTuner, T5ParagraphBiEncoder
 from pathlib import Path
 from typing import Any, Optional, Union
 from pytorch_lightning.utilities.types import STEP_OUTPUT
@@ -71,7 +71,10 @@ def main(args, train_params):
     sys.setrecursionlimit(10000)
     set_seed(args.seed)
     if args.bi_encoder:
-        model = T5BiEncoder(args)
+        if args.is_paragraph:
+            model = T5ParagraphBiEncoder(args)
+        else:
+            model = T5BiEncoder(args)
     else:
         model = T5FineTuner(args)
 
@@ -128,7 +131,7 @@ if __name__ == "__main__":
 
     if hparam.wandb_log and hparam.do_train:
         wandb_logger = WandbLogger(
-            project=hparam.wandb_project, name=hparam.wandb_run_name, save_dir="../wandb"
+            project=hparam.wandb_project, name=hparam.wandb_run_name
         )
     else:
         wandb_logger = None
@@ -181,7 +184,8 @@ if __name__ == "__main__":
         max_beam_search=hparam.max_beam_search, # new - select a token which has maximum score in groupId
         bi_encoder=hparam.bi_encoder, # new - bi-encoder Training
         periflow=hparam.periflow, # new - periflow
-        limit_val_batches=hparam.limit_val_batches
+        limit_val_batches=hparam.limit_val_batches,
+        is_paragraph=hparam.is_paragraph
     )
     args = argparse.Namespace(**args_dict)
     assert not (args.do_train and args.do_test), "Choose between train|test"
@@ -195,13 +199,22 @@ if __name__ == "__main__":
         print("#" * 80)
 
     callbacks = []
-    checkpoint_callback = ModelCheckpoint(
-        monitor="val em",
-        mode="max",
-        dirpath=args.output_dir,
-        filename="{epoch:02d}-{val_loss:.2f}",
-        save_top_k=5,
-    )
+    if args.is_paragraph:
+       checkpoint_callback = ModelCheckpoint(
+           monitor="val loss",
+           mode="min",
+           dirpath=args.output_dir,
+           filename="{epoch:02d}-{val_loss:.2f}",
+           save_top_k=5,
+       )
+    else:
+       checkpoint_callback = ModelCheckpoint(
+           monitor="val em",
+           mode="max",
+           dirpath=args.output_dir,
+           filename="{epoch:02d}-{val_loss:.2f}",
+           save_top_k=5,
+       )
     callbacks.append(checkpoint_callback)
 
     if args.lr_scheduler == "constant" and torch.cuda.current_device() == 0:

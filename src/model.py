@@ -9,15 +9,17 @@ import string
 import pickle
 import numpy 
 import numpy as np
+import pandas as pd 
 import torch.nn as nn
 import pytorch_lightning as pl
 import torch.distributed as dist
 
-from data import GENREDataset
+from data import GENREDataset, ParagraphDataset
 from blob import get_blob_info, upload_directory_to_blob
 
 from transformers import T5Config, T5Tokenizer, T5Model, T5ForConditionalGeneration, BertTokenizer, Adafactor
 from torch.utils.data import DataLoader
+from tqdm import tqdm
 from itertools import chain
 
 from azure.storage.blob import (
@@ -37,12 +39,19 @@ class T5BaseClass(pl.LightningModule):
             self.print = False 
 
     def _get_dataset(self, split):
-        dataset = GENREDataset(
-            tokenizer=self.tokenizer,
-            split=split,
-            hparams=self.hparams,
-            tokid2emb=self.contextualized_tokid2emb 
-        )
+        if self.hparams.is_paragraph:
+            dataset = ParagraphDataset(
+                tokenizer=self.tokenizer,
+                split=split,
+                hparams=self.hparams
+            )
+        else:
+            dataset = GENREDataset(
+                tokenizer=self.tokenizer,
+                split=split,
+                hparams=self.hparams,
+                tokid2emb=self.contextualized_tokid2emb 
+            )
         return dataset
 
     def train_dataloader(self):
@@ -198,6 +207,234 @@ class T5BaseClass(pl.LightningModule):
             return 100
         else:
             return 0
+
+class T5ParagraphBiEncoder(T5BaseClass):
+    def __init__(self, args):
+        super(T5ParagraphBiEncoder, self).__init__()
+        self.save_hyperparameters(args)
+
+        if self.hparams.do_train:
+            self.model = T5Model.from_pretrained(self.hparams.model_name_or_path)
+            self.tokenizer = T5Tokenizer.from_pretrained(self.hparams.model_name_or_path)
+            if self.print:
+                print(f'@@@ In Training Mode...')
+                print(f'@@@ Loading Model from {self.hparams.model_name_or_path}')
+            self.em_score_list = []
+            self.recall_score_list = []
+
+            if self.hparams.periflow:
+                self.connect_str, self.container_name = get_blob_info()
+                self.blob_service_client = BlobServiceClient.from_connection_string(self.connect_str)
+
+        if self.hparams.do_test:
+            self.model = T5Model.from_pretrained(self.hparams.test_model_path)
+            self.tokenizer = T5Tokenizer.from_pretrained(self.hparams.test_model_path)
+            if self.print:
+                print(f'@@@ In Test Mode ...')
+                print(f'@@@ Loading Model from {self.hparams.test_model_path}')
+            self.test_input_list = []
+            self.test_gt_list = []
+            self.test_gt_tok_list = []
+            self.test_pred_list = []
+            self.test_em_score_list = []
+            self.test_recall_score_list = []
+
+        self.loss_fct = nn.CrossEntropyLoss()
+        self.decoder_input_ids, self.decoder_attention_mask = self.get_decoder_input()
+        if self.hparams.do_test:
+            self.corpus_save_path = os.path.join(self.hparams.output_dir, "corpus.pickle")
+            self.Id_Emb, self.Id_Para, self.corpus_emb = self.construct_corpus()
+
+    def construct_corpus(self):
+        if not os.path.exists(self.corpus_save_path):
+            df = list(pd.read_csv(self.hparams.tokId2corpus)['corpus'])
+            Id_Emb_dict = {}
+            Id_Para_dict = {}
+            i = 0
+            for b_i in tqdm(range(0, len(df), self.hparams.eval_batch_size)):
+                _tok = self.tokenizer(
+                        df[b_i:b_i+self.hparams.eval_batch_size], 
+                        return_tensors='pt',
+                        padding='max_length',
+                        truncation=True,
+                        max_length=self.hparams.max_output_length
+                        )
+                _input_ids = _tok['input_ids'].to(self.device)
+                _attention_mask = _tok['attention_mask'].to(self.device)
+                emb = self(
+                      input_ids=_input_ids,
+                      attention_mask=_attention_mask
+                      ).last_hidden_state[:, 0]
+                for j in range(int(emb.shape[0])):
+                    assert i not in Id_Emb_dict.keys()
+                    Id_Emb_dict[i] = torch.tensor(emb[j]).unsqueeze(0)
+                    Id_Para_dict[i] = df[i] 
+                    if i == 0: print("#### SHAPE ####: ",Id_Emb_dict[i].shape)
+                    i += 1
+          
+            assert len(Id_Emb_dict.keys()) == len(Id_Para_dict.keys()) == len(df)
+
+            with open(self.corpus_save_path, "wb") as f:
+                pickle.dump({'Id_Emb': Id_Emb_dict, 'Id_Para': Id_Para_dict}, f)
+            print(f'Saving emb_dict as {self.corpus_save_path}')
+        else:
+            print(f'Loading emb_dict from {self.corpus_save_path}')
+            emb_dict = pickle.load(open(self.corpus_save_path, "rb"))
+            Id_Emb_dict = emb_dict['Id_Emb']
+            Id_Para_dict = emb_dict['Id_Para']
+        emb_list = list(Id_Emb_dict.values())
+        print(f"%%% shape of emb_list[0]: {emb_list[0].shape}")
+        emb = torch.cat(emb_list).to(self.device)
+        print(f"%%% shape of emb: {emb.shape}")
+
+        if self.hparams.fp16:
+            emb = emb.half()
+        return Id_Emb_dict, Id_Para_dict, emb 
+
+    def get_decoder_input(self):
+        _tok = self.tokenizer("</s>", return_tensors='pt', add_special_tokens=False)
+        _input_ids = _tok['input_ids'].to(self.device)
+        _attention_mask = _tok['attention_mask'].to(self.device)
+        return _input_ids, _attention_mask
+
+    def forward(self, input_ids, attention_mask=None):
+        bs = input_ids.shape[0]
+        d_input = torch.cat([self.decoder_input_ids]*bs, 0).to(self.device)
+        d_att = torch.cat([self.decoder_attention_mask]*bs, 0).to(self.device)
+
+        outputs = self.model(input_ids, 
+                        attention_mask=attention_mask,
+                        decoder_input_ids=d_input, 
+                        decoder_attention_mask=d_att
+                        )
+        return outputs 
+
+    def _get_embedding(self, batch):
+        query_input_ids = batch['source_ids']
+        query_attention_mask = batch['source_mask']
+        key_input_ids = batch['target_ids']
+        key_attention_mask = batch['target_mask']
+
+        query_outputs = self(
+            input_ids=query_input_ids,
+            attention_mask=query_attention_mask,
+        )
+        query_output = query_outputs.last_hidden_state[:, 0]
+
+        key_outputs = self(
+            input_ids=key_input_ids,
+            attention_mask=key_attention_mask
+        )
+        key_output = key_outputs.last_hidden_state[:, 0]
+
+        return query_output, key_output
+
+    def _calculate_similarity(self, batch):
+        z1, z2 = self._get_embedding(batch)
+        z1 = z1.to(self.device)
+        z2 = z2.to(self.device)
+        sim = torch.inner(z1, z2)
+        return sim
+
+    def _common_step(self, batch):
+        _sim = self._calculate_similarity(batch)
+        labels = torch.arange(_sim.size(0)).long().to(self.device)
+        loss = self.loss_fct(_sim, labels)
+        return loss
+
+    def training_step(self, batch, batch_idx):
+        loss = self._common_step(batch)
+        self.log(
+            "train loss",
+            loss, 
+            on_step=True,
+            on_epoch=True,
+            prog_bar=False,
+            logger=True,
+            sync_dist=True,
+        )
+        return loss 
+
+    def _calculate_score(self, indices, batch, batch_idx):
+        em_list = []; recall_list = []; pred_list = []
+        for idx, (_indice_list, _output, _input) in enumerate(zip(indices, batch['output'], batch['input'])):
+            _predict = []
+            for _indice in _indice_list:
+                _predict.append(self.Id_Para[int(_indice)])
+            em_list.append(self._calculate_em(_predict[0], _output))
+            recall_list.append(self._calculate_recall(_predict, _output))
+            pred_list.append(_predict)
+            if self.print and idx == 0 and batch_idx%100 == 0:
+                print(f"$" * 50)
+                print(f"query: {_input}\ngt: {_output}\npredict: {_predict}")
+                print(f"em: {em_list[-1]} // recall: {recall_list[-1]}")
+                print(f"$" * 50)
+                print(" ")
+        return em_list, recall_list, pred_list
+
+    def validation_step(self, batch, batch_idx):
+
+        loss = self._common_step(batch)
+        self.log(
+            "val loss",
+            loss, 
+            on_step=True,
+            on_epoch=True,
+            prog_bar=False,
+            logger=True,
+            sync_dist=True,
+        )
+        return loss 
+
+    def test_step(self, batch, batch_idx):
+        #self.corpus_dict, self.corpus_emb = self.construct_corpus()
+        query_output, _ = self._get_embedding(batch)
+        scores = torch.inner(query_output.to(self.device), self.corpus_emb.to(self.device)) # [# of query, # of corpus] 
+        top_scores = torch.topk(scores, self.hparams.val_beam_size)
+        indices = top_scores.indices # [# of query, self.hparams.val_beam_size]
+        assert len(indices) == len(batch['output']), f"indices: {indices}\noutput: {batch['output']}"
+
+        em_score, recall_score, pred_list = self._calculate_score(indices, batch, batch_idx)
+        self.test_input_list.extend(list(batch["input"]))
+        self.test_gt_list.extend(list(batch["output"]))
+        self.test_pred_list.extend(list(pred_list))
+        self.test_em_score_list.extend(list(em_score))
+        self.test_recall_score_list.extend(list(recall_score))
+ 
+    def test_epoch_end(self, outputs):
+        os.makedirs(self.hparams.output_dir, exist_ok=True)
+        _input = self.gather_list(self.test_input_list)
+        _gt = self.gather_list(self.test_gt_list)
+        _pred = self.gather_list(self.test_pred_list)
+        _em = self.gather_list(self.test_em_score_list)
+        _recall = self.gather_list(self.test_recall_score_list)
+        assert len(_input) == len(_gt) == len(_pred) == len(_em) == len(_recall)
+        if self.print:
+            filename = f"group_{self.hparams.groupId_tree}_mbs_{self.hparams.max_beam_search}_result_beam{self.hparams.val_beam_size}.json"
+            with open(
+                os.path.join(
+                    self.hparams.output_dir,
+                    filename 
+                ),
+                "w",
+            ) as f:
+                json.dump(
+                    {
+                        "input": _input,
+                        "gt": _gt,
+                        "gt_tok": _gt_tok,
+                        "pred": _pred,
+                        "em": _em,
+                        "recall": _recall,
+                    },
+                    f,
+                )
+            print(
+                f"Saving in {os.path.join(self.hparams.output_dir, filename)}!\nnumber of elements: {len(_input)}"
+            )
+            print(f"EM: {np.array(_em).mean()}")
+            print(f"Recall: {np.array(_recall).mean()}")
+
 
 class T5BiEncoder(T5BaseClass):
     def __init__(self, args):

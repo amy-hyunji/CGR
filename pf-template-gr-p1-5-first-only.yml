@@ -25,7 +25,7 @@ job_setting:
     #   - NODE_RANK: Index of the current node.
     #   - NPROC_PER_NODE: The number of processes in the current node.
     command: >
-      cd /workspace/t_src && pip install -r requirements.txt && cd transformers && pip install -e . && cd ../ && python train.py --config config/periflow/nq_toy_bi_p1-5_first_only.json
+      cd /workspace/t_src && pip install -r requirements.txt && cd transformers && pip install -e . && cd ../ && python train.py --config config/periflow/gr/nq_toy_bi_p1-5_first_only.json
   
   # Path to mount your workspace volume
   workspace:
@@ -33,6 +33,9 @@ job_setting:
 
 # Checkpoint config
 checkpoint:
+  input:
+      id: 90a971f0-abde-44d8-9013-fd35065a8cc6
+      mount_path: /workspace/ckpt
   # Path to output checkpoint
   output_checkpoint_dir: /workspace/ckpt
 

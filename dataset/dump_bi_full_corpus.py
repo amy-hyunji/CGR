@@ -73,11 +73,11 @@ def t5_construct_sp(_model, _tokenizer, emb_f):
         emb_f[1][:] = last_hidden_state[1][0]
         emb_f.flush()
 
-    return tokText2tokIdList, tokId2tokText, tokId_emb
+    return tokText2tokIdList, tokId2tokText
 
 
 def t5_construct_corpus(_model, _tokenizer, _corpus, _context, emb_f):
-    tokText2tokIdList, tokId2tokText, tokId_emb = t5_construct_sp(_model, _tokenizer, emb_f)
+    tokText2tokIdList, tokId2tokText = t5_construct_sp(_model, _tokenizer, emb_f)
     cur_tokId = 2; corpusId = 0
     tokId2corpus = {}
     corpusId_tokenList_dict = {} # for grouptree
@@ -161,11 +161,11 @@ def bart_construct_sp(_model, _tokenizer, emb_f):
 
         emb_f.flush()
 
-    return tokText2tokIdList, tokId2tokText, tokId_emb
+    return tokText2tokIdList, tokId2tokText
 
 def bart_construct_corpus(_model, _tokenizer, _corpus, _context, emb_f):
     print("Construct Special Tokens!")
-    tokText2tokIdList, tokId2tokText, tokId_emb = bart_construct_sp(_model, _tokenizer, emb_f)
+    tokText2tokIdList, tokId2tokText = bart_construct_sp(_model, _tokenizer, emb_f)
     cur_tokId = 4; corpusId = 0
     tokId2corpus = {}
     corpusId_tokenList_dict = {} # for grouptree
@@ -191,6 +191,22 @@ def bart_construct_corpus(_model, _tokenizer, _corpus, _context, emb_f):
     emb_f.flush()
     return tokId2corpus, tokText2tokIdList, tokId2tokText, corpusId_tokenList_dict 
 
+
+def bi_construct_dataset(split, corpus, emb_f):
+    df = load_data(split)
+    save_dict = {'input': [], 'output': [], 'output_tokid': []}
+    for _input, _output in zip(df["input"], df["output"]):
+        corpus_id = corpus.index(_output)
+        output_tok = corpusId_tokenList_dict[corpus_id]
+        output_emb = [emb_f[tok][:] for tok in output_tok]
+
+        if args.t5: assert output_tok[-1] == 1
+        if args.bart: assert output_tok[-1] == 2
+        for _tok in output_tok[:-1]:
+            save_dict['input'].append(_input)
+            save_dict['output'].append(_output)
+            save_dict['output_tokid'].append([_tok])
+    return save_dict, f"bi_contextualized_{split}.pickle" 
 
 if __name__ == "__main__":
     parser = ArgumentParser()
@@ -232,11 +248,11 @@ if __name__ == "__main__":
     else:
         assert False
 
-    group_tree = construct_group_prefix_tree() 
-
-    train_dict, train_fname = bi_construct_dataset("train", first_only=args.first_only)
-    dev_dict, dev_fname = bi_construct_dataset("dev", first_only=args.first_only)
-    test_dict, test_fname = bi_construct_dataset("test", first_only=args.first_only)
+    #group_tree = construct_group_prefix_tree() 
+    emb_f = np.memmap(os.path.join(args.save_path, "tokId_emb.dat"), dtype="float32", mode="r+", shape=(36909000, 1024))
+    train_dict, train_fname = bi_construct_dataset("train", corpus, emb_f)
+    dev_dict, dev_fname = bi_construct_dataset("dev", corpus, emb_f)
+    test_dict, test_fname = bi_construct_dataset("test", corpus, emb_f)
 
     dump("tokId2corpus.pickle", tokId2corpus)
     dump("tokText2tokIdList.pickle", tokText2tokIdList)

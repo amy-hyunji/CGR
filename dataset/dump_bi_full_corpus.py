@@ -191,6 +191,32 @@ def bart_construct_corpus(_model, _tokenizer, _corpus, _context, emb_f):
     emb_f.flush()
     return tokId2corpus, tokText2tokIdList, tokId2tokText, corpusId_tokenList_dict 
 
+def load_data(split):
+   if split == "train":
+      df = pd.read_csv(args.train_file)
+   elif split == "dev":
+      df = pd.read_csv(args.dev_file)
+   elif split == "test":
+      df = pd.read_csv(args.test_file)
+   else:
+      raise NotImplementedError('Check the split!')
+   return df
+
+def bi_construct_dataset(split, corpus, emb_f):
+    df = load_data(split)
+    save_dict = {'input': [], 'output': [], 'output_tokid': []}
+    for _input, _output in zip(df["input"], df["output"]):
+        corpus_id = corpus.index(_output)
+        output_tok = corpusId_tokenList_dict[corpus_id]
+        output_emb = [emb_f[tok][:] for tok in output_tok]
+
+        if args.t5: assert output_tok[-1] == 1
+        if args.bart: assert output_tok[-1] == 2
+        for _tok in output_tok[:-1]:
+            save_dict['input'].append(_input)
+            save_dict['output'].append(_output)
+            save_dict['output_tokid'].append([_tok])
+    return save_dict, f"bi_contextualized_{split}.pickle" 
 
 def bi_construct_dataset(split, corpus, emb_f):
     df = load_data(split)

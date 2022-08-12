@@ -101,7 +101,7 @@ def t5_construct_sp(_model, _tokenizer, emb_f):
 
     return tokText2tokIdList, tokId2tokText
 
-
+@slack_sender(webhook_url=get_webhook_url(), channel=get_channel())
 def t5_construct_corpus(_model, _tokenizer, _corpus, _context, emb_f):
     tokText2tokIdList, tokId2tokText = t5_construct_sp(_model, _tokenizer, emb_f)
     cur_tokId = 2; corpusId = 0
@@ -398,6 +398,7 @@ def dump(fname, file):
     with open(os.path.join(args.save_path, fname), "wb") as f:
         pickle.dump(file, f)
 
+@slack_sender(webhook_url=get_webhook_url(), channel=get_channel())
 def do_cluster(model, tokGroupId2tokIdList):
     no_cluster = 0
     total_cluster = 0
@@ -536,7 +537,7 @@ if __name__ == "__main__":
 
     emb_f = os.path.join(args.save_path, f"tokId_emb.dat")
     if os.path.exists(emb_f): os.system(f"rm {emb_f}")
-    emb_f = np.memmap(emb_f, dtype="float32", mode="w+", shape=(36909000, 1024))
+    emb_f = np.memmap(emb_f, dtype="float32", mode="w+", shape=(37000000, 1024))
     emb_f.flush()
 
     if args.t5:
@@ -563,8 +564,9 @@ if __name__ == "__main__":
     dump("tokGroupId2tokText.pickle", tokGroupId2tokText)
     dump("tokId2tokGroupId.pickle", tokId2tokGroupId)
     dump("tokGroupId2tokIdList.pickle", tokGroupId2tokIdList)
+    dump("group_trie.pickle", group_trie)
 
-    emb_f = np.memmap(os.path.join(args.save_path, "tokId_emb.dat"), dtype="float32", mode="r+", shape=(36909000, 1024))
+    emb_f = np.memmap(os.path.join(args.save_path, "tokId_emb.dat"), dtype="float32", mode="r+", shape=(37000000, 1024))
     
     train_dict, train_fname = bi_construct_dataset("train", corpus, emb_f)
     dev_dict, dev_fname = bi_construct_dataset("dev", corpus, emb_f)
@@ -599,7 +601,6 @@ if __name__ == "__main__":
     dump("tokId2clusterId.pickle", tokId2clusterId)
     dump("clusterId2clusterEmb.pickle", clusterId2clusterEmb)
     dump("clusterIdList2corpusId.pickle", clusterIdList2corpusId)
-    dump("group_trie.pickle", group_trie)
 
 
 

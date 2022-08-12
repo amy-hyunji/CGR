@@ -16,13 +16,13 @@ def encode_list(title_list, context_list, _model, _tokenizer):
 
     if context_list is not None:        
         context_list = [" ".join([_title, _sen]).strip() for (_title, _sen) in zip(title_list, context_list)]
-        title_tok = [len(tokenizer(_title, return_tensors='pt', add_special_tokens=False).input_ids[0]) for _title in title_list]
+        title_tok = [len(_tokenizer(_title, return_tensors='pt', add_special_tokens=False).input_ids[0]) for _title in title_list]
         #print("title_tok: ", title_tok)
     else:
         context_list = title_list
-        title_tok = [len(tokenizer(_title, return_tensors='pt', add_special_tokens=False).input_ids[0]) for _title in title_list]
+        title_tok = [len(_tokenizer(_title, return_tensors='pt', add_special_tokens=False).input_ids[0]) for _title in title_list]
 
-    _tok = tokenizer(
+    _tok = _tokenizer(
                 context_list, 
                 return_tensors='pt', 
                 add_special_tokens=False, 
@@ -30,17 +30,13 @@ def encode_list(title_list, context_list, _model, _tokenizer):
                 #padding="max_length",
                 truncation=True
             )
-    _input_ids = _tok['input_ids'].to(model.device)
-    _attention_mask = _tok["attention_mask"].to(model.device)
-    encoder = model.get_encoder().eval()
-    try:
-        model_ret = encoder(input_ids=_input_ids, attention_mask=_attention_mask, return_dict=True)
-    except:
-        print(f"context_list: {context_list}\ntitle_list: {title_list}\ntok_ret: {_tok}")
-        sys.exit()
+    _input_ids = _tok['input_ids'].to(_model.device)
+    _attention_mask = _tok["attention_mask"].to(_model.device)
+    encoder = _model.get_encoder().eval()
+    model_ret = encoder(input_ids=_input_ids, attention_mask=_attention_mask, return_dict=True)
     assert len(title_tok) == len(model_ret['last_hidden_state'])
     last_hidden_state = [state[:toklen].detach().cpu().numpy() for (state, toklen) in zip(model_ret['last_hidden_state'], title_tok)]
-    _tok_decode = [tokenizer.convert_ids_to_tokens(_ids)[:toklen] for (_ids, toklen) in zip(_input_ids, title_tok)]
+    _tok_decode = [_tokenizer.convert_ids_to_tokens(_ids)[:toklen] for (_ids, toklen) in zip(_input_ids, title_tok)]
     _input_ids = _input_ids.detach().cpu().numpy()
     return _tok_decode, _input_ids, last_hidden_state   
 
@@ -90,7 +86,7 @@ def t5_construct_corpus(_model, _tokenizer, _corpus, _context, emb_f, tokId2tokT
         # cur_tokId = 0; corpusId = 0
         # tokId2corpus = {}
         # corpusId_tokenList_dict = {} # for grouptree
-        for i in tqdm(range(0, len(corpus), args.dump_batch)):
+        for i in tqdm(range(0, len(_corpus), args.dump_batch)):
             if i % 500000 == 0 and i != 0:                    
                 temp_dump_emb(tokId2corpus, tokText2tokIdList, tokId2tokText, corpusId_tokenList_dict, cur_tokId, corpusId)
             iter_corpus = _corpus[i:i+args.dump_batch]
@@ -194,7 +190,7 @@ def dump_each_idx(args):
     else:
         emb_f = np.memmap(emb_f, dtype="float32", mode="w+", shape=(toknum, 1024))
         emb_f.flush()
-        tokId2corpus ={}; tokText2tokIdList = defaultdict(list); tokId2corpus = {}; corpusId2tokenList_dict = {}
+        tokId2corpus ={}; tokText2tokIdList = defaultdict(list); tokId2tokText={}; corpusId_tokenList_dict = {}
         cur_tokId = 0; corpusId = 0
 
 

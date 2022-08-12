@@ -26,7 +26,7 @@ def encode_list(title_list, context_list, _model, _tokenizer):
                 context_list, 
                 return_tensors='pt', 
                 add_special_tokens=False, 
-                max_length=2000,
+                max_length=args.max_length,
                 #padding="max_length",
                 truncation=True
             )
@@ -164,16 +164,19 @@ def dump_each_idx(args):
     print(f"### Starting idx: {args.idx}")
     print(f"### toknum: {toknum}")
 
-    corpus_file = pd.read_csv(os.path.join(args.corpus, f"idx_{args.idx}.csv"))
-    corpus_file = corpus_file.fillna("")
-    corpus = list(corpus_file['corpus'])
-    context = list(corpus_file['context'])
-    assert len(corpus) == len(context)
-    print(f"### Loading Full Corpus")
-    corpus_num = len(corpus)
-    print(f"corpus_num: {corpus_num}")
+    if args.idx != 0:
+        corpus_file = pd.read_csv(os.path.join(args.corpus, f"idx_{args.idx}.csv"))
+        corpus_file = corpus_file.fillna("")
+        corpus = list(corpus_file['corpus'])
+        context = list(corpus_file['context'])
+        assert len(corpus) == len(context)
+        print(f"### Loading Full Corpus")
+        corpus_num = len(corpus)
+        print(f"corpus_num: {corpus_num}")
+    else:
+        corpus = None
+        context = None
 
-    args.save_path = os.path.join(args.save_path, f"idx_{args.idx}")
     print(f"Saving in {args.save_path}")
     os.makedirs(args.save_path, exist_ok=True)
     emb_f = os.path.join(args.save_path, f"tokId_emb_{args.idx}.dat")
@@ -443,11 +446,13 @@ if __name__ == "__main__":
     parser.add_argument("--emb_path", default=None, required=True, type=str)
     parser.add_argument("--dump_batch", default=10, type=int)
     parser.add_argument("--idx", default=-1, type=int)
+    parser.add_argument("--max_length", default=2000, type=int)
     parser.add_argument("--t5", action='store_true')
     parser.add_argument("--bart", action='store_true')
     parser.add_argument("--action", required=True, type=str)
     args = parser.parse_args()
 
+    args.save_path = os.path.join(args.save_path, f"max_length_{args.max_length}_idx_{args.idx}")
 
     if args.action == "dump":
         dump_each_idx(args)

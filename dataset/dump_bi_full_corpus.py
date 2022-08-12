@@ -1,5 +1,6 @@
 import os
 import sys
+import faiss
 import argparse
 import pickle
 import pandas as pd
@@ -11,6 +12,31 @@ from tqdm import tqdm
 from knockknock import slack_sender
 from slack import get_webhook_url, get_channel
 from collections import defaultdict
+
+class FaissKMeans:
+    def __init__(self, n_clusters=10, n_init=100, max_iter=300):
+        self.n_clusters = n_clusters
+        self.n_init = n_init
+        self.max_iter = max_iter
+        self.kmeans = None
+        self.cluster_centers_ = None
+        self.inertia_ = None
+
+    def fit(self, X, y):
+        self.kmeans = faiss.Kmeans(d=X.shape[1],
+                                   k=self.n_clusters,
+                                   niter=self.max_iter,
+                                   nredo=self.n_init,
+                                   gpu=True
+                                   )
+        self.kmeans.train(X.astype(np.float32))
+        self.cluster_centers_ = self.kmeans.centroids
+        self.inertia_ = self.kmeans.obj[-1]
+        return self.cluster_centers_
+
+    def predict(self, X):
+        ret = self.kmeans.index.search(X.astype(np.float32), 1)[1]
+        return [elem[0] for elem in ret]
 
 def encode_list(title_list, context_list, _model, _tokenizer):
 
@@ -191,6 +217,139 @@ def bart_construct_corpus(_model, _tokenizer, _corpus, _context, emb_f):
     emb_f.flush()
     return tokId2corpus, tokText2tokIdList, tokId2tokText, corpusId_tokenList_dict 
 
+def bart_construct_group(tokText2tokIdList):
+    tokGroupId2tokText = {}
+    tokId2tokGroupId = {}
+    tokGroupId2tokIdList = {}
+    tokGroupId = 4 ## assert tokGroupId 1 is </s> for generate()
+    tokTextList = list(tokText2tokIdList.keys())
+    assert len(tokTextList) == len(set(tokTextList))
+
+    for tokText, tokIdList in tokText2tokIdList.items():
+        if tokText == "<s>":
+            print(f"Found <s> and set it to 0!!!")
+            tokGroupId2tokText[0] = tokText 
+            tokGroupId2tokIdList[0] = tokIdList  
+            for tokId in tokIdList:
+                assert tokId not in tokId2tokGroupId.keys()
+                tokId2tokGroupId[tokId] = 0 
+        elif tokText == "<pad>":
+            print(f"Found <pad> and set it to 1!!!")
+            tokGroupId2tokText[1] = tokText 
+            tokGroupId2tokIdList[1] = tokIdList  
+            for tokId in tokIdList:
+                assert tokId not in tokId2tokGroupId.keys()
+                tokId2tokGroupId[tokId] = 1
+        elif tokText == "</s>":
+            print(f"Found </s> and set it to 2!!!")
+            tokGroupId2tokText[2] = tokText 
+            tokGroupId2tokIdList[2] = tokIdList  
+            for tokId in tokIdList:
+                assert tokId not in tokId2tokGroupId.keys()
+                tokId2tokGroupId[tokId] = 2
+        elif tokText == "<unk>":
+            print(f"Found <unk> and set it to 3!!!")
+            tokGroupId2tokText[3] = tokText 
+            tokGroupId2tokIdList[3] = tokIdList  
+            for tokId in tokIdList:
+                assert tokId not in tokId2tokGroupId.keys()
+                tokId2tokGroupId[tokId] = 3
+        else:
+            tokGroupId2tokText[tokGroupId] = tokText
+            tokGroupId2tokIdList[tokGroupId] = tokIdList
+            for tokId in tokIdList:
+                assert tokId not in tokId2tokGroupId.keys()
+                tokId2tokGroupId[tokId] = tokGroupId
+            tokGroupId += 1
+    return tokGroupId2tokText, tokId2tokGroupId, tokGroupId2tokIdList
+
+def bart_construct_group_prefix_tree(corpusId_tokenList_dict):
+    sys.setrecursionlimit(900000000)
+    constrained_dict = {}
+
+    for corpusId, tokIdList in corpusId_tokenList_dict.items():
+        cur_dict = constrained_dict 
+        tokGroupIdList = [tokId2tokGroupId[el] for el in tokIdList]
+        tokGroupIdList = [2, 0]+tokGroupIdList
+        
+        for i in range(len(tokGroupIdList)-1):
+            prev = tokGroupIdList[i]
+            cur = tokGroupIdList[i+1]
+            
+            if i == len(tokGroupIdList)-2:
+                if prev in cur_dict.keys():
+                    if cur not in cur_dict[prev].keys():
+                        cur_dict[prev][cur] = {} 
+                else:
+                    cur_dict[prev] = {cur: {}}
+            else:
+                if prev in cur_dict.keys():
+                    pass
+                else:
+                    cur_dict[prev] = {}
+                cur_dict = cur_dict[prev] 
+    return constrained_dict
+
+
+def t5_construct_group(tokText2tokIdList):
+    tokGroupId2tokText = {}
+    tokId2tokGroupId = {}
+    tokGroupId2tokIdList = {}
+    tokGroupId = 2 ## assert tokGroupId 1 is </s> for generate()
+    tokTextList = list(tokText2tokIdList.keys())
+    assert len(tokTextList) == len(set(tokTextList))
+
+    for tokText, tokIdList in tokText2tokIdList.items():
+        if tokText == "</s>":
+            print(f"Found </s> and set it to 1!!!")
+            tokGroupId2tokText[1] = tokText 
+            tokGroupId2tokIdList[1] = tokIdList  
+            for tokId in tokIdList:
+                assert tokId not in tokId2tokGroupId.keys()
+                tokId2tokGroupId[tokId] = 1 
+        elif tokText == "<pad>":
+            print(f"Found <pad> and set it to 0!!!")
+            tokGroupId2tokText[0] = tokText 
+            tokGroupId2tokIdList[0] = tokIdList  
+            for tokId in tokIdList:
+                assert tokId not in tokId2tokGroupId.keys()
+                tokId2tokGroupId[tokId] = 0 
+        else:
+            tokGroupId2tokText[tokGroupId] = tokText
+            tokGroupId2tokIdList[tokGroupId] = tokIdList
+            for tokId in tokIdList:
+                assert tokId not in tokId2tokGroupId.keys()
+                tokId2tokGroupId[tokId] = tokGroupId
+            tokGroupId += 1
+    return tokGroupId2tokText, tokId2tokGroupId, tokGroupId2tokIdList
+
+def t5_construct_group_prefix_tree(corpusId_tokenList_dict):
+    sys.setrecursionlimit(900000000)
+    constrained_dict = {}
+
+    for corpusId, tokIdList in corpusId_tokenList_dict.items():
+        cur_dict = constrained_dict 
+        tokGroupIdList = [tokId2tokGroupId[el] for el in tokIdList]
+        tokGroupIdList = [0]+tokGroupIdList
+        
+        for i in range(len(tokGroupIdList)-1):
+            prev = tokGroupIdList[i]
+            cur = tokGroupIdList[i+1]
+            
+            if i == len(tokGroupIdList)-2:
+                if prev in cur_dict.keys():
+                    if cur not in cur_dict[prev].keys():
+                        cur_dict[prev][cur] = {} 
+                else:
+                    cur_dict[prev] = {cur: {}}
+            else:
+                if prev in cur_dict.keys():
+                    pass
+                else:
+                    cur_dict[prev] = {}
+                cur_dict = cur_dict[prev] 
+    return constrained_dict
+
 def load_data(split):
    if split == "train":
       df = pd.read_csv(args.train_file)
@@ -218,21 +377,138 @@ def bi_construct_dataset(split, corpus, emb_f):
             save_dict['output_tokid'].append([_tok])
     return save_dict, f"bi_contextualized_{split}.pickle" 
 
-def bi_construct_dataset(split, corpus, emb_f):
+def gr_construct_dataset(split, corpus, emb_f):
     df = load_data(split)
     save_dict = {'input': [], 'output': [], 'output_tokid': []}
-    for _input, _output in zip(df["input"], df["output"]):
+    for _input, _output in zip(df['input'], df['output']):
         corpus_id = corpus.index(_output)
         output_tok = corpusId_tokenList_dict[corpus_id]
         output_emb = [emb_f[tok][:] for tok in output_tok]
-
+        
         if args.t5: assert output_tok[-1] == 1
         if args.bart: assert output_tok[-1] == 2
-        for _tok in output_tok[:-1]:
-            save_dict['input'].append(_input)
-            save_dict['output'].append(_output)
-            save_dict['output_tokid'].append([_tok])
-    return save_dict, f"bi_contextualized_{split}.pickle" 
+        
+        save_dict['input'].append(_input)
+        save_dict['output'].append(_output)
+        save_dict['output_tokid'].append(output_tok)
+
+    return save_dict, f"gr_contextualized_{split}.pickle"
+
+def dump(fname, file):
+    with open(os.path.join(args.save_path, fname), "wb") as f:
+        pickle.dump(file, f)
+
+def do_cluster(model, tokGroupId2tokIdList):
+    no_cluster = 0
+    total_cluster = 0
+    tokText_emb = {}
+
+    tokText2clusterIdList = defaultdict(list)
+    tokId2clusterId = {}
+    tokGroupId2clusterIdList = defaultdict(list)
+    clusterId2tokGroupId = {}
+    clusterId2tokText = {}
+    clusterId2clusterEmb = {}
+    clusterId = 0 # 0,1 is for <pad> and </s>
+
+
+    for tokGroupId, tokIdList in tqdm(tokGroupId2tokIdList.items()):
+        text = tokId2tokText[tokIdList[0]]
+        emb_list = [emb_f[_id][:] for _id in tokIdList]
+        prev = False
+
+        if len(emb_list) > args.cluster_num:
+            prev = True
+            # reduce the number of embedings to cluster_num by kmeans 
+            df = pd.DataFrame(emb_list)
+            if args.cluster_method == "k-means":
+                model = FaissKMeans(n_clusters=args.cluster_num)
+                centers = model.fit(np.array(emb_list), np.array(tokIdList))
+                predicts = np.array(model.predict(np.array(emb_list)))
+                #model = KMeans(n_clusters=args.cluster_num, algorithm='auto')
+                #model.fit(df)
+                #predicts = np.array(model.predict(df))
+                #centers = model.cluster_centers_ # [15, 768]
+            elif args.cluster_method == "gmm":
+                gmm = GaussianMixture(n_components=args.cluster_num, random_state=0)
+                gmm.fit(df)
+                predicts = np.array(gmm.predict(df))
+                label_list = [[] for _ in range(args.cluster_num)]
+                for label, emb in zip(predicts, emb_list):
+                    label_list[label].append(emb)
+                centers = np.array([np.array(el).mean(axis=0) for el in label_list])
+            elif args.cluster_method == "dbscan":
+                raise NotImplementedError('Bug Exists!')
+                db = DBSCAN(eps=2.5, min_samples=5).fit(df)
+                # db.labels_ : 클러스터 레이블값 : label이 -1이면 noise
+                # db.core_sample_indices_ : 없는 값들은 outlier 
+                #print(f'len(emb_list): {len(emb_list)}')
+                labels = db.labels_
+                print(f'# of labels: {set(labels)}')
+                not_outlier = db.core_sample_indices_
+                n_clusters = len(set(labels)) - (1 if -1 in labels else 0)
+                if n_clusters == 0:
+                    print('# of cluster: 0 !!')
+                prev = False
+                no_cluster += 1
+                total_cluster += 1
+                #print(f'# of clusters: {n_clusters}')
+                label_list = [[] for _ in range(n_clusters)]
+                assert len(labels) == len(emb_list)
+                for i, (label, emb) in enumerate(zip(labels, emb_list)):
+                    if i in not_outlier:
+                        label_list[label].append(emb)
+                centers = np.array([np.array(el).mean(axis=0) for el in label_list])
+                print(f"length of label_list: {len(label_list)}")
+                print(f"shape of centers: {centers.shape}")
+
+        if not prev:
+            # use the embedding 
+            predicts = np.array([i for i in range(len(tokIdList))]) 
+            centers = np.array(emb_list)
+
+        clusterIdDict = {}
+        for i, center in enumerate(centers):
+            clusterIdDict[i] = clusterId 
+            clusterId2tokText[clusterId] = text 
+            clusterId2clusterEmb[clusterId] = center 
+            clusterId += 1
+
+        for _predict, _id in zip(predicts, tokIdList):
+            _group = tokId2tokGroupId[_id]
+            _clusterId = clusterIdDict[_predict]
+            tokGroupId2clusterIdList[_group].append(_clusterId)
+            clusterId2tokGroupId[_clusterId] = _group 
+            tokId2clusterId[_id] = _clusterId 
+            tokText2clusterIdList[text].append(_clusterId)
+        
+        if text == "<pad>" or text == "</s>":
+            assert len(tokIdList) == 1 and len(tokText2clusterIdList[text]) == 1
+        if args.t5:
+            if clusterId == 1: assert tokId2clusterId[0] == 0
+            if clusterId == 2: assert tokId2clusterId[1] == 1
+        if args.bart:
+            if clusterId == 1: assert tokId2clusterId[0] == 0
+            if clusterId == 1: assert tokId2clusterId[0] == 0
+    print(f'no_cluster: {no_cluster}\ttotal_cluster: {total_cluster}')
+
+    return tokGroupId2clusterIdList, clusterId2tokGroupId, clusterId2tokText, tokText2clusterIdList, tokId2clusterId, clusterId2clusterEmb
+
+def construct_dataset(_dict, tokId2clusterId):
+    ret_dict = {'input': [], 'output': [], 'output_tokid': []}
+    for _input, _output, _output_tokid in zip(_dict['input'], _dict['output'], _dict['output_tokid']):
+        ret_dict['input'].append(_input)
+        ret_dict['output'].append(_output)
+        ret_dict['output_tokid'].append([tokId2clusterId[el] for el in _output_tokid])        
+    return ret_dict
+
+def get_clusterIdList2corpusId(corpusId_tokenList_dict, tokId2clusterId):
+   groupList2corpusId = {}
+   for corpusId, tokenList in corpusId_tokenList_dict.items():
+      groupList = [tokId2clusterId[el] for el in tokenList]
+      groupList = tuple(groupList)
+      groupList2corpusId[groupList] = corpusId
+   return groupList2corpusId
 
 if __name__ == "__main__":
     parser = ArgumentParser()
@@ -242,7 +518,9 @@ if __name__ == "__main__":
     parser.add_argument("--test_file", default=None, required=True, type=str)
     parser.add_argument("--save_path", default=None, required=True, type=str)
     parser.add_argument("--emb_path", default=None, required=True, type=str)
+    parser.add_argument("--cluster_method", default="k-means", type=str)
     parser.add_argument("--dump_batch", default=10, type=int)
+    parser.add_argument("--cluster_num", default=5, type=int)
     parser.add_argument("--t5", action='store_true')
     parser.add_argument("--bart", action='store_true')
     args = parser.parse_args()
@@ -266,26 +544,63 @@ if __name__ == "__main__":
         model = T5EncoderModel.from_pretrained(args.emb_path).cuda()
         tokenizer = T5Tokenizer.from_pretrained(args.emb_path)
         tokId2corpus, tokText2tokIdList, tokId2tokText, corpusId_tokenList_dict = t5_construct_corpus(model, tokenizer, corpus, None, emb_f)
+        tokGroupId2tokText, tokId2tokGroupId, tokGroupId2tokIdList = t5_construct_group(tokText2tokIdList)
+        group_trie = t5_construct_group_prefix_tree(corpusId_tokenList_dict)
     elif args.bart:
         print(f'## Loading BartModel')
         model = BartModel.from_pretrained(args.emb_path).get_encoder().cuda()
         tokenizer = BartTokenizer.from_pretrained(args.emb_path)
         tokId2corpus, tokText2tokIdList, tokId2tokText, corpusId_tokenList_dict = bart_construct_corpus(model, tokenizer, corpus, None, emb_f)
+        tokGroupId2tokText, tokId2tokGroupId, tokGroupId2tokIdList = bart_construct_group(tokText2tokIdList)
+        group_trie = bart_construct_group_prefix_tree(corpusId_tokenList_dict) 
     else:
         assert False
-
-    #group_tree = construct_group_prefix_tree() 
-    emb_f = np.memmap(os.path.join(args.save_path, "tokId_emb.dat"), dtype="float32", mode="r+", shape=(36909000, 1024))
-    train_dict, train_fname = bi_construct_dataset("train", corpus, emb_f)
-    dev_dict, dev_fname = bi_construct_dataset("dev", corpus, emb_f)
-    test_dict, test_fname = bi_construct_dataset("test", corpus, emb_f)
 
     dump("tokId2corpus.pickle", tokId2corpus)
     dump("tokText2tokIdList.pickle", tokText2tokIdList)
     dump("tokId2tokText.pickle", tokId2tokText)
     dump("corpusId_tokenList_dict.pickle", corpusId_tokenList_dict)
+    dump("tokGroupId2tokText.pickle", tokGroupId2tokText)
+    dump("tokId2tokGroupId.pickle", tokId2tokGroupId)
+    dump("tokGroupId2tokIdList.pickle", tokGroupId2tokIdList)
+
+    emb_f = np.memmap(os.path.join(args.save_path, "tokId_emb.dat"), dtype="float32", mode="r+", shape=(36909000, 1024))
+    
+    train_dict, train_fname = bi_construct_dataset("train", corpus, emb_f)
+    dev_dict, dev_fname = bi_construct_dataset("dev", corpus, emb_f)
+    test_dict, test_fname = bi_construct_dataset("test", corpus, emb_f)
     dump(train_fname, train_dict)
     dump(dev_fname, dev_dict)
     dump(test_fname, test_dict)   
+
+    train_dict, train_fname = gr_construct_dataset("train", corpus, emb_f)
+    dev_dict, dev_fname = gr_construct_dataset("dev", corpus, emb_f)
+    test_dict, test_fname = gr_construct_dataset("test", corpus, emb_f)
+    dump(train_fname, train_dict)
+    dump(dev_fname, dev_dict)
+    dump(test_fname, test_dict)   
+
+    print(f'!!!DO Cluster!!!')
+    tokGroupId2clusterIdList, clusterId2tokGroupId, clusterId2tokText, tokText2clusterIdList, tokId2clusterId, clusterId2clusterEmb = do_cluster(model, tokGroupId2tokIdList)
+
+    clusterIdList2corpusId = get_clusterIdList2corpusId(corpusId_tokenList_dict, tokId2clusterId)
+
+    train_dict = construct_dataset(train_dict, tokId2clusterId)
+    dev_dict = construct_dataset(dev_dict, tokId2clusterId)
+    test_dict = construct_dataset(test_dict, tokId2clusterId)
+    dump(train_fname, train_dict)
+    dump(dev_fname, dev_dict)
+    dump(test_fname, test_dict)   
+
+    dump("tokGroupId2clusterIdList.pickle", tokGroupId2clusterIdList)
+    dump("clusterId2tokGroupId.pickle", clusterId2tokGroupId)
+    dump("clusterId2tokText.pickle", clusterId2tokText)
+    dump("tokText2clusterIdList.pickle", tokText2clusterIdList)
+    dump("tokId2clusterId.pickle", tokId2clusterId)
+    dump("clusterId2clusterEmb.pickle", clusterId2clusterEmb)
+    dump("clusterIdList2corpusId.pickle", clusterIdList2corpusId)
+    dump("group_trie.pickle", group_trie)
+
+
 
     print("==== DONE ====")

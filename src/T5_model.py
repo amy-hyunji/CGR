@@ -25,7 +25,6 @@ from split_T5 import T5ForConditionalGeneration as split_T5
 from contextualized_T5 import T5ForConditionalGeneration as contextualized_T5
 
 from transformers import T5Config, T5Tokenizer, T5Model, T5EncoderModel, T5ForConditionalGeneration 
-from transformers import BartConfig, BartTokenizer, BartModel, BartEncoderModel, BartForConditionalGeneration 
 from transformers import BertTokenizer, Adafactor, AutoTokenizer
 from torch.utils.data import DataLoader
 from itertools import chain

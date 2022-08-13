@@ -20,7 +20,8 @@ from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor, Callback, ModelSummary
 from pytorch_lightning.plugins import DDPPlugin, DeepSpeedPlugin
 
-from model import T5BiEncoder, T5FineTuner, T5JointTuner, T5MeanTuner, T5AsyncTuner
+from T5_model import T5BiEncoder, T5FineTuner, T5JointTuner, T5MeanTuner, T5AsyncTuner
+from BART_model import BartBiEncoder 
 from pathlib import Path
 from typing import Any, Optional, Union
 from pytorch_lightning.utilities.types import STEP_OUTPUT
@@ -72,7 +73,12 @@ def main(args, train_params):
     sys.setrecursionlimit(10000)
     set_seed(args.seed)
     if args.model_type == "bi":
-        model = T5BiEncoder(args)
+        if "t5" in args.embedding_model:
+            model = T5BiEncoder(args)
+        elif "bart" in args.embedding_model:
+            model = BartBiEncoder(args)
+        else:
+            assert False
     elif args.model_type == "joint":
         model = T5JointTuner(args)
     elif args.model_type == "gr":
@@ -209,13 +215,13 @@ if __name__ == "__main__":
         corpus2EmbMean=hparam.corpus2EmbMean if "corpus2EmbMean" in hparam else None,  # new - tokId_corpus.pickle 
         tree_type=hparam.tree_type,  # new - nodeId_tokIdList.pickle
         tree_path=hparam.tree_path, # new
-        nodeId_sup=hparam.nodeId_sup, # new
+        nodeId_sup=hparam.nodeId_sup if "nodeId_sup" in hparam else None, # new
         embedding_model=hparam.embedding_model, # new - model used to extract embedding
         max_beam_search=hparam.max_beam_search, # new - select a token which has maximum score in groupId
         model_type=hparam.model_type, # new - bi-encoder Training
         periflow=hparam.periflow, # new - periflow
-        periflow_dir=hparam.periflow_dir, # new - directory of periflow
-        limit_val_batches=hparam.limit_val_batches,
+        periflow_dir=hparam.periflow_dir if "periflow_dir" in hparam else None, # new - directory of periflow
+        limit_val_batches=1.0,
         train_c_emb=hparam.train_c_emb,
         bi_type=hparam.bi_type,
         bi_loss=hparam.bi_loss if "bi_loss" in hparam else None,

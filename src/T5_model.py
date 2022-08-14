@@ -822,9 +822,9 @@ class T5BiEncoder(T5BaseClass):
         print('!!! Loading Embedding !!!')
         if self.hparams.contextualized_file.endswith('dat'):
             self.contextualized_tokid2emb = np.memmap(os.path.join(self.hparams.dataset, self.hparams.contextualized_file), dtype="float32", mode="readonly", shape=(37000000, 1024))
-            if "nq.index" in os.listdir('../dataset'):
-                self.contextualized_tensor = faiss.read_index("../dataset/nq.index")
-                self.contextualized_token = json.load(open('../dataset/nq.token.json'))
+            if "nq.index" in os.listdir(self.hparams.dataset):
+                self.contextualized_tensor = faiss.read_index(os.path.join(self.hparams.dataset, "faiss.index"))
+                self.contextualized_token = json.load(open(os.path.join(self.hparams.dataset, "faiss.token.json")))
             else:
                 print(f'BUILD Faiss Index!! ')
                 self.contextualized_tensor = faiss.IndexFlatIP(1024)
@@ -835,9 +835,12 @@ class T5BiEncoder(T5BaseClass):
                     self.contextualized_tensor.add(emb)
                     self.contextualized_token.append(i)
                 print(f'Saving!')
-                faiss.write_index(self.contextualized_tensor, "../dataset/nq.index")
-                with open('../dataset/nq.token.json', 'w') as f:
+                faiss.write_index(self.contextualized_tensor, os.path.join(self.hparams.dataset, "faiss.index"))
+                with open(os.path.join(self.hparams.dataset, "faiss.token.json"), 'w') as f:
                     json.dump(self.contextualized_token, f)
+            else:
+                assert False
+
 
             #self.contextualized_tensor = torch.tensor(self.contextualized_tokid2emb)#.to(self.device)
             #self.contextualized_token = np.arange(37000000) 
@@ -991,7 +994,7 @@ class T5BiEncoder(T5BaseClass):
 
     def validation_step(self, batch, batch_idx):
         query_output, _ = self._get_embedding(batch)
-        _, indices = self.contextualized_tensor.search(query_output, self.hparams.val_beam_size)
+        _, indices = self.contextualized_tensor.search(query_output.detach().cpu().numpy(), self.hparams.val_beam_size)
         #scores = torch.inner(query_output.to('cpu'), self.contextualized_tensor)
         #scores = torch.inner(query_output.to(self.device), self.contextualized_tensor.to(self.device)) # [# of query, # of corpus] 
         #top_scores = torch.topk(scores, self.hparams.val_beam_size)

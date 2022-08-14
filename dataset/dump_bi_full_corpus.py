@@ -505,6 +505,116 @@ def do_cluster(model, tokGroupId2tokIdList, clusterId, c_tokGroupId, clusterId2c
     del clusterId2clusterEmb
     return tokGroupId2clusterIdList, clusterId2tokGroupId, clusterId2tokText, tokText2clusterIdList, tokId2clusterId, cluster_path 
 
+def do_light_cluster(model, tokGroupId2tokIdList, clusterId, c_tokGroupId, clusterId2clusterEmb, tokId2tokGroupId):
+    no_cluster = 0
+    total_cluster = 0
+    tokText_emb = {}
+    
+    # clusterId2clusterEmb = np.memmap(cluster_path, dtype="float32", mode="w+", shape=(37000000,1024)) 
+    # clusterId = 0 # 0,1 is for <pad> and </s>
+
+    start_idx = True
+    for tokGroupId, tokIdList in tqdm(tokGroupId2tokIdList.items()):
+
+        if tokGroupId < c_tokGroupId:
+            continue
+
+        if tokGroupId % 500000 == 0 and not start_idx:
+            temp_dump_light_cluster(clusterId, tokGroupId, tokGroupId2clusterIdList, clusterId2tokGroupId, clusterId2tokText, tokText2clusterIdList, tokId2clusterId)
+            clusterId2clusterEmb.flush()
+
+        text = tokId2tokText[tokIdList[0]]
+        emb_list = [emb_f[_id][:] for _id in tokIdList]
+        prev = False
+        start_idx = False
+        if len(emb_list) > args.cluster_num:
+            prev = True
+            # reduce the number of embedings to cluster_num by kmeans 
+            df = pd.DataFrame(emb_list)
+            if args.cluster_method == "k-means":
+                # model = FaissKMeans(n_clusters=args.cluster_num)
+                # centers = model.fit(np.array(emb_list), np.array(tokIdList))
+                # predicts = np.array(model.predict(np.array(emb_list)))
+                model = KMeans(n_clusters=args.cluster_num, algorithm='auto', max_iter=100, n_init=3)
+                model.fit(df)
+                predicts = np.array(model.predict(df))
+                centers = model.cluster_centers_ # [15, 768]
+            elif args.cluster_method == "gmm":
+                gmm = GaussianMixture(n_components=args.cluster_num, random_state=0)
+                gmm.fit(df)
+                predicts = np.array(gmm.predict(df))
+                label_list = [[] for _ in range(args.cluster_num)]
+                for label, emb in zip(predicts, emb_list):
+                    label_list[label].append(emb)
+                centers = np.array([np.array(el).mean(axis=0) for el in label_list])
+            elif args.cluster_method == "dbscan":
+                raise NotImplementedError('Bug Exists!')
+                db = DBSCAN(eps=2.5, min_samples=5).fit(df)
+                # db.labels_ : 클러스터 레이블값 : label이 -1이면 noise
+                # db.core_sample_indices_ : 없는 값들은 outlier 
+                #print(f'len(emb_list): {len(emb_list)}')
+                labels = db.labels_
+                print(f'# of labels: {set(labels)}')
+                not_outlier = db.core_sample_indices_
+                n_clusters = len(set(labels)) - (1 if -1 in labels else 0)
+                if n_clusters == 0:
+                    print('# of cluster: 0 !!')
+                prev = False
+                no_cluster += 1
+                total_cluster += 1
+                #print(f'# of clusters: {n_clusters}')
+                label_list = [[] for _ in range(n_clusters)]
+                assert len(labels) == len(emb_list)
+                for i, (label, emb) in enumerate(zip(labels, emb_list)):
+                    if i in not_outlier:
+                        label_list[label].append(emb)
+                centers = np.array([np.array(el).mean(axis=0) for el in label_list])
+                print(f"length of label_list: {len(label_list)}")
+                print(f"shape of centers: {centers.shape}")
+
+        if not prev:
+            # use the embedding 
+            predicts = np.array([i for i in range(len(tokIdList))]) 
+            centers = np.array(emb_list)
+
+        clusterIdDict = {}
+        for i, center in enumerate(centers):
+            clusterIdDict[i] = clusterId 
+            clusterId2tokText[clusterId] = text 
+            clusterId2clusterEmb[clusterId][:] = center 
+            clusterId += 1
+
+        for _predict, _id in zip(predicts, tokIdList):
+            _group = tokId2tokGroupId[_id]
+            _clusterId = clusterIdDict[_predict]
+            tokGroupId2clusterIdList[_group].append(_clusterId)
+            clusterId2tokGroupId[_clusterId] = _group 
+            tokId2clusterId[_id] = _clusterId 
+            tokText2clusterIdList[text].append(_clusterId)
+        
+        if text == "<pad>" or text == "</s>":
+            assert len(tokIdList) == 1 and len(tokText2clusterIdList[text]) == 1
+        if args.t5:
+            if clusterId == 1: assert tokId2clusterId[0] == 0
+            if clusterId == 2: assert tokId2clusterId[1] == 1
+        if args.bart:
+            if clusterId == 1: assert tokId2clusterId[0] == 0
+            if clusterId == 1: assert tokId2clusterId[0] == 0
+    print(f'no_cluster: {no_cluster}\ttotal_cluster: {total_cluster}')
+    clusterId2clusterEmb.flush()
+    del clusterId2clusterEmb
+    return tokGroupId2clusterIdList, clusterId2tokGroupId, clusterId2tokText, tokText2clusterIdList, tokId2clusterId, cluster_path 
+
+def temp_dump_light_cluster(clusterId, tokGroupId, tokGroupId2clusterIdList, clusterId2tokGroupId, clusterId2tokText, tokText2clusterIdList, tokId2clusterId): 
+    dump(f"light_tokGroupId2clusterIdList_{arg.cluster_num}.pickle", tokGroupId2clusterIdList)
+    dump(f"light_clusterId2tokGroupId_{args.cluster_num}.pickle", clusterId2tokGroupId)
+    dump(f"light_clusterId2tokText_{args.cluster_num}.pickle", clusterId2tokText)
+    dump(f"light_tokText2clusterIdList_{args.cluster_num}.pickle", tokText2clusterIdList)
+    dump(f"light_tokId2clusterId_{args.cluster_num}.pickle", tokId2clusterId)
+    dump(f'light_cur_info_{args.cluster_num}.pickle', {'tokGroupId': tokGroupId, 'clusterId': clusterId})
+
+
+
 def temp_dump_cluster(clusterId, tokGroupId, tokGroupId2clusterIdList, clusterId2tokGroupId, clusterId2tokText, tokText2clusterIdList, tokId2clusterId): 
     dump(f"tokGroupId2clusterIdList_{arg.cluster_num}.pickle", tokGroupId2clusterIdList)
     dump(f"clusterId2tokGroupId_{args.cluster_num}.pickle", clusterId2tokGroupId)
@@ -590,7 +700,7 @@ if __name__ == "__main__":
         del emb_f
         print('******** DONE DUMPING!!! *********')
 
-    if args.action == "dataset":
+    elif args.action == "dataset":
         print(f"Action: Construct DataSet {args.data_name}!")
         emb_f = np.memmap(os.path.join(args.save_path, "tokId_emb.dat"), dtype="float32", mode="readonly", shape=(37000000, 1024))
         corpusId_tokenList_dict = pickle.load(open(os.path.join(args.save_path, "corpusId_tokenList_dict.pickle"), "rb"))
@@ -615,7 +725,7 @@ if __name__ == "__main__":
 
         print(f'Dump Dataset for {args.data_name}!')
 
-    if args.action == "cluster":
+    elif args.action == "cluster":
         print("Action: Do Cluster!")
         cluster_path = os.path.join(args.save_path, f"clusterId_emb_{args.cluster_num}.dat")
         model = T5EncoderModel.from_pretrained(args.emb_path).cuda()
@@ -656,7 +766,48 @@ if __name__ == "__main__":
         dump(f"tokText2clusterIdList_{args.cluster_num}.pickle", tokText2clusterIdList)
         dump(f"tokId2clusterId_{args.cluster_num}.pickle", tokId2clusterId)
 
-    if args.action == "cluster_dataset":
+    elif args.action == "light_cluster":
+        print("Action: Do Light Cluster!")
+        cluster_path = os.path.join(args.save_path, f"clusterId_emb_{args.cluster_num}.dat")
+        model = T5EncoderModel.from_pretrained(args.emb_path).cuda()
+
+        if f"light_cur_info_{args.cluster_num}.pickle" in os.listdir(args.save_path):
+            tokGroupId2clusterIdList = pickle.load(open(os.path.join(args.save_path, f'light_tokGroupId2clusterIdList_{args.cluster_num}.pickle'), "rb"))
+            clusterId2tokGroupId = pickle.load(open(os.path.join(args.save_path, f'light_clusterId2tokGroupId_{args.cluster_num}.pickle'), "rb"))
+            clusterId2tokText = pickle.load(open(os.path.join(args.save_path, f'light_clusterId2tokText_{args.cluster_num}.pickle'), "rb"))
+            tokText2clusterIdList = pickle.load(open(os.path.join(args.save_path, f'light_tokText2clusterIdList_{args.cluster_num}.pickle'), "rb"))
+            tokId2clusterId = pickle.load(open(os.path.join(args.save_path, f'light_tokId2clusterId_{args.cluster_num}.pickle'), "rb"))
+            cur_info = pickle.load(open(os.path.join(args.save_path, f'light_cur_info_{args.cluster_num}.pickle'), "rb"))
+            c_tokGroupId = cur_info['tokGroupId']
+            clusterId = cur_info['clusterId']
+            clusterId2clusterEmb = np.memmap(cluster_path, dtype="float32", mode="readwrite", shape=(37000000,1024)) 
+        else:
+            tokGroupId2clusterIdList = defaultdict(list)
+            clusterId2tokGroupId = {}
+            clusterId2tokText = {}
+            tokText2clusterIdList = defaultdict(list)
+            tokId2clusterId = {}
+            clusterId = 0
+            c_tokGroupId = 0
+            clusterId2clusterEmb = np.memmap(cluster_path, dtype="float32", mode="w+", shape=(37000000,1024)) 
+        clusterId2clusterEmb.flush()
+
+        emb_f = np.memmap(os.path.join(args.save_path, "tokId_emb.dat"), dtype="float32", mode="readonly", shape=(37000000, 1024))
+        tokGroupId2tokIdList = pickle.load(open(os.path.join(args.save_path, "tokGroupId2tokIdList.pickle"), 'rb'))
+        tokId2tokText = pickle.load(open(os.path.join(args.save_path, "tokId2tokText.pickle"), 'rb'))
+        tokId2tokGroupId = pickle.load(open(os.path.join(args.save_path, "tokId2tokGroupId.pickle"), 'rb'))
+        assert tokId2tokGroupId[0] == 0
+
+        tokGroupId2clusterIdList, clusterId2tokGroupId, clusterId2tokText, tokText2clusterIdList, tokId2clusterId, cluster_path = do_light_cluster(model, tokGroupId2tokIdList, clusterId, c_tokGroupId, clusterId2clusterEmb, tokId2tokGroupId)
+
+        #clusterIdList2corpusId = get_clusterIdList2corpusId(corpusId_tokenList_dict, tokId2clusterId)
+        dump(f"light_tokGroupId2clusterIdList_{arg.cluster_num}.pickle", tokGroupId2clusterIdList)
+        dump(f"light_clusterId2tokGroupId_{args.cluster_num}.pickle", clusterId2tokGroupId)
+        dump(f"light_clusterId2tokText_{args.cluster_num}.pickle", clusterId2tokText)
+        dump(f"light_tokText2clusterIdList_{args.cluster_num}.pickle", tokText2clusterIdList)
+        dump(f"light_tokId2clusterId_{args.cluster_num}.pickle", tokId2clusterId)
+
+    elif args.action == "cluster_dataset":
         print("Action: Dump Cluster Embedding!")
         train_dict = pickle.load(open(os.path.join(args.save_path, "gr_contextualized_train.pickle"), 'rb'))
         dev_dict = pickle.load(open(os.path.join(args.save_path, "gr_contextualized_dev.pickle"), 'rb'))
@@ -672,4 +823,6 @@ if __name__ == "__main__":
         dump(dev_fname, dev_dict)
         dump(test_fname, test_dict)   
 
+    else:
+        assert False
     print("==== DONE ====")

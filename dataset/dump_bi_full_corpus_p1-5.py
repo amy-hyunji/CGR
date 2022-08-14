@@ -10,7 +10,7 @@ from argparse import ArgumentParser
 from transformers import BartTokenizer, BartModel, T5EncoderModel, T5Tokenizer
 from tqdm import tqdm 
 from knockknock import slack_sender
-from slack import get_webhook_url, get_channel
+#from slack import get_webhook_url, get_channel
 from collections import defaultdict
 from sklearn.cluster import KMeans
 
@@ -78,7 +78,7 @@ def t5_construct_sp(_model, _tokenizer, emb_f):
 
     return tokText2tokIdList, tokId2tokText
 
-@slack_sender(webhook_url=get_webhook_url(), channel=get_channel())
+#@slack_sender(webhook_url=get_webhook_url(), channel=get_channel())
 def t5_construct_corpus(_model, _tokenizer, _corpus, _context, emb_f, tokId2tokText, tokText2tokIdList, tokId2corpus, corpusId_tokenList_dict, cur_tokId, corpusId):
     if args.idx == 0:
         tokText2tokIdList, tokId2tokText = t5_construct_sp(_model, _tokenizer, emb_f)
@@ -229,7 +229,7 @@ def dump_each_idx(args):
 
 def combine_all_idx(args):
     total_f = np.memmap(os.path.join(args.save_path, "tokId_emb.w_para.dat"), dtype="float32", mode="w+", shape=(37000000, 1024))
-    path_list = []
+    path_list = ["n_kilt_total_corpus.w_para.sub/max_length_2000_idx_1/", "n_kilt_total_corpus.w_para.sub/idx_2", "n_kilt_total_corpus.w_para.sub/idx_3", "n_kilt_total_corpus.w_para.sub/max_length_2000_idx_4/", "n_kilt_total_corpus.w_para.sub/idx_5", "n_kilt_total_corpus.w_para.sub/idx_6", "n_kilt_total_corpus.w_para.sub/idx_7", "n_kilt_total_corpus.w_para.sub/idx_8", "n_kilt_total_corpus.w_para.sub/idx_9", "n_kilt_total_corpus.w_para.sub/idx_10", "n_kilt_total_corpus.w_para.sub/idx_11", "n_kilt_total_corpus.w_para.sub/max_length_2000_idx_12/"]
     t_tokId = 0; t_corpusId = 0
     # tokId2corpus, tokText2tokIdList, tokId2tokText, corpusId_tokenList_dict
     tokId2corpus = {}; tokText2tokIdList = defaultdict(list); tokId2tokText = {}; corpusId_tokenList_dict = {} 
@@ -281,7 +281,7 @@ def combine_all_idx(args):
     dump("corpusId_tokenList_dict.pickle", corpusId_tokenList_dict)
     return tokId2corpus, tokText2tokIdList, tokId2tokText, corpusId_tokenList_dict
 
-@slack_sender(webhook_url=get_webhook_url(), channel=get_channel())
+#@slack_sender(webhook_url=get_webhook_url(), channel=get_channel())
 def t5_construct_group(tokText2tokIdList):
     tokGroupId2tokText = {}
     tokId2tokGroupId = {}
@@ -341,7 +341,7 @@ def t5_construct_group_prefix_tree(corpusId_tokenList_dict):
                 cur_dict = cur_dict[prev] 
     return constrained_dict
 
-@slack_sender(webhook_url=get_webhook_url(), channel=get_channel())
+#@slack_sender(webhook_url=get_webhook_url(), channel=get_channel())
 def do_cluster(model, tokGroupId2tokIdList):
     no_cluster = 0
     total_cluster = 0
@@ -456,7 +456,7 @@ def temp_dump_cluster(clusterId, tokGroupId, tokGroupId2clusterIdList, clusterId
     dump(f"clusterId2tokText_{args.cluster_num}.pickle", clusterId2tokText)
     dump(f"tokText2clusterIdList_{args.cluster_num}.pickle", tokText2clusterIdList)
     dump(f"tokId2clusterId_{args.cluster_num}.pickle", tokId2clusterId)
-    dump(f'cur_info_{args.cluster_num}.pickle', {'tokGroupId': tokGroupId, 'clusterId', clusterId})
+    dump(f'cur_info_{args.cluster_num}.pickle', {'tokGroupId': tokGroupId, 'clusterId': clusterId})
 
 
 # @slack_sender(webhook_url=get_webhook_url(), channel=get_channel())

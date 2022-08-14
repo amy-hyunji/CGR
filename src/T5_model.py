@@ -6,7 +6,7 @@ import json
 import uuid
 import copy
 import torch
-#import faiss
+import faiss
 import string
 import pickle
 import numpy 
@@ -493,7 +493,6 @@ class T5AsyncBaseTuner(T5BaseClass):
             self.config.update(
                 {"contextualized_file": os.path.join(self.hparams.dataset, self.hparams.contextualized_file)}#self.contextualized_tokid2emb}
             )  # tokId_emb.pickle
-
         else:
             assert False
 
@@ -820,11 +819,37 @@ class T5BiEncoder(T5BaseClass):
             self.test_em_score_list = []
             self.test_recall_score_list = []
 
-        self.contextualized_tokid2emb = pickle.load(open(os.path.join(self.hparams.dataset, self.hparams.contextualized_file), "rb"))
-        self.contextualized_tensor = torch.tensor(list(self.contextualized_tokid2emb.values())).to(self.device)
-        if self.hparams.fp16:
-            self.contextualized_tensor = self.contextualized_tensor.half()
-        self.contextualized_token = list(self.contextualized_tokid2emb.keys())
+        print('!!! Loading Embedding !!!')
+        if self.hparams.contextualized_file.endswith('dat'):
+            self.contextualized_tokid2emb = np.memmap(os.path.join(self.hparams.dataset, self.hparams.contextualized_file), dtype="float32", mode="readonly", shape=(37000000, 1024))
+            if "nq.index" in os.listdir('../dataset'):
+                self.contextualized_tensor = faiss.read_index("../dataset/nq.index")
+                self.contextualized_token = json.load(open('../dataset/nq.token.json'))
+            else:
+                print(f'BUILD Faiss Index!! ')
+                self.contextualized_tensor = faiss.IndexFlatIP(1024)
+                self.contextualized_token = []
+                for i in tqdm(range(37000000)):
+                    emb = self.contextualized_tokid2emb[i][:]
+                    emb = np.expand_dims(emb, axis=0)
+                    self.contextualized_tensor.add(emb)
+                    self.contextualized_token.append(i)
+                print(f'Saving!')
+                faiss.write_index(self.contextualized_tensor, "../dataset/nq.index")
+                with open('../dataset/nq.token.json', 'w') as f:
+                    json.dump(self.contextualized_token, f)
+
+            #self.contextualized_tensor = torch.tensor(self.contextualized_tokid2emb)#.to(self.device)
+            #self.contextualized_token = np.arange(37000000) 
+        elif self.hparams.contextualized_file.endswith('pickle'):
+            self.contextualized_tokid2emb = pickle.load(open(os.path.join(self.hparams.dataset, self.hparams.contextualized_file), "rb"))
+            self.contextualized_tensor = torch.tensor(list(self.contextualized_tokid2emb.values()))#.to(self.device)
+            if self.hparams.fp16:
+                assert False
+                self.contextualized_tensor = self.contextualized_tensor.half()
+            self.contextualized_token = list(self.contextualized_tokid2emb.keys())
+        else:
+            assert False
         self.tokId2corpus = pickle.load(open(os.path.join(self.hparams.dataset, self.hparams.tokId2corpus), "rb"))
         self.corpus2tokId = self._get_corpus2tokId()
 
@@ -966,9 +991,11 @@ class T5BiEncoder(T5BaseClass):
 
     def validation_step(self, batch, batch_idx):
         query_output, _ = self._get_embedding(batch)
-        scores = torch.inner(query_output.to(self.device), self.contextualized_tensor.to(self.device)) # [# of query, # of corpus] 
-        top_scores = torch.topk(scores, self.hparams.val_beam_size)
-        indices = top_scores.indices # [# of query, self.hparams.val_beam_size]
+        _, indices = self.contextualized_tensor.search(query_output, self.hparams.val_beam_size)
+        #scores = torch.inner(query_output.to('cpu'), self.contextualized_tensor)
+        #scores = torch.inner(query_output.to(self.device), self.contextualized_tensor.to(self.device)) # [# of query, # of corpus] 
+        #top_scores = torch.topk(scores, self.hparams.val_beam_size)
+        #indices = top_scores.indices # [# of query, self.hparams.val_beam_size]
         assert len(indices) == len(batch['output'])
 
         em_score, recall_score, _, _ = self._calculate_score(indices, batch, batch_idx)
@@ -1002,7 +1029,8 @@ class T5BiEncoder(T5BaseClass):
 
     def test_step(self, batch, batch_idx):
         query_output, _ = self._get_embedding(batch)
-        scores = torch.inner(query_output.to(self.device), self.contextualized_tensor.to(self.device)) # [# of query, # of corpus] 
+        scores = torch.inner(query_output.to('cpu'), self.contextualized_tensor) # [# of query, # of corpus] 
+        #scores = torch.inner(query_output.to(self.device), self.contextualized_tensor.to(self.device)) # [# of query, # of corpus] 
         top_scores = torch.topk(scores, self.hparams.val_beam_size)
         indices = top_scores.indices # [# of query, self.hparams.val_beam_size]
         assert len(indices) == len(batch['output'])

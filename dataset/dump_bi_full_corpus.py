@@ -10,7 +10,7 @@ from argparse import ArgumentParser
 from transformers import BartTokenizer, BartModel, T5EncoderModel, T5Tokenizer
 from tqdm import tqdm 
 from knockknock import slack_sender
-from slack import get_webhook_url, get_channel
+#from slack import get_webhook_url, get_channel
 from collections import defaultdict
 from sklearn.cluster import KMeans
 
@@ -103,7 +103,7 @@ def t5_construct_sp(_model, _tokenizer, emb_f):
 
     return tokText2tokIdList, tokId2tokText
 
-@slack_sender(webhook_url=get_webhook_url(), channel=get_channel())
+#@slack_sender(webhook_url=get_webhook_url(), channel=get_channel())
 def t5_construct_corpus(_model, _tokenizer, _corpus, _context, emb_f):
     tokText2tokIdList, tokId2tokText = t5_construct_sp(_model, _tokenizer, emb_f)
     cur_tokId = 2; corpusId = 0
@@ -363,12 +363,14 @@ def load_data(split):
       raise NotImplementedError('Check the split!')
    return df
 
-def bi_construct_dataset(split, corpus, emb_f):
+def bi_construct_dataset(split, corpus2tokenList, emb_f):
     df = load_data(split)
     save_dict = {'input': [], 'output': [], 'output_tokid': []}
-    for _input, _output in zip(df["input"], df["output"]):
-        corpus_id = corpus.index(_output)
-        output_tok = corpusId_tokenList_dict[corpus_id]
+    data_len = len(df)
+    for i in tqdm(range(data_len)):
+        _input = df['input'][i]
+        _output = df['output'][i]
+        output_tok = corpus2tokenList[_output]
         output_emb = [emb_f[tok][:] for tok in output_tok]
 
         if args.t5: assert output_tok[-1] == 1
@@ -377,14 +379,16 @@ def bi_construct_dataset(split, corpus, emb_f):
             save_dict['input'].append(_input)
             save_dict['output'].append(_output)
             save_dict['output_tokid'].append([_tok])
-    return save_dict, f"bi_contextualized_{split}.pickle" 
+    return save_dict, f"bi_{args.data_name}_contextualized_{split}.pickle" 
 
-def gr_construct_dataset(split, corpus, emb_f):
+def gr_construct_dataset(split, corpus2tokenList, emb_f):
     df = load_data(split)
     save_dict = {'input': [], 'output': [], 'output_tokid': []}
-    for _input, _output in zip(df['input'], df['output']):
-        corpus_id = corpus.index(_output)
-        output_tok = corpusId_tokenList_dict[corpus_id]
+    data_len = len(df)
+    for i in tqdm(range(data_len)):
+        _input = df['input'][i]
+        _output = df['output'][i]
+        output_tok = corpus2tokenList[_output]
         output_emb = [emb_f[tok][:] for tok in output_tok]
         
         if args.t5: assert output_tok[-1] == 1
@@ -394,14 +398,14 @@ def gr_construct_dataset(split, corpus, emb_f):
         save_dict['output'].append(_output)
         save_dict['output_tokid'].append(output_tok)
 
-    return save_dict, f"gr_contextualized_{split}.pickle"
+    return save_dict, f"gr_{args.data_name}_contextualized_{split}.pickle"
 
 def dump(fname, file):
     with open(os.path.join(args.save_path, fname), "wb") as f:
         pickle.dump(file, f)
 
-@slack_sender(webhook_url=get_webhook_url(), channel=get_channel())
-def do_cluster(model, tokGroupId2tokIdList):
+#@slack_sender(webhook_url=get_webhook_url(), channel=get_channel())
+def do_cluster(model, tokGroupId2tokIdList, clusterId, c_tokGroupId, clusterId2clusterEmb, tokId2tokGroupId):
     no_cluster = 0
     total_cluster = 0
     tokText_emb = {}
@@ -507,7 +511,7 @@ def temp_dump_cluster(clusterId, tokGroupId, tokGroupId2clusterIdList, clusterId
     dump(f"clusterId2tokText_{args.cluster_num}.pickle", clusterId2tokText)
     dump(f"tokText2clusterIdList_{args.cluster_num}.pickle", tokText2clusterIdList)
     dump(f"tokId2clusterId_{args.cluster_num}.pickle", tokId2clusterId)
-    dump(f'cur_info_{args.cluster_num}.pickle', {'tokGroupId': tokGroupId, 'clusterId', clusterId})
+    dump(f'cur_info_{args.cluster_num}.pickle', {'tokGroupId': tokGroupId, 'clusterId': clusterId})
 
 def construct_dataset(_dict, tokId2clusterId, split):
     ret_dict = {'input': [], 'output': [], 'output_tokid': []}
@@ -515,7 +519,7 @@ def construct_dataset(_dict, tokId2clusterId, split):
         ret_dict['input'].append(_input)
         ret_dict['output'].append(_output)
         ret_dict['output_tokid'].append([tokId2clusterId[el] for el in _output_tokid])        
-    return ret_dict, f"{split}_cluster_{args.cluster_num}.pickle"
+    return ret_dict, f"gr_{args.data_name}_{split}_cluster_{args.cluster_num}.pickle"
 
 def get_clusterIdList2corpusId(corpusId_tokenList_dict, tokId2clusterId):
    groupList2corpusId = {}
@@ -528,6 +532,7 @@ def get_clusterIdList2corpusId(corpusId_tokenList_dict, tokId2clusterId):
 if __name__ == "__main__":
     parser = ArgumentParser()
     parser.add_argument("--corpus", default=None, required=True, type=str)
+    parser.add_argument("--data_name", default=None, required=True, type=str)
     parser.add_argument("--train_file", default=None, required=True, type=str)
     parser.add_argument("--dev_file", default=None, required=True, type=str)
     parser.add_argument("--test_file", default=None, required=True, type=str)
@@ -551,6 +556,7 @@ if __name__ == "__main__":
     print(f"corpus_num: {corpus_num}")
 
     if args.action == "dump":
+        print("Action: Dump Embedding!")
         emb_f = os.path.join(args.save_path, f"tokId_emb.dat")
         if os.path.exists(emb_f): os.system(f"rm {emb_f}")
         emb_f = np.memmap(emb_f, dtype="float32", mode="w+", shape=(37000000, 1024))
@@ -582,26 +588,37 @@ if __name__ == "__main__":
         dump("tokGroupId2tokIdList.pickle", tokGroupId2tokIdList)
         dump("group_trie.pickle", group_trie)
         del emb_f
+        print('******** DONE DUMPING!!! *********')
 
+    if args.action == "dataset":
+        print(f"Action: Construct DataSet {args.data_name}!")
         emb_f = np.memmap(os.path.join(args.save_path, "tokId_emb.dat"), dtype="float32", mode="readonly", shape=(37000000, 1024))
-        
-        train_dict, train_fname = bi_construct_dataset("train", corpus, emb_f)
-        dev_dict, dev_fname = bi_construct_dataset("dev", corpus, emb_f)
-        test_dict, test_fname = bi_construct_dataset("test", corpus, emb_f)
+        corpusId_tokenList_dict = pickle.load(open(os.path.join(args.save_path, "corpusId_tokenList_dict.pickle"), "rb"))
+
+        corpus2tokenList = {}
+        for corpusId, tokenList in corpusId_tokenList_dict.items():
+            corpus2tokenList[corpus[corpusId]] = tokenList
+
+        train_dict, train_fname = bi_construct_dataset("train", corpus2tokenList, emb_f)
+        dev_dict, dev_fname = bi_construct_dataset("dev", corpus2tokenList, emb_f)
+        test_dict, test_fname = bi_construct_dataset("test", corpus2tokenList, emb_f)
         dump(train_fname, train_dict)
         dump(dev_fname, dev_dict)
         dump(test_fname, test_dict)   
 
-        train_dict, train_fname = gr_construct_dataset("train", corpus, emb_f)
-        dev_dict, dev_fname = gr_construct_dataset("dev", corpus, emb_f)
-        test_dict, test_fname = gr_construct_dataset("test", corpus, emb_f)
+        train_dict, train_fname = gr_construct_dataset("train", corpus2tokenList, emb_f)
+        dev_dict, dev_fname = gr_construct_dataset("dev", corpus2tokenList, emb_f)
+        test_dict, test_fname = gr_construct_dataset("test", corpus2tokenList, emb_f)
         dump(train_fname, train_dict)
         dump(dev_fname, dev_dict)
-        dump(test_fname, test_dict)   
+        dump(test_fname, test_dict)  
+
+        print(f'Dump Dataset for {args.data_name}!')
 
     if args.action == "cluster":
-        print(f'!!!DO Cluster!!!')
+        print("Action: Do Cluster!")
         cluster_path = os.path.join(args.save_path, f"clusterId_emb_{args.cluster_num}.dat")
+        model = T5EncoderModel.from_pretrained(args.emb_path).cuda()
 
         if f"cur_info_{args.cluster_num}.pickle" in os.listdir(args.save_path):
             tokGroupId2clusterIdList = pickle.load(open(os.path.join(args.save_path, f'tokGroupId2clusterIdList_{args.cluster_num}.pickle'), "rb"))
@@ -624,31 +641,35 @@ if __name__ == "__main__":
             clusterId2clusterEmb = np.memmap(cluster_path, dtype="float32", mode="w+", shape=(37000000,1024)) 
         clusterId2clusterEmb.flush()
 
-
-        train_dict = pickle.load(open(os.path.join(args.save_path, "gr_contextualized_train.pickle"), 'rb'))
-        dev_dict = pickle.load(open(os.path.join(args.save_path, "gr_contextualized_dev.pickle"), 'rb'))
-        test_dict = pickle.load(open(os.path.join(args.save_path, "gr_contextualized_test.pickle"), 'rb'))
-
         emb_f = np.memmap(os.path.join(args.save_path, "tokId_emb.dat"), dtype="float32", mode="readonly", shape=(37000000, 1024))
         tokGroupId2tokIdList = pickle.load(open(os.path.join(args.save_path, "tokGroupId2tokIdList.pickle"), 'rb'))
         tokId2tokText = pickle.load(open(os.path.join(args.save_path, "tokId2tokText.pickle"), 'rb'))
         tokId2tokGroupId = pickle.load(open(os.path.join(args.save_path, "tokId2tokGroupId.pickle"), 'rb'))
+        assert tokId2tokGroupId[0] == 0
 
-        tokGroupId2clusterIdList, clusterId2tokGroupId, clusterId2tokText, tokText2clusterIdList, tokId2clusterId, cluster_path = do_cluster(model, tokGroupId2tokIdList)
+        tokGroupId2clusterIdList, clusterId2tokGroupId, clusterId2tokText, tokText2clusterIdList, tokId2clusterId, cluster_path = do_cluster(model, tokGroupId2tokIdList, clusterId, c_tokGroupId, clusterId2clusterEmb, tokId2tokGroupId)
 
         #clusterIdList2corpusId = get_clusterIdList2corpusId(corpusId_tokenList_dict, tokId2clusterId)
-        clusterId2clusterEmb = np.memmap(cluster_path, dtype="float32", mode="readonly", shape=(37000000, 1024))
+        dump(f"tokGroupId2clusterIdList_{arg.cluster_num}.pickle", tokGroupId2clusterIdList)
+        dump(f"clusterId2tokGroupId_{args.cluster_num}.pickle", clusterId2tokGroupId)
+        dump(f"clusterId2tokText_{args.cluster_num}.pickle", clusterId2tokText)
+        dump(f"tokText2clusterIdList_{args.cluster_num}.pickle", tokText2clusterIdList)
+        dump(f"tokId2clusterId_{args.cluster_num}.pickle", tokId2clusterId)
+
+    if args.action == "cluster_dataset":
+        print("Action: Dump Cluster Embedding!")
+        train_dict = pickle.load(open(os.path.join(args.save_path, "gr_contextualized_train.pickle"), 'rb'))
+        dev_dict = pickle.load(open(os.path.join(args.save_path, "gr_contextualized_dev.pickle"), 'rb'))
+        test_dict = pickle.load(open(os.path.join(args.save_path, "gr_contextualized_test.pickle"), 'rb'))
+        
+        #clusterId2clusterEmb = np.memmap(cluster_path, dtype="float32", mode="readonly", shape=(37000000, 1024))
+        tokId2clusterId = pickle.load(open(os.path.join(args.save_path, "tokId2clusterId.pickle")), "rb")
+
         train_dict, train_fname = construct_dataset(train_dict, tokId2clusterId, "train")
         dev_dict, dev_fname = construct_dataset(dev_dict, tokId2clusterId, "dev")
         test_dict, test_fname = construct_dataset(test_dict, tokId2clusterId, "test")
         dump(train_fname, train_dict)
         dump(dev_fname, dev_dict)
         dump(test_fname, test_dict)   
-
-        dump(f"tokGroupId2clusterIdList_{arg.cluster_num}.pickle", tokGroupId2clusterIdList)
-        dump(f"clusterId2tokGroupId_{args.cluster_num}.pickle", clusterId2tokGroupId)
-        dump(f"clusterId2tokText_{args.cluster_num}.pickle", clusterId2tokText)
-        dump(f"tokText2clusterIdList_{args.cluster_num}.pickle", tokText2clusterIdList)
-        dump(f"tokId2clusterId_{args.cluster_num}.pickle", tokId2clusterId)
 
     print("==== DONE ====")

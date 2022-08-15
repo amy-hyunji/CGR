@@ -6,3 +6,5 @@ wandb
 azure-storage-blob
 periflow_sdk
 deepspeed
+faiss-gpu
+scikit-learn

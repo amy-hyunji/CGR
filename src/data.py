@@ -70,6 +70,7 @@ class JOINTDataset(Dataset):
 class GENREDataset(Dataset):
     def __init__(self, tokenizer, split, hparams, tokid2emb, corpus_tokenList_dict=None):
         self.hparams = hparams
+        self.split = split
         if split == "train":
             data_path = self.hparams.train_file
         elif split == "validation":
@@ -86,7 +87,7 @@ class GENREDataset(Dataset):
             for i, _output in enumerate(data_dict["output"]):
                 data_dict["output_tokid"][i] = corpus_tokenList_dict[_output]
 
-        if split == "test":
+        if split == "test": 
             self.dataset = {'input': [], 'output': [], 'output_tokid': []}
             for _input, _output, _output_tok_id in zip(data_dict['input'], data_dict['output'], data_dict['output_tokid']):
                 if _input in self.dataset['input']: 
@@ -161,8 +162,8 @@ class GENREDataset(Dataset):
             self.dataset.iloc[idx], idx
         )
         source_ids = source["input_ids"].squeeze()
-        target_ids = target["input_ids"].squeeze()
         src_mask = source["attention_mask"].squeeze()
+        target_ids = target["input_ids"].squeeze()
         target_mask = target["attention_mask"].squeeze()
 
         return {

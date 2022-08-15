@@ -136,20 +136,33 @@ class T5BaseClass(pl.LightningModule):
 
     def _calculate_recall(self, pred, gt):
         assert len(pred) == self.hparams.val_beam_size, f'gt: {gt}\npred: {pred}' 
-        _correct = 0
-        for elem in pred:
-            if elem is None: continue 
-            if self.normalize_answer(elem) == self.normalize_answer(gt):
-                return 100
+        if type(gt) == list:
+            gt = [self.normalize_answer(el) for el in gt]
+            for elem in pred:
+                if elem is None: continue 
+                if self.normalize_answer(elem) in gt:
+                    return 100
+        else:
+            for elem in pred:
+                if elem is None: continue 
+                if self.normalize_answer(elem) == self.normalize_answer(gt):
+                    return 100
         return 0
 
     def _calculate_em(self, pred, gt):
-        if pred is None:
+        if pred is None: 
             return 0
-        if self.normalize_answer(pred) == self.normalize_answer(gt):
-            return 100
+        if type(gt) == list:
+            gt = [self.normalize_answer(el) for el in gt]
+            if self.normalize_answer(pred) in gt:
+                return 100
+            else:
+                return 0
         else:
-            return 0
+            if self.normalize_answer(pred) == self.normalize_answer(gt):
+                return 100
+            else:
+                return 0
 
     def lmap(self, f, x):
         return list(map(f, x))
@@ -457,10 +470,13 @@ class T5AsyncBaseTuner(T5BaseClass):
 
                 else:
                     self.load_epoch = int(self.hparams.resume_from_checkpoint.split('/')[-1].split('=')[1].split('-')[0])
-                    if (self.hparams.cluster_num > 0 and f"k-means_corpus_tokenList_{self.hparams.cluster_num}.pickle" in os.listdir(self.hparams.dataset)) or (self.hparams.cluster_num == -1 and "corpus_tokenList.pickle" in os.listdir(self.hparams.dataset)):
+                    base_path = "/".join(self.hparams.resume_from_checkpoint.split('/')[:-1])
+                    base_path = os.path.join(base_path, f"best_tfmr_{self.load_epoch}")
+                    if (self.hparams.cluster_num > 0 and f"k-means_corpus_tokenList_{self.hparams.cluster_num}.pickle" in os.listdir(base_path)) or (self.hparams.cluster_num == -1 and "corpus_tokenList.pickle" in os.listdir(base_path)):
                         print(f'***** Loading Dataset from Epoch: {self.load_epoch}!!')
                         self.tokId2tokText, self.tokId2groupId, self.groupId2tokId, self.trie, self.contextualized_tokid2emb, self.corpus_tokenList_dict = self._load_dataset(epoch=self.load_epoch)
                     else:
+                        assert False
                         print(f'***** Constructing New One :) !!')
                         self.tokId2tokText, self.tokId2groupId, self.groupId2tokId, self.trie, self.contextualized_tokid2emb, self.corpus_tokenList_dict = self._dump_new_dataset(path="resume")
                         self._dump_all(path="base")
@@ -821,8 +837,9 @@ class T5BiEncoder(T5BaseClass):
 
         print('!!! Loading Embedding !!!')
         if self.hparams.contextualized_file.endswith('dat'):
+            self.faiss = True
             self.contextualized_tokid2emb = np.memmap(os.path.join(self.hparams.dataset, self.hparams.contextualized_file), dtype="float32", mode="readonly", shape=(37000000, 1024))
-            if "nq.index" in os.listdir(self.hparams.dataset):
+            if "faiss.index" in os.listdir(self.hparams.dataset):
                 self.contextualized_tensor = faiss.read_index(os.path.join(self.hparams.dataset, "faiss.index"))
                 self.contextualized_token = json.load(open(os.path.join(self.hparams.dataset, "faiss.token.json")))
             else:
@@ -838,13 +855,12 @@ class T5BiEncoder(T5BaseClass):
                 faiss.write_index(self.contextualized_tensor, os.path.join(self.hparams.dataset, "faiss.index"))
                 with open(os.path.join(self.hparams.dataset, "faiss.token.json"), 'w') as f:
                     json.dump(self.contextualized_token, f)
-            else:
-                assert False
 
 
             #self.contextualized_tensor = torch.tensor(self.contextualized_tokid2emb)#.to(self.device)
             #self.contextualized_token = np.arange(37000000) 
         elif self.hparams.contextualized_file.endswith('pickle'):
+            self.faiss = False 
             self.contextualized_tokid2emb = pickle.load(open(os.path.join(self.hparams.dataset, self.hparams.contextualized_file), "rb"))
             self.contextualized_tensor = torch.tensor(list(self.contextualized_tokid2emb.values()))#.to(self.device)
             if self.hparams.fp16:
@@ -994,11 +1010,13 @@ class T5BiEncoder(T5BaseClass):
 
     def validation_step(self, batch, batch_idx):
         query_output, _ = self._get_embedding(batch)
-        _, indices = self.contextualized_tensor.search(query_output.detach().cpu().numpy(), self.hparams.val_beam_size)
-        #scores = torch.inner(query_output.to('cpu'), self.contextualized_tensor)
+        if self.faiss:
+            _, indices = self.contextualized_tensor.search(query_output.detach().cpu().numpy(), self.hparams.val_beam_size)
+        else:
+            scores = torch.inner(query_output.to('cpu'), self.contextualized_tensor)
+            top_scores = torch.topk(scores, self.hparams.val_beam_size)
+            indices = top_scores.indices # [# of query, self.hparams.val_beam_size]
         #scores = torch.inner(query_output.to(self.device), self.contextualized_tensor.to(self.device)) # [# of query, # of corpus] 
-        #top_scores = torch.topk(scores, self.hparams.val_beam_size)
-        #indices = top_scores.indices # [# of query, self.hparams.val_beam_size]
         assert len(indices) == len(batch['output'])
 
         em_score, recall_score, _, _ = self._calculate_score(indices, batch, batch_idx)
@@ -1409,7 +1427,7 @@ class T5FineTuner(T5grTuner):
             batch["source_ids"],
             attention_mask=batch["source_mask"],
             use_cache=True,
-            decoder_attention_mask=batch["target_mask"],
+            #decoder_attention_mask=batch["target_mask"],
             max_length=self.hparams.max_output_length,
             num_beams=self.hparams.val_beam_size,
             num_return_sequences=self.hparams.val_beam_size,

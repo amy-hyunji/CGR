@@ -221,7 +221,7 @@ if __name__ == "__main__":
         model_type=hparam.model_type, # new - bi-encoder Training
         periflow=hparam.periflow, # new - periflow
         periflow_dir=hparam.periflow_dir if "periflow_dir" in hparam else None, # new - directory of periflow
-        limit_val_batches=1.0,
+        limit_val_batches=hparam.limit_val_batches if "limit_val_batches" in hparam else None,
         train_c_emb=hparam.train_c_emb,
         bi_type=hparam.bi_type,
         bi_loss=hparam.bi_loss if "bi_loss" in hparam else None,
@@ -250,7 +250,9 @@ if __name__ == "__main__":
         assert args.do_save in ["dat", None]
         assert args.model_dim is not None
         if args.do_save == "dat": assert args.tok_num is not None 
-        
+    
+    torch.multiprocessing.set_start_method('spawn')
+
     if torch.cuda.current_device() == 0:
         print("#" * 80)
         print(args)

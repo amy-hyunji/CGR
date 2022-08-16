@@ -228,7 +228,7 @@ if __name__ == "__main__":
         gr_decoder_only=hparam.gr_decoder_only,
         gr_decoder_only_encoder_ckpt=hparam.gr_decoder_only_encoder_ckpt,
         reload_dataloader_every_n_epochs=hparam.reload_dataloader_every_n_epochs if "reload_dataloader_every_n_epochs" in hparam else False,
-        cluster_num=hparam.cluster_num if "cluster_num" in hparam else -1,
+        cluster_num=hparam.cluster_num,
         do_save=hparam.do_save if "do_save" in hparam else None,
         tok_num=hparam.tok_num if "tok_num" in hparam else None,
         model_dim=hparam.model_dim if "model_dim" in hparam else None 

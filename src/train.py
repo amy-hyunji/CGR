@@ -221,7 +221,7 @@ if __name__ == "__main__":
         model_type=hparam.model_type, # new - bi-encoder Training
         periflow=hparam.periflow, # new - periflow
         periflow_dir=hparam.periflow_dir if "periflow_dir" in hparam else None, # new - directory of periflow
-        limit_val_batches=hparam.limit_val_batches if "limit_val_batches" in hparam else None,
+        limit_val_batches=hparam.limit_val_batches if "limit_val_batches" in hparam else 1.0,
         train_c_emb=hparam.train_c_emb,
         bi_type=hparam.bi_type,
         bi_loss=hparam.bi_loss if "bi_loss" in hparam else None,

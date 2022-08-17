@@ -870,7 +870,10 @@ class T5BiEncoder(T5BaseClass):
         else:
             assert False
         self.tokId2corpus = pickle.load(open(os.path.join(self.hparams.dataset, self.hparams.tokId2corpus), "rb"))
-        self.corpus2tokId = self._get_corpus2tokId()
+        if self.hparams.cluster_num < 0:
+            self.corpus2tokId = self._get_corpus2tokId()
+        else:
+            self.corpus2tokId = self._get_corpus2clusterId()
 
         self.loss_fct = nn.CrossEntropyLoss()
         self.decoder_input_ids, self.decoder_attention_mask = self.get_decoder_input()
@@ -880,6 +883,12 @@ class T5BiEncoder(T5BaseClass):
         for _tokId, _corpus in self.tokId2corpus.items():
             corpus2tokId[_corpus].append(_tokId)
         return corpus2tokId
+
+    def _get_corpus2clusterId(self):
+        corpus2clusterId = defaultdict(list)
+        for _clusterId, _corpus_list in self.tokId2corpus.items():
+            for _corpus in _corpus_list:
+                corpus2clusterId[_corpus].append(_clusterId) 
 
     def _get_dataset(self, split):
         dataset = GENREDataset(
@@ -985,6 +994,18 @@ class T5BiEncoder(T5BaseClass):
         )
         return loss 
 
+    def _calculate_cluster_em(self, pred_list, output):
+        if output in pred_list:
+            return 100
+        else:
+            return 0 
+
+    def _calculate_cluster_recall(self, pred_list, output):
+        for pred in pred_list:
+            if output in pred:
+                return 100
+        return 0
+
     def _calculate_score(self, indices, batch, batch_idx):
         em_list = []; recall_list = []; pred_list = []; pred_tok_list = []
         for idx, (_indice_list, _output, _input) in enumerate(zip(indices, batch['output'], batch['input'])):
@@ -996,16 +1017,22 @@ class T5BiEncoder(T5BaseClass):
                     _predict.append(None)
                 else:
                     _predict.append(self.tokId2corpus[tokId])
-            em_list.append(self._calculate_em(_predict[0], _output))
-            recall_list.append(self._calculate_recall(_predict, _output))
-            pred_list.append(_predict)
-            pred_tok_list.append(_pred_idx)
-            if self.print and idx == 0 and batch_idx%100 == 0:
-                print(f"$" * 50)
-                print(f"query: {_input}\ngt: {_output}\npredict: {_predict}")
-                print(f"em: {em_list[-1]} // recall: {recall_list[-1]}")
-                print(f"$" * 50)
-                print(" ")
+            if self.hparams.cluster_num < 0:
+                em_list.append(self._calculate_em(_predict[0], _output))
+                recall_list.append(self._calculate_recall(_predict, _output))
+                pred_list.append(_predict)
+                pred_tok_list.append(_pred_idx)
+                if self.print and idx == 0 and batch_idx%100 == 0:
+                    print(f"$" * 50)
+                    print(f"query: {_input}\ngt: {_output}\npredict: {_predict}")
+                    print(f"em: {em_list[-1]} // recall: {recall_list[-1]}")
+                    print(f"$" * 50)
+                    print(" ")
+            else:
+                em_list.append(self._calculate_cluster_em(_predict[0], _output))
+                recall_list.append(self._calculate_cluster_recall(_predict, _output))
+                pred_list.append(_predict)
+                pred_tok_list.append(_pred_idx)
         return em_list, recall_list, pred_list, pred_tok_list
 
     def validation_step(self, batch, batch_idx):

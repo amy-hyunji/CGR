@@ -371,10 +371,10 @@ def bi_construct_dataset(split, corpus2tokenList, emb_f):
         _input = df['input'][i]
         _output = df['output'][i]
         output_tok = corpus2tokenList[_output]
-        output_emb = [emb_f[tok][:] for tok in output_tok]
 
         if args.t5: assert output_tok[-1] == 1
         if args.bart: assert output_tok[-1] == 2
+        
         for _tok in output_tok[:-1]:
             save_dict['input'].append(_input)
             save_dict['output'].append(_output)
@@ -389,7 +389,6 @@ def gr_construct_dataset(split, corpus2tokenList, emb_f):
         _input = df['input'][i]
         _output = df['output'][i]
         output_tok = corpus2tokenList[_output]
-        output_emb = [emb_f[tok][:] for tok in output_tok]
         
         if args.t5: assert output_tok[-1] == 1
         if args.bart: assert output_tok[-1] == 2

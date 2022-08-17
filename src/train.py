@@ -155,6 +155,7 @@ if __name__ == "__main__":
     parser.add_argument("--config", default=None, required=True, type=str)
     parser.add_argument("--test_file", default=None, type=str)
     parser.add_argument("--test_name", default=None, type=str)
+    parser.add_argument("--test_batch", default=None, type=int)
     arg_ = parser.parse_args()
 
     with open(arg_.config) as config_file:
@@ -185,7 +186,7 @@ if __name__ == "__main__":
         accelerator=hparam.accelerator,  # ddp or deepspeed
         num_train_epochs=hparam.num_train_epochs,
         train_batch_size=hparam.train_batch_size,
-        eval_batch_size=hparam.eval_batch_size,
+        eval_batch_size=arg_.test_batch if arg_.test_batch else hparam.eval_batch_size,
         dump_batch_size=hparam.dump_batch_size if "dump_batch_size" in hparam else None,
         gradient_accumulation_steps=hparam.gradient_accumulation_steps,
         n_gpu=hparam.n_gpu,

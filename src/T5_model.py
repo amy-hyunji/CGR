@@ -995,6 +995,8 @@ class T5BiEncoder(T5BaseClass):
         return loss 
 
     def _calculate_cluster_em(self, pred_list, output):
+        if pred_list is None: 
+            return 0
         if output in pred_list:
             return 100
         else:
@@ -1002,6 +1004,7 @@ class T5BiEncoder(T5BaseClass):
 
     def _calculate_cluster_recall(self, pred_list, output):
         for pred in pred_list:
+            if pred is None: continue
             if output in pred:
                 return 100
         return 0

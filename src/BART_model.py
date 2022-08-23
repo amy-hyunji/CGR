@@ -17,7 +17,7 @@ import pytorch_lightning as pl
 import torch.distributed as dist
 
 from data import GENREDataset, JOINTDataset, MEANDataset
-from blob import get_blob_info, upload_directory_to_blob
+#from blob import get_blob_info, upload_directory_to_blob
 
 from transformers import BartConfig, BartTokenizer, BartModel, BartForConditionalGeneration 
 from transformers import BertTokenizer, Adafactor, AutoTokenizer

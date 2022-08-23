@@ -890,6 +890,7 @@ if __name__ == "__main__":
         dump(dev_fname, dev_dict)
         dump(test_fname, test_dict) 
 
+        """
         print('Dumping light ver.')
         cluster_path = os.path.join(args.save_path, f"light_clusterId_emb_{args.cluster_num}.dat")
         clusterId2clusterEmb = np.memmap(cluster_path, dtype="float32", mode="readonly", shape=(45000000, 1024))
@@ -905,7 +906,7 @@ if __name__ == "__main__":
         dump(train_fname, train_dict)
         dump(dev_fname, dev_dict)
         dump(test_fname, test_dict)   
-
+      
 
         train_dict = pickle.load(open(os.path.join(args.save_path, f"bi_{args.data_name}_contextualized_train.pickle"), 'rb'))
         dev_dict = pickle.load(open(os.path.join(args.save_path, f"bi_{args.data_name}_contextualized_dev.pickle"), 'rb'))
@@ -917,5 +918,6 @@ if __name__ == "__main__":
         dump(train_fname, train_dict)
         dump(dev_fname, dev_dict)
         dump(test_fname, test_dict)  
+        """
 
     print("==== DONE ====")

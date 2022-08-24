@@ -194,7 +194,7 @@ if __name__ == "__main__":
         resume_from_checkpoint=hparam.resume_from_checkpoint,
         val_check_interval=1.0,
         early_stop_callback=False,
-        seed=42,
+        seed=hparam.seed if "seed" in hparam else 42,
         check_val_every_n_epoch=hparam.check_val_every_n_epoch,
         train_file=hparam.train_file,
         dev_file=hparam.dev_file,
@@ -205,7 +205,7 @@ if __name__ == "__main__":
         do_test=hparam.do_test,
         test_model_path=hparam.test_model_path,
         test_name=arg_.test_name if arg_.test_name else hparam.test_name,
-        val_beam_size=hparam.val_beam_size,
+        val_beam_size=arg_.test_beam_size if arg_.test_beam_size else hparam.val_beam_size,
         freeze_encoder=hparam.freeze_encoder,
         freeze_vocab_emb=hparam.freeze_vocab_emb,
         contextualized_file=hparam.contextualized_file,  # new - tokId_emb.pickle
@@ -232,7 +232,8 @@ if __name__ == "__main__":
         cluster_num=hparam.cluster_num,
         do_save=hparam.do_save if "do_save" in hparam else None,
         tok_num=hparam.tok_num if "tok_num" in hparam else None,
-        model_dim=hparam.model_dim if "model_dim" in hparam else None 
+        model_dim=hparam.model_dim if "model_dim" in hparam else None,
+        dump_path=hparam.dump_path if "dump_path" in hparam else hparam.dataset 
     ) 
     args = argparse.Namespace(**args_dict)
     assert not (args.do_train and args.do_test), "Choose between train|test"

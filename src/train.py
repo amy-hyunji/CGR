@@ -250,7 +250,7 @@ if __name__ == "__main__":
     if args.model_type == "async":
         assert args.reload_dataloader_every_n_epochs is not False 
         assert args.train_c_emb is False
-        assert args.do_save in ["dat", None]
+        assert args.do_save in ["pickle", "dat", None]
         assert args.model_dim is not None
         if args.do_save == "dat": assert args.tok_num is not None 
     

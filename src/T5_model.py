@@ -562,7 +562,12 @@ class T5AsyncBaseTuner(T5BaseClass):
             self._dump('groupId_tree', self.trie, path)
             self._dump(f'k-means_clusterId_clusterEmb_{self.hparams.cluster_num}', self.contextualized_tokid2emb, path)
             self._dump(f'k-means_corpus_tokenList_{self.hparams.cluster_num}', self.corpus_tokenList_dict, path)
-            self.config.update({'contextualized_file': os.path.join(path, f'k-means_clusterId_clusterEmb_{self.hparams.cluster_num}.pickle')})
+            if path == "base":
+               self.config.update({'contextualized_file': os.path.join(self.hparams.dump_path, f'k-means_clusterId_clusterEmb_{self.hparams.cluster_num}.pickle')})
+            elif path == "test":
+               self.config.update({'contextualized_file': os.path.join(self.hparams.test_model_path, f'k-means_clusterId_clusterEmb_{self.hparams.cluster_num}.pickle')})
+            else:
+               self.config.update({'contextualized_file': os.path.join(path, f'k-means_clusterId_clusterEmb_{self.hparams.cluster_num}.pickle')})
         else:
             self._dump('tokId_tokText', self.tokId2tokText, path)
             self._dump('tokId_tokGroupId', self.tokId2groupId, path)
@@ -570,11 +575,16 @@ class T5AsyncBaseTuner(T5BaseClass):
             self._dump('groupId_tree', self.trie, path)
             self._dump('tokId_emb', self.contextualized_tokid2emb, path)
             self._dump('corpus_tokenList', self.corpus_tokenList_dict, path) 
-            self.config.update({'contextualized_file': os.path.join(path, f'tokId_emb.pickle')})
+            if path == "base":
+               self.config.update({'contextualized_file': os.path.join(self.hparams.dump_path, f'tokId_emb.pickle')})
+            elif path == "test":
+               self.config.update({'contextualized_file': os.path.join(self.hparams.test_model_path, f'tokId_emb.pickle')})
+            else:
+               self.config.update({'contextualized_file': os.path.join(path, f'tokId_emb.pickle')})
 
     def _dump(self, f_name, value, path):
         if path == "base":
-            save_path = self.hparams.dataset
+            save_path = self.hparams.dump_path
         elif path == "test":
             save_path = self.hparams.test_model_path
         else:
@@ -1024,7 +1034,7 @@ class T5BiEncoder(T5BaseClass):
         print('!!! Loading Embedding !!!')
         if self.hparams.contextualized_file.endswith('dat'):
             self.faiss = True
-            self.contextualized_tokid2emb = np.memmap(os.path.join(self.hparams.dataset, self.hparams.contextualized_file), dtype="float32", mode="readonly", shape=(37000000, 1024))
+            self.contextualized_tokid2emb = np.memmap(os.path.join(self.hparams.dataset, self.hparams.contextualized_file), dtype=self._get_dtype(), mode="readonly", shape=(37000000, 1024))
             if "faiss.index" in os.listdir(self.hparams.dataset):
                 self.contextualized_tensor = faiss.read_index(os.path.join(self.hparams.dataset, "faiss.index"))
                 self.contextualized_token = json.load(open(os.path.join(self.hparams.dataset, "faiss.token.json")))
@@ -2297,17 +2307,12 @@ class T5AsyncTuner(T5AsyncBaseTuner):
             if not load_file:
                 emb_list = [tokId_embs[id] for id in id_list]
             else:
-                if self.hparams.do_save == "hdf5":
-                    emb_list = [self._get_emb_from_file(hf=tokId_embs, _id=id, file_type="hdf5") for id in id_list]
-                elif self.hparams.do_save == "dat":
-                    emb_list = [self._get_emb_from_file(hf=tokId_embs, _id=id, file_type="dat") for id in id_list]
-                else:
-                    assert False
+                emb_list = [self._get_emb_from_file(hf=tokId_embs, _id=id, file_type=self.hparams.do_save) for id in id_list]
 
             # do cluster
             if len(emb_list) > self.hparams.cluster_num:
                 df = pd.DataFrame(emb_list) 
-                kmeans = KMeans(n_clusters=self.hparams.cluster_num, algorithm='auto', max_iter=50, n_init=3)
+                kmeans = KMeans(n_clusters=self.hparams.cluster_num, algorithm='auto') #, max_iter=50, n_init=3)
                 kmeans.fit(df)
                 predicts = np.array(kmeans.predict(df))
                 centers = kmeans.cluster_centers_
@@ -2358,11 +2363,11 @@ class T5AsyncTuner(T5AsyncBaseTuner):
             context = None
 
         if path == "base":
-            _model = T5EncoderModel.from_pretrained('t5-base').cuda()
+            _model = T5EncoderModel.from_pretrained('t5-large').cuda()
             if self.print: 
                 print(f'=== Model in {_model.device} ===')
                 print(f'*** Construct from Base Model!')
-            _tokenizer = T5Tokenizer.from_pretrained('t5-base') 
+            _tokenizer = T5Tokenizer.from_pretrained('t5-large') 
         elif path == "test":
             _model = T5EncoderModel.from_pretrained(self.hparams.test_model_path).cuda()
             if self.print: 
@@ -2451,7 +2456,7 @@ class T5AsyncTuner(T5AsyncBaseTuner):
                 with open(os.path.join(self.hparams.dump_path, 'temp_clusterId_emb.pickle'), "wb") as f:
                     pickle.dump(clusterId2clusterEmb, f)
                 if path is None: 
-                    assert len(clusterId2clusterEmb.keys()) == self.contextualized_emb_num, f"# of clusterId2clusterEmb: {len(clusterId2clusterEmb.keys())} // contextualized_emb_num: {self.contextualized_emb_num}"
+                    #assert len(clusterId2clusterEmb.keys()) == self.contextualized_emb_num, f"# of clusterId2clusterEmb: {len(clusterId2clusterEmb.keys())} // contextualized_emb_num: {self.contextualized_emb_num}"
                     self.model.set_contextualized_file(os.path.join(self.hparams.dump_path, "temp_clusterId_emb.pickle"))
                     self.model = self.model.train().to(self.device)
                 del _model; del _tokenizer
@@ -2467,7 +2472,7 @@ class T5AsyncTuner(T5AsyncBaseTuner):
                 with open(os.path.join(self.hparams.dump_path, 'temp_clusterId_emb.pickle'), "wb") as f:
                     pickle.dump(clusterId2clusterEmb, f)
                 if path is None: 
-                    assert len(clusterId2clusterEmb.keys()) == self.contextualized_emb_num, f"# of clusterId2clusterEmb: {len(clusterId2clusterEmb.keys())} // contextualized_emb_num: {self.contextualized_emb_num}"
+                    #assert len(clusterId2clusterEmb.keys()) == self.contextualized_emb_num, f"# of clusterId2clusterEmb: {len(clusterId2clusterEmb.keys())} // contextualized_emb_num: {self.contextualized_emb_num}"
                     self.model.set_contextualized_file(os.path.join(self.hparams.dump_path, "temp_clusterId_emb.pickle"))
                     self.model = self.model.train().to(self.device)
                 del _model; del _tokenizer

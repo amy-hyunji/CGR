@@ -156,6 +156,7 @@ if __name__ == "__main__":
     parser.add_argument("--test_file", default=None, type=str)
     parser.add_argument("--test_name", default=None, type=str)
     parser.add_argument("--test_batch", default=None, type=int)
+    parser.add_argument("--test_beam_size", default=None, type=int)
     arg_ = parser.parse_args()
 
     with open(arg_.config) as config_file:
@@ -249,7 +250,7 @@ if __name__ == "__main__":
     if args.model_type == "async":
         assert args.reload_dataloader_every_n_epochs is not False 
         assert args.train_c_emb is False
-        assert args.do_save in ["dat", None]
+        assert args.do_save in ["pickle", "dat", None]
         assert args.model_dim is not None
         if args.do_save == "dat": assert args.tok_num is not None 
     

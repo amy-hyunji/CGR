@@ -562,7 +562,12 @@ class T5AsyncBaseTuner(T5BaseClass):
             self._dump('groupId_tree', self.trie, path)
             self._dump(f'k-means_clusterId_clusterEmb_{self.hparams.cluster_num}', self.contextualized_tokid2emb, path)
             self._dump(f'k-means_corpus_tokenList_{self.hparams.cluster_num}', self.corpus_tokenList_dict, path)
-            self.config.update({'contextualized_file': os.path.join(path, f'k-means_clusterId_clusterEmb_{self.hparams.cluster_num}.pickle')})
+            if path == "base":
+               self.config.update({'contextualized_file': os.path.join(self.hparams.dump_path, f'k-means_clusterId_clusterEmb_{self.hparams.cluster_num}.pickle')})
+            elif path == "test":
+               self.config.update({'contextualized_file': os.path.join(self.hparams.test_model_path, f'k-means_clusterId_clusterEmb_{self.hparams.cluster_num}.pickle')})
+            else:
+               self.config.update({'contextualized_file': os.path.join(path, f'k-means_clusterId_clusterEmb_{self.hparams.cluster_num}.pickle')})
         else:
             self._dump('tokId_tokText', self.tokId2tokText, path)
             self._dump('tokId_tokGroupId', self.tokId2groupId, path)
@@ -570,11 +575,16 @@ class T5AsyncBaseTuner(T5BaseClass):
             self._dump('groupId_tree', self.trie, path)
             self._dump('tokId_emb', self.contextualized_tokid2emb, path)
             self._dump('corpus_tokenList', self.corpus_tokenList_dict, path) 
-            self.config.update({'contextualized_file': os.path.join(path, f'tokId_emb.pickle')})
+            if path == "base":
+               self.config.update({'contextualized_file': os.path.join(self.hparams.dump_path, f'tokId_emb.pickle')})
+            elif path == "test":
+               self.config.update({'contextualized_file': os.path.join(self.hparams.test_model_path, f'tokId_emb.pickle')})
+            else:
+               self.config.update({'contextualized_file': os.path.join(path, f'tokId_emb.pickle')})
 
     def _dump(self, f_name, value, path):
         if path == "base":
-            save_path = self.hparams.dataset
+            save_path = self.hparams.dump_path
         elif path == "test":
             save_path = self.hparams.test_model_path
         else:
@@ -793,6 +803,192 @@ class T5AsyncBaseTuner(T5BaseClass):
                   i += 1
 
 
+class SentenceT5(pl.LightningModule):
+    def __init__(self, hparams):
+        super(SentenceT5, self).__init__()
+        #self.hparams = hparams 
+        self.save_hyperparameters(hparams)
+
+        if self.hparams.do_test:
+            print(f"### Loading {hparams.test_model}")
+            if self.hparams.bi_type=="encoder_decoder":
+                self.model = T5Model.from_pretrained(hparams.test_model)
+            elif self.hparams.bi_type=="encoder_mean":
+                self.model = T5Model.from_pretrained(hparams.test_model).get_encoder()
+            else:
+                raise NotImplementedError("Check the embedding type!")
+                    
+            self.tokenizer = T5Tokenizer.from_pretrained(hparams.test_model)
+        else:
+            if self.hparams.bi_type=="encoder_decoder":
+                self.model = T5Model.from_pretrained(hparams.model_name_or_path)
+            elif self.hparams.bi_type=="encoder_mean":
+                self.model = T5Model.from_pretrained(hparams.model_name_or_path).get_encoder()
+            else:
+                raise NotImplementedError("Check the embedding type!")
+    
+            self.tokenizer = T5Tokenizer.from_pretrained(hparams.tokenizer_name_or_path)
+
+        self.sim = Similarity(temp=0.01)
+        self.gpu_num = torch.cuda.current_device()
+        self.loss_fct = nn.CrossEntropyLoss()
+
+        self.val_loss = []
+
+        self.corpus = None
+        self.corpus_embedding = []
+        self.test = {'query': [], 'similarity_score': [], 'predict': []} 
+
+    def get_dataset(self, split):
+        dataset = SentenceDataset(self.tokenizer, split=split, args=self.hparams)
+        return dataset
+
+    def train_dataloader(self):
+        train_dataset = self.get_dataset("train")
+        print(f"## Number of Train dataset: {len(train_dataset)}")
+        dataloader = DataLoader(train_dataset, shuffle=True, batch_size=self.hparams.train_batch_size, drop_last=True, num_workers=self.hparams.num_workers)
+        return dataloader
+
+    def val_dataloader(self):
+        val_dataset = self.get_dataset("validation")
+        print(f"## Number of Val dataset: {len(val_dataset)}")
+        dataloader = DataLoader(val_dataset, shuffle=False, batch_size=self.hparams.train_batch_size, drop_last=False, num_workers=self.hparams.num_workers)
+        return dataloader
+
+    def test_dataloader(self):
+        test_dataset = self.get_dataset("test")
+        print(f"## Number of Test dataset: {len(test_dataset)}")
+        dataloader = DataLoader(test_dataset, shuffle=False, batch_size=self.hparams.eval_batch_size, drop_last=False, num_workers=self.hparams.num_workers)
+        return dataloader
+
+    def forward(self, input_ids, attention_mask=None, decoder_input_ids=None, decoder_attention_mask=None):
+        if self.hparams.bi_type=="encoder-decoder":
+            outputs = self.model(input_ids, 
+                            attention_mask=attention_mask, 
+                            decoder_input_ids=decoder_input_ids, 
+                            decoder_attention_mask=decoder_attention_mask, 
+                            )
+        elif self.hparams.bi_type=="encoder-mean":
+            outputs = self.model(input_ids, 
+                            attention_mask=attention_mask, 
+                            )
+
+        return outputs
+    
+    def _get_embedding(self, batch):
+        query_input_ids = batch['query_ids']
+        query_attention_mask = batch['query_mask']
+        key_input_ids = batch['key_ids']
+        key_attention_mask = batch['key_mask']
+        decoder_input_ids = batch['decoder_ids']
+        decoder_attention_mask = batch['decoder_mask']
+
+        query_outputs = self(
+            input_ids=query_input_ids, 
+            attention_mask=query_attention_mask, 
+            decoder_input_ids=decoder_input_ids, 
+            decoder_attention_mask=decoder_attention_mask
+            ) 
+        
+        key_outputs = self(
+            input_ids=key_input_ids, 
+            attention_mask=key_attention_mask, 
+            decoder_input_ids=decoder_input_ids, 
+            decoder_attention_mask=decoder_attention_mask
+            )
+
+        if self.hparams.bi_type == "encoder-decoder":
+            query_output = query_outputs.last_hidden_state[:, 0] # [bs, hidden_size=1024]
+            key_output = key_outputs.last_hidden_state[:, 0]
+            return query_output,  key_output 
+        elif self.hparams.bi_type == "encoder-mean":
+            assert False
+            query_output = torch.mean(query_outputs.last_hidden_state, 1)
+            key_output = torch.mean(key_outputs.last_hidden_state, 1)
+            return query_output,  key_output
+        else:
+            raise NotImplementedError("Check the Embedding Type!")
+
+    def _calculate_similarity(self, batch, test=False):
+        z1, z2 = self._get_embedding(batch) # z1 -> [5, 1024]
+        sim = torch.inner(z1, z2)
+        return sim
+
+    def _common_step(self, batch, test=False):
+        _sim = self._calculate_similarity(batch, test)
+        labels = torch.arange(_sim.size(0)).long().to(self.device)
+        loss = self.loss_fct(_sim, labels)
+        return loss
+
+    def training_step(self, batch, batch_idx):
+        loss = self._common_step(batch)
+        self.log('loss', loss, on_step=True, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)
+        return loss
+
+    def _gather_batch(self, _batch):
+        gather = [None for _ in range(self.trainer.num_processes)]
+        dist.all_gather_object(gather, _batch)
+        return gather 
+
+    def gather_batch(self, _batch):
+        gather = self._gather_batch(_batch)
+        output = []
+        for z1, z2 in gather:
+            if len(output) == 0:
+                output.append(z1.to(self.device))
+                output.append(z2.to(self.device))
+            else:
+                output[0] = torch.cat((output[0].to(self.device), z1.to(self.device)))
+                output[1] = torch.cat((output[1].to(self.device), z2.to(self.device)))
+        return output
+
+    def validation_step(self, batch, batch_idx):
+        # batch -> query_ids, query_mask, key_ids, key_mask, decoder_ids, decoder_mask, query
+        loss = self._common_step(batch, test=True)
+        self.log('val_loss', loss, on_step=False, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)
+        self.val_loss.append(np.array(loss.cpu()))
+        return loss
+
+    def validation_epoch_end(self, outputs):
+        avg_loss = np.mean(np.array(self.val_loss))
+        self.val_loss = []
+        self.log('val_avg_loss', avg_loss, on_step=False, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)
+        return
+
+    def configure_optimizers(self):
+        model = self.model
+        no_decay = ['bias', 'LayerNorm.weight']
+        optimizer_grouped_parameters = [
+            {
+                "params": [p for n, p in model.named_parameters() if not any(nd in n for nd in no_decay)],
+                "weight_decay": self.hparams.weight_decay,
+            },
+            {
+                "params": [p for n, p in model.named_parameters() if any(nd in n for nd in no_decay)],
+                "weight_decay": 0.0,
+            },
+        ]
+
+        optimizer = Adafactor(optimizer_grouped_parameters, lr=self.hparams.learning_rate, warmup_init=False, scale_parameter=False, relative_step=False,)
+        self.opt = optimizer 
+       
+        if self.hparams.lr_scheduler == 'constant':
+            print("~!~! learning rate scheduler: CONSTANT")
+            return [optimizer]
+        elif self.hparams.lr_scheduler == "exponential":
+            print("~!~! learning rate scheduler: EXPONENTIAL")
+            len_data = len(self.train_dataloader())
+            denominator=self.hparams.n_gpu
+            steps_per_epoch=((len_data//denominator)+1)//self.hparams.gradient_accumulation_steps
+            scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=self.hparams.learning_rate, steps_per_epoch=steps_per_epoch, pct_start=0.1, epochs=self.hparams.num_train_epochs, anneal_strategy= 'linear', cycle_momentum=False)
+            return [optimizer], [{'scheduler': scheduler, 'interval': 'step', 'name': 'learning_rate'}] 
+ 
+
+    def on_save_checkpoint(self, checkpoint):
+        save_path = os.path.join(self.hparams.output_dir, f"best_tfmr_epoch_{self.current_epoch}")
+        self.model.save_pretrained(save_path)
+        self.tokenizer.save_pretrained(save_path)
+
 class T5BiEncoder(T5BaseClass):
     def __init__(self, args):
         super(T5BiEncoder, self).__init__()
@@ -838,7 +1034,7 @@ class T5BiEncoder(T5BaseClass):
         print('!!! Loading Embedding !!!')
         if self.hparams.contextualized_file.endswith('dat'):
             self.faiss = True
-            self.contextualized_tokid2emb = np.memmap(os.path.join(self.hparams.dataset, self.hparams.contextualized_file), dtype="float32", mode="readonly", shape=(37000000, 1024))
+            self.contextualized_tokid2emb = np.memmap(os.path.join(self.hparams.dataset, self.hparams.contextualized_file), dtype=self._get_dtype(), mode="readonly", shape=(37000000, 1024))
             if "faiss.index" in os.listdir(self.hparams.dataset):
                 self.contextualized_tensor = faiss.read_index(os.path.join(self.hparams.dataset, "faiss.index"))
                 self.contextualized_token = json.load(open(os.path.join(self.hparams.dataset, "faiss.token.json")))
@@ -1851,11 +2047,11 @@ class T5AsyncTuner(T5AsyncBaseTuner):
 
     def _dump_cluster_corpus(self, corpus, context, model, tokenizer):
         if self.hparams.do_save == "hdf5":
-            dump_path = os.path.join(self.hparams.dataset, "temp_tokId_emb.hdf5")
+            dump_path = os.path.join(self.hparams.dump_path, "temp_tokId_emb.hdf5")
             if os.path.exists(dump_path): os.system(f'rm {dump_path}')
             fh = None
         elif self.hparams.do_save == "dat":
-            dump_path = os.path.join(self.hparams.dataset, "temp_tokId_emb.dat")
+            dump_path = os.path.join(self.hparams.dump_path, "temp_tokId_emb.dat")
             if os.path.exists(dump_path): os.system(f'rm {dump_path}')
             fh = np.memmap(dump_path, dtype=self._get_dtype(), mode="w+", shape=(self.hparams.tok_num, self.hparams.model_dim))
             fh.flush()
@@ -2111,17 +2307,12 @@ class T5AsyncTuner(T5AsyncBaseTuner):
             if not load_file:
                 emb_list = [tokId_embs[id] for id in id_list]
             else:
-                if self.hparams.do_save == "hdf5":
-                    emb_list = [self._get_emb_from_file(hf=tokId_embs, _id=id, file_type="hdf5") for id in id_list]
-                elif self.hparams.do_save == "dat":
-                    emb_list = [self._get_emb_from_file(hf=tokId_embs, _id=id, file_type="dat") for id in id_list]
-                else:
-                    assert False
+                emb_list = [self._get_emb_from_file(hf=tokId_embs, _id=id, file_type=self.hparams.do_save) for id in id_list]
 
             # do cluster
             if len(emb_list) > self.hparams.cluster_num:
                 df = pd.DataFrame(emb_list) 
-                kmeans = KMeans(n_clusters=self.hparams.cluster_num, algorithm='auto', max_iter=50, n_init=3)
+                kmeans = KMeans(n_clusters=self.hparams.cluster_num, algorithm='auto') #, max_iter=50, n_init=3)
                 kmeans.fit(df)
                 predicts = np.array(kmeans.predict(df))
                 centers = kmeans.cluster_centers_
@@ -2172,11 +2363,11 @@ class T5AsyncTuner(T5AsyncBaseTuner):
             context = None
 
         if path == "base":
-            _model = T5EncoderModel.from_pretrained('t5-base').cuda()
+            _model = T5EncoderModel.from_pretrained('t5-large').cuda()
             if self.print: 
                 print(f'=== Model in {_model.device} ===')
                 print(f'*** Construct from Base Model!')
-            _tokenizer = T5Tokenizer.from_pretrained('t5-base') 
+            _tokenizer = T5Tokenizer.from_pretrained('t5-large') 
         elif path == "test":
             _model = T5EncoderModel.from_pretrained(self.hparams.test_model_path).cuda()
             if self.print: 
@@ -2224,11 +2415,11 @@ class T5AsyncTuner(T5AsyncBaseTuner):
                 tokGroupId2clusterIdList, clusterId2tokGroupId, clusterId2tokText, tokText2clusterIdList, tokId2clusterId, clusterId2clusterEmb = self._do_cluster(tokGroupId_tokIdList, tokId_tokGroupId, tokId_emb, tok_Id_dict, not_hdf5=True)
                 corpus_clusterList_dict = self._construct_corpus2clusterList(corpus_tokenList_dict, tokId2clusterId)
                 print(f'$$$$ DONE dumping cluster Info!!')
-                with open(os.path.join(self.hparams.dataset, 'temp_clusterId_emb.pickle'), "wb") as f:
+                with open(os.path.join(self.hparams.dump_path, 'temp_clusterId_emb.pickle'), "wb") as f:
                     pickle.dump(clusterId2clusterEmb, f)
                 if path is None: 
                     assert len(clusterId2clusterEmb.keys()) == self.contextualized_emb_num, f"# of clusterId2clusterEmb: {len(clusterId2clusterEmb.keys())} // contextualized_emb_num: {self.contextualized_emb_num}"
-                    self.model.set_contextualized_file(os.path.join(self.hparams.dataset, "temp_clusterId_emb.pickle"))
+                    self.model.set_contextualized_file(os.path.join(self.hparams.dump_path, "temp_clusterId_emb.pickle"))
                     self.model = self.model.train().to(self.device)
                 del _model; del _tokenizer
                 return clusterId2tokText, clusterId2tokGroupId, tokGroupId2clusterIdList, groupId_tree, clusterId2clusterEmb, corpus_clusterList_dict 
@@ -2238,7 +2429,7 @@ class T5AsyncTuner(T5AsyncBaseTuner):
         if self.hparams.cluster_num == -1:
             tok_Idlist_dict, tok_Id_dict, tokId_emb, corpusId_tokenList_dict, corpus_tokenList_dict = self._dump_corpus(corpus, context, _model, _tokenizer) 
             os.makedirs(self.hparams.dataset, exist_ok=True)
-            with open(os.path.join(self.hparams.dataset, 'temp_tokId_emb.pickle'), "wb") as f:
+            with open(os.path.join(self.hparams.dump_path, 'temp_tokId_emb.pickle'), "wb") as f:
                 pickle.dump(tokId_emb, f)
             print(f'$$$$ DONE dumping embedding!!')
             tokId_tokGroupId, tokGroupId_tokIdList = self._construct_group(tok_Idlist_dict)
@@ -2246,7 +2437,7 @@ class T5AsyncTuner(T5AsyncBaseTuner):
             print(f'$$$$ DONE dumping group Info!!')
             if path is None: 
                 assert len(tokId_emb) == self.contextualized_emb_num, f"# of tokId_emb: {len(tokId_emb.keys())} // contextualized_emb_num: {self.contextualized_emb_num}"
-                self.model.set_contextualized_file(os.path.join(self.hparams.dataset, "temp_tokId_emb.pickle"))
+                self.model.set_contextualized_file(os.path.join(self.hparams.dump_path, "temp_tokId_emb.pickle"))
                 self.model = self.model.train().to(self.device)
             del _model; del _tokenizer
             return tok_Id_dict, tokId_tokGroupId, tokGroupId_tokIdList, groupId_tree, tokId_emb, corpus_tokenList_dict
@@ -2262,11 +2453,11 @@ class T5AsyncTuner(T5AsyncBaseTuner):
                 tokGroupId2clusterIdList, clusterId2tokGroupId, clusterId2tokText, tokText2clusterIdList, tokId2clusterId, clusterId2clusterEmb = self._do_cluster(tokGroupId_tokIdList, tokId_tokGroupId, dump_path, tok_Id_dict, load_file=True)
                 corpus_clusterList_dict = self._construct_corpus2clusterList(corpus_tokenList_dict, tokId2clusterId)
                 print(f'$$$$ DONE dumping cluster Info!!')
-                with open(os.path.join(self.hparams.dataset, 'temp_clusterId_emb.pickle'), "wb") as f:
+                with open(os.path.join(self.hparams.dump_path, 'temp_clusterId_emb.pickle'), "wb") as f:
                     pickle.dump(clusterId2clusterEmb, f)
                 if path is None: 
-                    assert len(clusterId2clusterEmb.keys()) == self.contextualized_emb_num, f"# of clusterId2clusterEmb: {len(clusterId2clusterEmb.keys())} // contextualized_emb_num: {self.contextualized_emb_num}"
-                    self.model.set_contextualized_file(os.path.join(self.hparams.dataset, "temp_clusterId_emb.pickle"))
+                    #assert len(clusterId2clusterEmb.keys()) == self.contextualized_emb_num, f"# of clusterId2clusterEmb: {len(clusterId2clusterEmb.keys())} // contextualized_emb_num: {self.contextualized_emb_num}"
+                    self.model.set_contextualized_file(os.path.join(self.hparams.dump_path, "temp_clusterId_emb.pickle"))
                     self.model = self.model.train().to(self.device)
                 del _model; del _tokenizer
                 return clusterId2tokText, clusterId2tokGroupId, tokGroupId2clusterIdList, groupId_tree, clusterId2clusterEmb, corpus_clusterList_dict 
@@ -2278,11 +2469,11 @@ class T5AsyncTuner(T5AsyncBaseTuner):
                 tokGroupId2clusterIdList, clusterId2tokGroupId, clusterId2tokText, tokText2clusterIdList, tokId2clusterId, clusterId2clusterEmb = self._do_cluster(tokGroupId_tokIdList, tokId_tokGroupId, tokId_emb, tok_Id_dict)
                 corpus_clusterList_dict = self._construct_corpus2clusterList(corpus_tokenList_dict, tokId2clusterId)
                 print(f'$$$$ DONE dumping cluster Info!!')
-                with open(os.path.join(self.hparams.dataset, 'temp_clusterId_emb.pickle'), "wb") as f:
+                with open(os.path.join(self.hparams.dump_path, 'temp_clusterId_emb.pickle'), "wb") as f:
                     pickle.dump(clusterId2clusterEmb, f)
                 if path is None: 
-                    assert len(clusterId2clusterEmb.keys()) == self.contextualized_emb_num, f"# of clusterId2clusterEmb: {len(clusterId2clusterEmb.keys())} // contextualized_emb_num: {self.contextualized_emb_num}"
-                    self.model.set_contextualized_file(os.path.join(self.hparams.dataset, "temp_clusterId_emb.pickle"))
+                    #assert len(clusterId2clusterEmb.keys()) == self.contextualized_emb_num, f"# of clusterId2clusterEmb: {len(clusterId2clusterEmb.keys())} // contextualized_emb_num: {self.contextualized_emb_num}"
+                    self.model.set_contextualized_file(os.path.join(self.hparams.dump_path, "temp_clusterId_emb.pickle"))
                     self.model = self.model.train().to(self.device)
                 del _model; del _tokenizer
                 return clusterId2tokText, clusterId2tokGroupId, tokGroupId2clusterIdList, groupId_tree, clusterId2clusterEmb, corpus_clusterList_dict 

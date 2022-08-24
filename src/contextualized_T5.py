@@ -506,6 +506,7 @@ class T5Attention(nn.Module):
             return hidden_states
 
         # get query states
+        #print(f'shape of self.q: {self.q.type()}\nhidden states type: {hidden_states.type()}') 
         query_states = shape(self.q(hidden_states))  # (batch_size, n_heads, seq_length, dim_per_head)
 
         # get key/value states
@@ -959,7 +960,7 @@ class T5Stack(T5PreTrainedModel):
                     for bs in _input_ids: 
                         _input_embeds = [self.embed_tokens[el] for el in bs]
                         input_embeds.append(_input_embeds)
-                    inputs_embeds = torch.tensor(input_embeds).to(input_ids.device)
+                    inputs_embeds = torch.FloatTensor(input_embeds).to(input_ids.device)
                 else:
                     if self.is_decoder and not self.train_c_emb: 
                         assert False, "Decoder should have dict() for embed_tokens"
@@ -1613,7 +1614,7 @@ class T5ForConditionalGeneration(T5PreTrainedModel):
         if self.train_c_emb:
             contextualized_emb_list = nn.Embedding.from_pretrained(torch.FloatTensor(contextualized_emb_list), freeze=self.do_test)
         else:
-            contextualized_emb_list = torch.tensor(contextualized_emb_list)
+            contextualized_emb_list = torch.FloatTensor(contextualized_emb_list)
         if self.fp16:
             contextualized_emb_list = contextualized_emb_list.half()
         return tokid_emb_dict, contextualized_emb_list #[contextualized_emb_num, 768]
@@ -1757,7 +1758,8 @@ class T5ForConditionalGeneration(T5PreTrainedModel):
         else:
             if self.lm_head.get_device() != sequence_output.get_device():
                 self.lm_head = self.lm_head.to(sequence_output.device)
-               #print(f'type of sequence_output: {sequence_output.type()}\ntype of self.lm_head: {self.lm_head.type()}')
+            # sequence -> float, lm_head: double
+            #print(f'type of sequence_output: {sequence_output.type()}\ntype of self.lm_head: {self.lm_head.type()}')
             lm_logits = torch.einsum("bod,cd->boc", sequence_output, self.lm_head) 
 
         loss = None

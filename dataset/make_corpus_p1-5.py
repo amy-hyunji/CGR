@@ -5,7 +5,7 @@ from tqdm import tqdm
 dataset = "nq"
 scale = "full" 
 if scale == "full":
-   df_corpus = pd.read_csv(f'kilt_total_corpus.csv', header=0, names=['corpusId', 'corpus'])
+   df_corpus = pd.read_csv(f'n_kilt_total_corpus.csv', header=0, names=['corpusId', 'corpus'])
 else:
    df_corpus = pd.read_csv(f'kilt_{dataset}/scale_{scale}_kilt_corpus.csv', header=0, names=['corpusId', 'corpus'])
 
@@ -66,7 +66,7 @@ for corpusId in tqdm(df_corpus['corpusId']):
 
 df_ret = pd.DataFrame(df_ret, columns=['corpusId', 'corpus', 'context'])
 if scale == "full":
-   df_ret.to_csv(f'kilt_total_corpus_p1-5.csv')
+   df_ret.to_csv(f'n_kilt_total_corpus_p1-5.csv')
 else:
    df_ret.to_csv(f'kilt_{dataset}/scale_{scale}_kilt_corpus_p1-5.csv')
 

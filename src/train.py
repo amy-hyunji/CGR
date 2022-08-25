@@ -200,6 +200,7 @@ if __name__ == "__main__":
         train_file=hparam.train_file,
         dev_file=hparam.dev_file,
         test_file=arg_.test_file if arg_.test_file else hparam.test_file,
+        dev_input2output=hparam.dev_input2output if "dev_input2output" in hparam else None,
         corpus_file=hparam.corpus_file if "corpus_file" in hparam else None,
         constrained_decoding=True,
         do_train=hparam.do_train,
@@ -252,6 +253,7 @@ if __name__ == "__main__":
         assert args.train_c_emb is False
         assert args.do_save in ["pickle", "dat", None]
         assert args.model_dim is not None
+        assert args.dev_input2output is not None
         if args.do_save == "dat": assert args.tok_num is not None 
     
     torch.multiprocessing.set_start_method('spawn')

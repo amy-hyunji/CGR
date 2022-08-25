@@ -1881,6 +1881,8 @@ class T5AsyncTuner(T5AsyncBaseTuner):
         assert self.hparams.gr_decoder_only_encoder_ckpt is None
         assert self.hparams.gr_decoder_only is not True
 
+        self.input2output = json.load(open(os.path.join(self.hparams.dataset, self.hparams.dev_input2output), "r"))
+
         # If in training mode, load ckpt for training
         if self.hparams.do_train:
             if self.hparams.train_c_emb:
@@ -2673,8 +2675,9 @@ class T5AsyncTuner(T5AsyncBaseTuner):
             for i in range(inum)
         ]
 
+        gt_output = [self.input2output[_input] for _input in batch["input"]]
         em_list, recall_list = self.calculate_scores(
-            generated_text, batch["output"], batch["input"], batch_idx
+            generated_text, gt_output, batch["input"], batch_idx
         )
 
         if return_elem:

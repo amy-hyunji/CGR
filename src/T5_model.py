@@ -1507,6 +1507,7 @@ class T5FineTuner(T5grTuner):
             self.tokId2nodeId = nodeId_sup['inv_token_set']
         self.cnt_over = 0
         self.len_test_dataset = len(self.test_dataloader())
+        self.dev_input2output = json.load(open(os.path.join(self.hparams.dataset, self.hparams.dev_input2output), "r"))
 
     def _get_dataset(self, split):
         dataset = GENREDataset(
@@ -1677,8 +1678,9 @@ class T5FineTuner(T5grTuner):
             ].detach().cpu().numpy().tolist()
             for i in range(inum)
         ]
+        output_list = [self.dev_input2output[_input] for _input in batch["input"]]
         em_list, recall_list = self.calculate_scores(
-            generated_text, batch["output"], batch["input"], batch_idx
+            generated_text, output_list, batch["input"], batch_idx
         )
         if return_elem:
             assert (

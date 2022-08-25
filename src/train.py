@@ -195,7 +195,7 @@ if __name__ == "__main__":
         resume_from_checkpoint=hparam.resume_from_checkpoint,
         val_check_interval=1.0,
         early_stop_callback=False,
-        seed=42,
+        seed=hparam.seed if "seed" in hparam else 42,
         check_val_every_n_epoch=hparam.check_val_every_n_epoch,
         train_file=hparam.train_file,
         dev_file=hparam.dev_file,
@@ -234,8 +234,8 @@ if __name__ == "__main__":
         cluster_num=hparam.cluster_num,
         do_save=hparam.do_save if "do_save" in hparam else None,
         tok_num=hparam.tok_num if "tok_num" in hparam else None,
-        model_dim=hparam.model_dim if "model_dim" in hparam else None, 
-        dump_path=hparam.dump_path if "dump_path" in hparam else hparam.dataset
+        model_dim=hparam.model_dim if "model_dim" in hparam else None,
+        dump_path=hparam.dump_path if "dump_path" in hparam else hparam.dataset 
     ) 
     args = argparse.Namespace(**args_dict)
     assert not (args.do_train and args.do_test), "Choose between train|test"

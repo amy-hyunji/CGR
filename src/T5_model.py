@@ -135,7 +135,7 @@ class T5BaseClass(pl.LightningModule):
         return white_space_fix(remove_articles(remove_punc(lower(s))))
 
     def _calculate_recall(self, pred, gt):
-        assert len(pred) == self.hparams.val_beam_size, f'gt: {gt}\npred: {pred}' 
+        assert len(pred) == self.hparams.ret_num, f'gt: {gt}\npred: {pred}' 
         if type(gt) == list:
             gt = [self.normalize_answer(el) for el in gt]
             for elem in pred:
@@ -176,7 +176,9 @@ class T5BaseClass(pl.LightningModule):
                 return ids[:i] 
         assert False
 
-    def _remove_prev_from_trie(self, trie, ids_list):
+    def _remove_prev_from_trie(self, trie, ids_list, pad_ids=0):
+        ids_list = [list(elem) for elem in ids_list]
+        print(f'Remove.. {ids_list}')
         temp_list = []
         for elem in ids_list:
             if elem in temp_list:
@@ -185,9 +187,10 @@ class T5BaseClass(pl.LightningModule):
                 temp_list.append(elem)
         ids_list = temp_list
         for i in range(len(ids_list)):
-            ids_list[i][0] = 0
-            ids_list[i] = self._remove_zero(ids_list[i])
-        if self.hparams.tree_type == "groupId":
+            ids_list[i][0] = pad_ids
+            if pad_ids == 0: 
+                ids_list[i] = self._remove_zero(ids_list[i])
+        if self.hparams.tree_type in ["groupId", "clusterId"]:
             for ids in ids_list:
                 cur_dict = trie
                 for i in range(len(ids)-1):
@@ -252,7 +255,6 @@ class T5grTuner(T5BaseClass):
         self.tokId2tokText = pickle.load(open(os.path.join(self.hparams.dataset, self.hparams.tokId2tokText), 'rb'))
         self.save_epoch = []
 
-
     def ids_to_text(self, _generated_ids):
         generated_ids = []
         for _ids in _generated_ids:
@@ -294,6 +296,11 @@ class T5grTuner(T5BaseClass):
             ) 
  
     def validation_step(self, batch, batch_idx):
+        if self.hparams.save_model_only:
+           self.convert_checkpoint("new_ckpt")
+           print(f"Done saving checkpoint.. {self.current_epoch}")
+           sys.exit()
+
         em_score, recall_score = self._val_step(batch, batch_idx)
         self.em_score_list.extend(list(em_score))
         self.recall_score_list.extend(list(recall_score)) 
@@ -326,46 +333,74 @@ class T5grTuner(T5BaseClass):
 
     def test_step(self, batch, batch_idx):
         ret_dict = self._test_step(batch, batch_idx, return_elem=True)
-        if ret_dict is None: return None 
-        self.test_input_list.extend(ret_dict["input"])
-        self.test_gt_list.extend(ret_dict["gt"])
-        self.test_gt_tok_list.extend(ret_dict["gt_tok"])
-        self.test_pred_list.extend(ret_dict["pred"])
-        self.test_pred_tok_list.extend(ret_dict["pred_tok"])
-        self.test_em_score_list.extend(ret_dict["em"])
-        self.test_recall_score_list.extend(ret_dict["recall"])
+        if ret_dict is None: return None
+        if self.hparams.model_type == "total":
+            self.test_input_list.extend(ret_dict["input"])
+            self.test_gt_list.extend(ret_dict["gt"])
+            self.test_gt_tok_list.extend(ret_dict["gt_tok"])
+            self.test_pred_tok_list.extend(ret_dict["pred_tok"])
+        else:
+            self.test_input_list.extend(ret_dict["input"])
+            self.test_gt_list.extend(ret_dict["gt"])
+            self.test_gt_tok_list.extend(ret_dict["gt_tok"])
+            self.test_pred_list.extend(ret_dict["pred"])
+            self.test_pred_tok_list.extend(ret_dict["pred_tok"])
+            self.test_em_score_list.extend(ret_dict["em"])
+            self.test_recall_score_list.extend(ret_dict["recall"])
         self._save_test() 
 
     def _save_test(self, epoch_end=False):
         os.makedirs(self.hparams.output_dir, exist_ok=True)
-        _input = self.gather_list(self.test_input_list)
-        _gt = self.gather_list(self.test_gt_list)
-        _gt_tok = self.gather_list(self.test_gt_tok_list)
-        _pred = self.gather_list(self.test_pred_list)
-        _pred_tok = self.gather_list(self.test_pred_tok_list)
-        _em = self.gather_list(self.test_em_score_list)
-        _recall = self.gather_list(self.test_recall_score_list)
-        assert len(_input) == len(_gt) == len(_pred) == len(_em) == len(_recall) == len(_gt_tok) == len(_pred_tok)
-        if self.print:
-            with open(self.test_save_name, "w") as f:
-                json.dump(
-                    {
-                        "input": _input,
-                        "gt": _gt,
-                        "gt_tok": _gt_tok,
-                        "pred": _pred,
-                        "pred_tok": _pred_tok,
-                        "em": _em,
-                        "recall": _recall,
-                    },
-                    f,
-                )
-            if epoch_end:
-                print(
-                    f"Saving in {self.test_save_name}!\nnumber of elements: {len(_input)}"
-                )
-                print(f"EM: {np.array(_em).mean()}")
-                print(f"Recall: {np.array(_recall).mean()}")
+        if self.hparams.model_type == "total":
+            _input = self.gather_list(self.test_input_list)
+            _gt = self.gather_list(self.test_gt_list)
+            _gt_tok = self.gather_list(self.test_gt_tok_list)
+            _pred_tok = self.gather_list(self.test_pred_tok_list)
+            assert len(_input) == len(_gt) == len(_pred_tok)
+            if self.print:
+                with open(self.test_save_name, "w") as f:
+                    json.dump(
+                        {
+                            "input": _input,
+                            "gt": _gt,
+                            "gt_tok": _gt_tok,
+                            "pred_tok": _pred_tok,
+                        },
+                        f,
+                    )
+                if epoch_end:
+                    print(
+                        f"Saving in {self.test_save_name}!"
+                    )
+        else:
+            _input = self.gather_list(self.test_input_list)
+            _gt = self.gather_list(self.test_gt_list)
+            _gt_tok = self.gather_list(self.test_gt_tok_list)
+            _pred = self.gather_list(self.test_pred_list)
+            _pred_tok = self.gather_list(self.test_pred_tok_list)
+            _em = self.gather_list(self.test_em_score_list)
+            _recall = self.gather_list(self.test_recall_score_list)
+            assert len(_input) == len(_gt) == len(_pred) == len(_em) == len(_recall) == len(_gt_tok) == len(_pred_tok)
+            if self.print:
+                with open(self.test_save_name, "w") as f:
+                    json.dump(
+                        {
+                            "input": _input,
+                            "gt": _gt,
+                            "gt_tok": _gt_tok,
+                            "pred": _pred,
+                            "pred_tok": _pred_tok,
+                            "em": _em,
+                            "recall": _recall,
+                        },
+                        f,
+                    )
+                if epoch_end:
+                    print(
+                        f"Saving in {self.test_save_name}!\nnumber of elements: {len(_input)}"
+                    )
+                    print(f"EM: {np.array(_em).mean()}")
+                    print(f"Recall: {np.array(_recall).mean()}")
     
     def test_epoch_end(self, outputs):
         self._save_test(epoch_end=True)
@@ -426,6 +461,38 @@ class T5grTuner(T5BaseClass):
         save_path = os.path.join(
             self.hparams.output_dir, f"best_tfmr_{self.current_epoch}"
         )
+        try:
+            self.model.save_pretrained(save_path)
+            self.tokenizer.save_pretrained(save_path)
+            self.save_epoch.append(self.current_epoch)
+        except:
+            print(f"Fail to save ... {self.current_epoch}")
+        if len(self.save_epoch) > 5:
+            rm_file = f"best_tfmr_{self.save_epoch[0]}"
+            os.system(f"rm -rf {os.path.join(self.hparams.output_dir, rm_file)}")
+        target_path = save_path
+        if self.hparams.periflow:
+            success = False
+            i = 1
+            while not success:
+               try:
+                  upload_directory_to_blob(save_path, target=target_path, container_name=self.container_name)
+                  success = True
+               except:
+                  print(f'Failed on Uploading {target_path}')
+                  _name = "best_tfmr_"*i+f"{self.current_epoch}"
+                  target_path = os.path.join(self.hparams.output_dir, _name)
+                  i += 1
+
+    def convert_checkpoint(self, sub_path=None):
+        if sub_path is None:
+           save_path = os.path.join(
+               self.hparams.output_dir, f"best_tfmr_{self.current_epoch}"
+           )
+        else:
+           save_path = os.path.join(
+               self.hparams.output_dir, sub_path     
+           )
         self.model.save_pretrained(save_path)
         self.tokenizer.save_pretrained(save_path)
         self.save_epoch.append(self.current_epoch)
@@ -669,12 +736,6 @@ class T5AsyncBaseTuner(T5BaseClass):
 
     def test_step(self, batch, batch_idx):
     
-        """
-        if self.hparams.reload_dataloader_every_n_epochs:
-            print(f'### Dumping Contextualized Embedding from Test CKPT!')
-            self.tokId2tokText, self.tokId2groupId, self.groupId2tokId, self.trie, self.contextualized_tokid2emb, self.corpus_tokenList_dict = self._dump_new_dataset(base=False)
-        """
-
         ret_dict = self._test_step(batch, batch_idx, return_elem=True)
         if ret_dict is None: return None 
         self.test_input_list.extend(ret_dict["input"])
@@ -1085,6 +1146,7 @@ class T5BiEncoder(T5BaseClass):
         for _clusterId, _corpus_list in self.tokId2corpus.items():
             for _corpus in _corpus_list:
                 corpus2clusterId[_corpus].append(_clusterId) 
+        return corpus2clusterId
 
     def _get_dataset(self, split):
         dataset = GENREDataset(
@@ -1509,6 +1571,8 @@ class T5FineTuner(T5grTuner):
         self.len_test_dataset = len(self.test_dataloader())
         self.dev_input2output = json.load(open(os.path.join(self.hparams.dataset, self.hparams.dev_input2output), "r"))
 
+
+
     def _get_dataset(self, split):
         dataset = GENREDataset(
             tokenizer=self.tokenizer,
@@ -1638,12 +1702,14 @@ class T5FineTuner(T5grTuner):
         for idx, (_query, _pred, _gt) in enumerate(zip(query, preds, gt_text)):
             _em = self._calculate_em(_pred[0], _gt)
             _recall = self._calculate_recall(_pred, _gt)
+            """
             if self.print and idx == 0:
                 print(f"$" * 50)
                 print(f"query: {_query}\npreds: {_pred}\ngt: {_gt}")
                 print(f"em: {_em} // recall: {_recall}")
                 print(f"$" * 50)
                 print(" ")
+            """
             em_list.append(_em)
             recall_list.append(_recall)
         return em_list, recall_list
@@ -1760,7 +1826,7 @@ class T5FineTuner(T5grTuner):
         unique_pred_list = [[] for _ in range(test_num)] 
         unique_ids_list = [[] for _ in range(test_num)] 
         over = [0]*test_num
-        for _iter in range(self.hparams.val_beam_size*2):
+        for _iter in range(self.hparams.ret_num*2):
             print("="*80)
             print(f"iter: {_iter} // DONE: {over.count(1)} / {test_num}")
             print(unique_pred_list)
@@ -1812,7 +1878,7 @@ class T5FineTuner(T5grTuner):
                         if _text in unique_pred_list[bid]:
                             assert not self.hparams.tree_type == "nodeId"
                             _upper_ids.append([self.tokId2groupId[el] for el in _ids]) 
-                        elif len(unique_pred_list[bid]) < self.hparams.val_beam_size:
+                        elif len(unique_pred_list[bid]) < self.hparams.ret_num:
                             unique_pred_list[bid].append(_text)
                             unique_ids_list[bid].append(_ids)
                             if self.hparams.tree_type == "groupId":
@@ -1837,7 +1903,7 @@ class T5FineTuner(T5grTuner):
                 # remove from _trie_dict
                 _trie_dict = self._remove_prev_from_trie(_trie_dict, _upper_ids)
                 _trie_list[bid] = _trie_dict
-                if len(unique_pred_list[bid]) >= self.hparams.val_beam_size:
+                if len(unique_pred_list[bid]) >= self.hparams.ret_num:
                     over[bid] = 1
             if over.count(1) == test_num:
                 break
@@ -1848,7 +1914,7 @@ class T5FineTuner(T5grTuner):
             """
             
         for i in range(len(unique_pred_list)):
-            unique_pred_list[i] = unique_pred_list[i][:self.hparams.val_beam_size]
+            unique_pred_list[i] = unique_pred_list[i][:self.hparams.ret_num]
         #self._flush_first_beam_dict()
         #if self.print: print(f"## UNIQUE PRED: {unique_pred[:self.hparams.val_beam_size]}")
         em_list, recall_list = self.calculate_scores(
@@ -1874,6 +1940,544 @@ class T5FineTuner(T5grTuner):
         else:
             return em_list, recall_list
 
+class T5TotalTuner(T5grTuner):
+    def __init__(self, args):
+        super(T5TotalTuner, self).__init__(args)
+
+        # For clusterId
+        self.pad_token_id = 71929
+        self.eos_token_id = 90223
+        self.config.update({"decoder_start_token_id": self.pad_token_id})
+        self.config.update({"pad_token_id": self.pad_token_id})
+
+        # If in training mode, load ckpt for training
+        if self.hparams.do_train:
+            if self.hparams.train_c_emb:
+                self.model = contextualized_T5.from_pretrained(
+                    self.hparams.model_name_or_path, config=self.config, ignore_mismatched_sizes=True
+                )
+            else:
+                self.model = contextualized_T5.from_pretrained(
+                    self.hparams.model_name_or_path, config=self.config
+                )
+            if self.hparams.gr_decoder_only_encoder_ckpt is not None:
+                print(f'===== Loading encoder ckpt from.. {self.hparams.gr_decoder_only_encoder_ckpt}')
+                m = torch.load(os.path.join(self.hparams.gr_decoder_only_encoder_ckpt, "pytorch_model.bin"))
+                model_dict = self.model.state_dict()
+                for k in m.keys():
+                    if 'decoder.embed_tokens' in k:
+                        continue
+                    if k in model_dict:
+                        pname = k
+                        pval = m[k]
+                        model_dict[pname] = pval.clone().to(model_dict[pname].device)
+                self.model.load_state_dict(model_dict, strict=False)
+            else:
+                print(f'===== Encoder ckpt is same as Decoder ckpt')
+            if self.hparams.gr_decoder_only:
+                for n, p in self.model.get_encoder().named_parameters():
+                    p.requires_grad = False
+            self.tokenizer = T5Tokenizer.from_pretrained(
+                self.hparams.tokenizer_name_or_path
+            )
+            if self.hparams.periflow:
+                self.connect_str, self.container_name = get_blob_info()
+                self.blob_service_client = BlobServiceClient.from_connection_string(self.connect_str)
+            if self.print:
+                print(f"@@@ Loading Model from {self.hparams.model_name_or_path}")
+                print(f'@@@ Loading decoder embedding: {self.hparams.embedding_model}')
+            self.em_score_list = []
+            self.recall_score_list = []
+
+        # If in testing mode, load ckpt for inference
+        if self.hparams.do_test:
+            self.model = contextualized_T5.from_pretrained(
+                self.hparams.test_model_path, config=self.config, ignore_mismatched_sizes=True
+            )
+            self.tokenizer = T5Tokenizer.from_pretrained(self.hparams.test_model_path)
+            if self.print:
+                print(f"@@@ Loading Model from {self.hparams.test_model_path}")
+            
+            self.test_save_name = os.path.join(self.hparams.output_dir, f"{self.hparams.test_name}_{self.hparams.tree_type}_mbs_{self.hparams.max_beam_search}_result_beam{self.hparams.val_beam_size}.json")               
+            if os.path.exists(self.test_save_name):
+                 prev_f = json.load(open(self.test_save_name))
+                 print(f"@@@ Loading Previous file!! => #: {len(prev_f['input'])}")
+                 self.test_input_list = prev_f['input']
+                 self.test_gt_list = prev_f['gt']
+                 self.test_gt_tok_list = prev_f['gt_tok']
+                 self.test_pred_tok_list = prev_f['pred_tok']
+            else:
+                 print(f'@@@ Initialize Test!!')
+                 self.test_input_list = []
+                 self.test_gt_list = []
+                 self.test_gt_tok_list = []
+                 self.test_pred_list = []
+                 self.test_pred_tok_list = []
+                 self.test_em_score_list = []
+                 self.test_recall_score_list = []
+            self.em_score_list = []
+            self.recall_score_list = []
+            self.clusterIdList2corpusList = pickle.load(open(os.path.join(self.hparams.dataset, self.hparams.clusterIdList2corpusList), "rb"))
+            self.clusterIdList = list(self.clusterIdList2corpusList.keys()) 
+
+        if self.hparams.freeze_encoder:
+            if self.print:
+                print(f"@@@ Freeze Encoder!")
+                encoder = self.model.get_encoder()
+                for n, p in encoder.named_parameters():
+                    p.requires_grad=False
+        #### Tokenizer for generation step!
+        self.dec_tok = AutoTokenizer.from_pretrained(
+            self.hparams.embedding_model
+        )
+        
+        if self.hparams.tree_type == "nodeId":
+            nodeId_sup = pickle.load(open(os.path.join(self.hparams.dataset, self.hparams.nodeId_sup), 'rb'))
+            self.nodeId2groupdId = nodeId_sup['group_set']
+            self.nodeId2tokId = nodeId_sup['token_set']
+            self.groupId2nodeId = nodeId_sup['inv_group_set']
+            self.tokId2nodeId = nodeId_sup['inv_token_set']
+        self.cnt_over = 0
+        self.len_test_dataset = len(self.test_dataloader())
+        self.dev_input2output = json.load(open(os.path.join(self.hparams.dataset, self.hparams.dev_input2output), "r"))
+
+
+    def _get_dataset(self, split):
+        dataset = GENREDataset(
+            tokenizer=self.tokenizer,
+            split=split,
+            hparams=self.hparams,
+            tokid2emb=self.contextualized_tokid2emb 
+        )
+        return dataset
+    def _get_max_tokId_from_tokIdList(self, tokIdList, score):
+        tokIdList = sorted(tokIdList)
+        idx = score[tokIdList].detach().cpu().numpy().argmax()
+        max_tokId = tokIdList[idx]
+        return max_tokId
+    def _get_tokIdList_from_nodeIdList(self, nodeIdList, score):                        
+        assert self.hparams.tree_type == "nodeId"            
+        tokIdList = []
+        if self.hparams.max_beam_search:
+            for nodeId in nodeIdList:
+                max_tokId = self._get_max_tokId_from_tokIdList(list(self.nodeId2tokId[nodeId]), score)
+                tokIdList.append(max_tokId)
+            return list(set(tokIdList))
+        else:                
+            for nodeId in nodeIdList:
+                tokIdList.extend(list(self.nodeId2tokId[nodeId]))                
+            return list(set(tokIdList))
+
+    def _get_tokIdList_from_groupIdList(self, groupIdList, score):
+        assert self.hparams.tree_type == "groupId"
+        tokIdList = []
+        
+        # for groupId Tree with max beam search
+        if self.hparams.max_beam_search:
+            for groupId in groupIdList:
+                max_tokId = self._get_max_tokId_from_tokIdList(self.groupId2tokId[groupId], score)
+                tokIdList.append(max_tokId)
+            return list(set(tokIdList))
+        # for normal groupId Tree
+        else:
+            for groupId in groupIdList:
+                tokIdList.extend(self.groupId2tokId[groupId])
+            return list(set(tokIdList))
+   
+    def _get_nodeId_from_tokId(self, tokId):
+        nodeId = list(self.tokId2node/_teId[tokId])
+        assert len(nodeId) == 1
+        return nodeId[0] 
+    
+    def _get_groupId_from_tokId(self, tokId):
+        return self.tokId2groupId[tokId]
+
+
+    def _loss(self, batch):
+        lm_labels = copy.deepcopy(batch["target_ids"])
+        #lm_labels[lm_labels[:, :] == self.tokenizer.pad_token_id] = -100
+        lm_labels[lm_labels[:, :] == self.pad_token_id] = -100
+
+        outputs = self(
+            input_ids=batch["source_ids"],
+            attention_mask=batch["source_mask"],
+            lm_labels=lm_labels,
+            decoder_attention_mask=batch["target_mask"],
+        )
+        loss = outputs[0]
+        return loss
+    def training_step(self, batch, batch_idx):
+        loss = self._loss(batch)
+        self.log(
+            "train loss",
+            loss,
+            on_step=True,
+            on_epoch=True,
+            prog_bar=False,
+            logger=True,
+            sync_dist=True,
+        )
+        return loss
+    def get_list(self, batch_id, input_ids, score, trie_list):
+        # starts with pad token & groupId for pad token is -1
+        #assert input_ids[0] == 0
+        assert input_ids[0] == self.pad_token_id
+        assert trie_list is not None and isinstance(trie_list, list)
+        return self._get_from_trie(input_ids, trie_list[batch_id], score)
+    
+    def get(self, batch_id, input_ids, score, trie_dict=None):
+        # starts with pad token & groupId for pad token is -1
+        #assert input_ids[0] == 0 
+        assert input_ids[0] == self.pad_token_id
+        if trie_dict is None:
+            trie_dict = self.trie
+        return self._get_from_trie(input_ids, trie_dict, score)
+
+    """
+    input_ids가 들어오면, 해당 tokId가 속한 groupId 찾고, 그걸 가지고 trie_dict 넘어간 다음
+    해당 subtree의 key들(groupId) 를 모은 tokId return
+    """
+    def _get_from_trie(self, input_ids, trie_dict, score):
+        #print(f"input_ids: {input_ids}")
+        if self.hparams.tree_type == "groupId":
+            if len(input_ids) == 0:
+                possible_GroupList = list(trie_dict.keys())
+                tokIdList = self._get_tokIdList_from_groupIdList(possible_GroupList, score)
+                return tokIdList
+            else:
+                curGroupId = self._get_groupId_from_tokId(input_ids[0])
+                if curGroupId in list(trie_dict.keys()):
+                    return self._get_from_trie(input_ids[1:], trie_dict[curGroupId], score) 
+                else:
+                    return []
+        elif self.hparams.tree_type == "nodeId":
+            if input_ids[-1] == 1:
+                return []
+            else:
+                NodeId = self._get_nodeId_from_tokId(input_ids[-1])
+                next_nId_List = list(trie_dict[NodeId])
+                tokIdList = self._get_tokIdList_from_nodeIdList(next_nId_List, score)
+                return tokIdList
+        elif self.hparams.tree_type == "clusterId":
+            if len(input_ids) == 0:
+                return list(trie_dict.keys()) 
+            else:
+                if input_ids[0] in list(trie_dict.keys()):
+                    return self._get_from_trie(input_ids[1:], trie_dict[input_ids[0]], score)
+                else:
+                    return []
+        else:
+            raise NotImplementedError('tree type should be either groupId_tree or nodeId_tree!')
+
+    def calculate_scores(self, preds, gt_text, query, batch_idx):
+        em_list = []
+        recall_list = []
+        for idx, (_query, _pred, _gt) in enumerate(zip(query, preds, gt_text)):
+            _em = self._calculate_em(_pred[0], _gt)
+            _recall = self._calculate_recall(_pred, _gt)
+            if self.print and idx == 0:
+                print(f"$" * 50)
+                print(f"query: {_query}\npreds: {_pred}\ngt: {_gt}")
+                print(f"em: {_em} // recall: {_recall}")
+                print(f"$" * 50)
+                print(" ")
+            em_list.append(_em)
+            recall_list.append(_recall)
+        return em_list, recall_list
+
+    def remove_padding(self, ids, pad_token_id, eos_token_id, is_gt=True):
+        ids = torch.tensor(ids)
+        if is_gt == True:
+            pad_idx = (ids == pad_token_id).nonzero()[0,0]
+            ids = ids[:pad_idx].tolist()
+            ids = [pad_token_id] + ids
+        else:
+            pad_idx = (ids == eos_token_id).nonzero()
+            #assert len(pad_idx) > 0, ids
+            
+            if len(pad_idx) == 0:
+                print("!!! len(pred) > max_output_lenth !!!", ids)
+                ids = ids[1:].tolist()
+                #ids = ids + [eos_token_id]
+            else:
+                pad_idx = (ids == eos_token_id).nonzero()[0,0]
+                ids = ids[1:pad_idx+1].tolist()
+                #ids = ids + [eos_token_id]
+        return ids
+
+    def _ids_calculate_recall(self, pred, gt, pad_token_id, eos_token_id):
+        assert len(pred) == self.hparams.val_beam_size, f'gt: {gt}\npred: {pred}'
+        #gt = self.remove_padding(gt, pad_token_id, eos_token_id, is_gt=True)
+        if type(gt) == list:
+            for elem in pred:
+                if elem is None: continue 
+                elem = self.remove_padding(elem, pad_token_id, eos_token_id, is_gt=False)
+                if elem in gt:
+                    return 100
+        else:
+            for elem in pred:
+                if elem is None: continue 
+                elem = self.remove_padding(elem, pad_token_id, eos_token_id, is_gt=False)
+                if elem == gt:
+                    return 100
+        return 0
+    
+    def _ids_calculate_em(self, pred, gt, pad_token_id, eos_token_id):
+        #gt = self.remove_padding(gt, pad_token_id, eos_token_id, is_gt=True)
+        pred = self.remove_padding(pred, pad_token_id, eos_token_id, is_gt=False)
+        if type(gt) == list:
+            if pred in gt:
+                return 100
+        else:
+            if pred == gt:
+                return 100
+        return 0
+
+    def ids_calculate_scores(self, preds_ids, gt_ids, query, batch_idx):
+        em_list = []
+        recall_list = []
+        for idx, (_query, _pred, _gt) in enumerate(zip(query, preds_ids, gt_ids)):
+            _em = self._ids_calculate_em(_pred[0], _gt, self.pad_token_id, self.eos_token_id)
+            _recall = self._ids_calculate_recall(_pred, _gt, self.pad_token_id, self.eos_token_id)
+            if self.print and idx == 0:
+                print(f"$" * 50)
+                print(f"query: {_query}\npreds: {_pred}\ngt: {_gt}")
+                print(f"em: {_em} // recall: {_recall}")
+                print(f"$" * 50)
+                print(" ")
+            em_list.append(_em)
+            recall_list.append(_recall)
+        return em_list, recall_list
+
+    def _val_step(self, batch, batch_idx, return_elem=False):
+        # calculates recall and em -> returns the list of each score
+        _generated_ids = self.model.generate(
+            batch["source_ids"],
+            attention_mask=batch["source_mask"],
+            use_cache=True,
+            #decoder_attention_mask=batch["target_mask"],
+            max_length=self.hparams.max_output_length,
+            num_beams=self.hparams.val_beam_size,
+            num_return_sequences=self.hparams.val_beam_size,
+            prefix_allowed_tokens_fn=lambda batch_id, sent, scores: self.get(
+                batch_id, sent.tolist(), scores
+            ),
+            early_stopping=True,
+            decoder_start_token_id=self.pad_token_id,
+            pad_token_id=self.pad_token_id,
+            eos_token_id=self.eos_token_id,
+        )
+        #_generated_text = self.ids_to_text(_generated_ids)
+        inum = len(_generated_ids) // self.hparams.val_beam_size
+        assert inum == len(batch["output"])
+        
+        #generated_text = [
+        #    _generated_text[
+        #        i * self.hparams.val_beam_size : (i + 1) * self.hparams.val_beam_size
+        #    ]
+        #    for i in range(inum)
+        #]
+        generated_ids = [
+            _generated_ids[
+               i * self.hparams.val_beam_size : (i+1) * self.hparams.val_beam_size
+            ].detach().cpu().numpy().tolist()
+            for i in range(inum)
+        ]
+        output_list = [self.dev_input2output[_input] for _input in batch["input"]]
+
+        #em_list, recall_list = self.calculate_scores(
+        #    generated_text, output_list, batch["input"], batch_idx
+        #)
+        em_list, recall_list = self.ids_calculate_scores(
+            generated_ids, output_list, batch["input"], batch_idx
+        )
+        if return_elem:
+            assert (
+                len(list(batch["input"]))
+                == len(list(generated_text))
+                == len(list(em_list))
+            )
+            return {
+                "input": list(batch["input"]),
+                "gt": list(batch["output"]),
+                "gt_tok": list(batch["target_ids"].detach().cpu().numpy().tolist()),
+                "pred": list(generated_text),
+                "pred_tok": list(generated_ids),
+                "em": list(em_list),
+                "recall": list(recall_list),
+            }
+        else:
+            return em_list, recall_list
+
+    def _find_unique_path(self, seq, trie):
+        _ids = seq.tolist()
+        _ids = [int(elem) for elem in _ids]
+        
+        generated_ids = []
+        if _ids[-1] == 0:
+            for el in range(len(_ids)):
+                if el != 0 and _ids[el] == 0:
+                    continue
+                else:
+                    generated_ids.append(_ids[el])
+        else:
+            generated_ids = _ids 
+        assert generated_ids[-1] != 0
+        generated_ids = generated_ids[:-1]
+        
+        cur_dict = trie 
+        for i in range(len(generated_ids) - 1):
+            cur_dict = cur_dict[int(generated_ids[i])]
+        if len(cur_dict[generated_ids[-1]]) == 0:
+            add_list.append(generated_ids)
+        else:
+            cur_dict = cur_dict[int(generated_ids[-1])]
+            # check if it is an unique path
+            keys = list(cur_dict.keys())
+            if len(keys) > 1:
+                print(f"More than 1: {keys}")
+                keys = [keys[0]]
+            while len(cur_dict[keys[0]]) != 0:
+                generated_ids.append(keys[0])
+                cur_dict = cur_dict[keys[0]]
+                keys = list(cur_dict.keys())
+                if len(keys) > 1:
+                    print(f"More than 1: {keys}")
+                    keys = [keys[0]]
+            generated_ids.append(1)
+        return generated_ids
+
+    def clusterList_to_text(self, ids):
+        ret_list = []
+        for _ids in ids:
+            _ids = self.remove_padding(_ids, pad_token_id, eos_token_id, is_gt=False)
+            _corpus_list = self.clusterIdList2corpusList[tuple(_ids[1:])]
+            ret_list.append(_corpus_list)
+        return ret_list
+
+    def _test_step(self, batch, batch_idx, return_elem=False):
+       
+        # for case where it resume test 
+        test_input = []
+        for _input in batch['input']:
+            if _input in self.test_input_list: continue
+            else: test_input.append(_input) 
+        test_num = len(test_input)
+        start_num = len(batch['input'])-test_num
+        if test_num == 0: return None
+        test_output = batch['output'][start_num:]
+        test_source_ids = batch['source_ids'][start_num:]
+        test_source_masks = batch['source_mask'][start_num:]
+        test_target_ids = batch['target_ids'][start_num:]
+        test_target_masks = batch['target_mask'][start_num:]
+        assert len(test_output) == test_num, f'test_output: {len(test_output)}\ttest_num: {test_num}'
+        _trie_list = [copy.deepcopy(self.trie) for _ in range(test_num)]
+        
+        #unique_pred = []; unique_ids = []
+        unique_ids_list = [[] for _ in range(test_num)] 
+        over = [0]*test_num
+        for _iter in range(self.hparams.val_beam_size*2):
+            print("="*80)
+            print(f"iter: {_iter} // DONE: {over.count(1)} / {test_num}")
+            print(unique_ids_list)
+            print("="*80)
+            _generated_ids = self.model.generate(
+                test_source_ids, 
+                attention_mask=test_source_masks,
+                use_cache=True,
+                decoder_attention_mask=test_target_masks,
+                max_length=self.hparams.max_output_length,
+                num_beams=self.hparams.val_beam_size,
+                num_return_sequences=self.hparams.val_beam_size,
+                prefix_allowed_tokens_fn=lambda batch_id, sent, scores: self.get_list(
+                    batch_id, sent.tolist(), scores, trie_list=_trie_list
+                ),
+                early_stopping=True,
+                decoder_start_token_id=self.pad_token_id,
+                pad_token_id=self.pad_token_id,
+                eos_token_id=self.eos_token_id
+            )
+            ### TODO
+            ## total -> ids_to_text 사용 불가 (하나의 ids가 하나의 text에 matching되지 않음.)
+            ## total -> list of clusterid -> 바로 하나의 text에 matching 시키기
+            #_generated_text = self.ids_to_text(_generated_ids)
+
+            #_generated_text = self.clusterList_to_text(_generated_ids)
+
+            inum = len(_generated_ids) // self.hparams.val_beam_size
+            assert inum == len(test_output) 
+            # generated_text = [
+            #     _generated_text[
+            #         i * self.hparams.val_beam_size : (i + 1) * self.hparams.val_beam_size
+            #     ]
+            #     for i in range(inum)
+            # ]
+            generated_ids = [
+                _generated_ids[
+                    i * self.hparams.val_beam_size : (i+1) * self.hparams.val_beam_size
+                ].detach().cpu().numpy().tolist()
+                for i in range(inum)
+            ]
+            """ 
+            for b_texts, b_ids in zip(generated_text, generated_ids):
+                for _text, _ids in zip(b_texts, b_ids):
+                    g_ids = [self.tokId2groupId[el] for el in _ids]
+            print(f"prediction: {generated_text}")
+            print("*"*80)
+            """
+
+            for bid, batch_ids in enumerate(generated_ids):
+                if over[bid] == 1: continue
+                ### iterate over batch (val_beam_size)
+                remove_ids = []
+                _trie_dict = _trie_list[bid]
+                for _ids in batch_ids:
+                    _ids = self.remove_padding(_ids, self.pad_token_id, self.eos_token_id, is_gt=False)
+                    _ids = tuple(_ids)
+                    if _ids in unique_ids_list[bid]:
+                        print(f"ids already exists in the list")
+                        continue
+                    elif _ids not in self.clusterIdList:
+                        print(f"{_ids} does not exists in clusterIdList")
+                        continue
+                    else:
+                        remove_ids.append(_ids) 
+
+                #_trie_dict = self._remove_prev_from_trie(_trie_dict, remove_ids, self.pad_token_id)
+                #_trie_list[bid] = _trie_dict
+                unique_ids_list[bid].extend(remove_ids)
+                if len(unique_ids_list[bid]) >= self.hparams.val_beam_size:
+                    over[bid] = 1
+            if over.count(1) == test_num:
+                break
+            """
+            if (over.count(1) == test_num) or (self.cnt_over == self.len_test_dataset):
+                self.cnt_over += over.count(1)
+                break
+            """
+            
+        for i in range(len(unique_ids_list)):
+            unique_ids_list[i] = unique_ids_list[i][:self.hparams.val_beam_size]
+        #self._flush_first_beam_dict()
+        #if self.print: print(f"## UNIQUE PRED: {unique_pred[:self.hparams.val_beam_size]}")
+        """
+        em_list, recall_list = self.calculate_scores(
+            unique_pred_list, batch["output"], batch["input"], batch_idx
+        )
+        """
+        if return_elem:
+            assert (
+                len(list(test_input))
+                == len(list(unique_ids_list))
+            )
+            return {
+                "input": list(test_input),
+                "gt": list(test_output),
+                "gt_tok": [el.detach().cpu().numpy().tolist() for el in test_target_ids],
+                "pred_tok": list(unique_ids_list),
+            }
+        else:
+            return em_list, recall_list
 
 
 class T5AsyncTuner(T5AsyncBaseTuner):

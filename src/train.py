@@ -20,7 +20,7 @@ from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor, Callback, ModelSummary
 from pytorch_lightning.plugins import DDPPlugin, DeepSpeedPlugin
 
-from T5_model import T5BiEncoder, T5FineTuner, T5JointTuner, T5MeanTuner, T5AsyncTuner
+from T5_model import T5BiEncoder, T5FineTuner, T5TotalTuner, T5JointTuner, T5MeanTuner, T5AsyncTuner
 from BART_model import BartBiEncoder 
 from pathlib import Path
 from typing import Any, Optional, Union
@@ -88,6 +88,8 @@ def main(args, train_params):
         model = T5MeanTuner(args)
     elif args.model_type == "async":
         model = T5AsyncTuner(args)
+    elif args.model_type == "total":
+        model = T5TotalTuner(args)
     else:
         assert False
 
@@ -153,8 +155,10 @@ def _count_toknum(args):
 if __name__ == "__main__":
     parser = ArgumentParser()
     parser.add_argument("--config", default=None, required=True, type=str)
+    parser.add_argument("--save_model_only", action="store_true")
     parser.add_argument("--test_file", default=None, type=str)
     parser.add_argument("--test_name", default=None, type=str)
+    parser.add_argument("--test_ret_num", default=None, type=int)
     parser.add_argument("--test_batch", default=None, type=int)
     parser.add_argument("--test_beam_size", default=None, type=int)
     arg_ = parser.parse_args()
@@ -165,7 +169,7 @@ if __name__ == "__main__":
 
     if hparam.wandb_log and hparam.do_train:
         wandb_logger = WandbLogger(
-            project=hparam.wandb_project, name=hparam.wandb_run_name, save_dir="../wandb"
+            project=hparam.wandb_project, name=hparam.wandb_run_name, save_dir="/mnt/wandb"
         )
     else:
         wandb_logger = None
@@ -208,6 +212,7 @@ if __name__ == "__main__":
         test_model_path=hparam.test_model_path,
         test_name=arg_.test_name if arg_.test_name else hparam.test_name,
         val_beam_size=arg_.test_beam_size if arg_.test_beam_size else hparam.val_beam_size,
+        ret_num=arg_.test_ret_num if arg_.test_ret_num else hparam.val_beam_size,
         freeze_encoder=hparam.freeze_encoder,
         freeze_vocab_emb=hparam.freeze_vocab_emb,
         contextualized_file=hparam.contextualized_file,  # new - tokId_emb.pickle
@@ -235,11 +240,13 @@ if __name__ == "__main__":
         do_save=hparam.do_save if "do_save" in hparam else None,
         tok_num=hparam.tok_num if "tok_num" in hparam else None,
         model_dim=hparam.model_dim if "model_dim" in hparam else None,
-        dump_path=hparam.dump_path if "dump_path" in hparam else hparam.dataset 
+        dump_path=hparam.dump_path if "dump_path" in hparam else hparam.dataset, 
+        save_model_only=arg_.save_model_only,
+        clusterIdList2corpusList=hparam.clusterIdList2corpusList if "clusterIdList2corpusList" in hparam else None
     ) 
     args = argparse.Namespace(**args_dict)
     assert not (args.do_train and args.do_test), "Choose between train|test"
-    assert args.model_type in ["gr", "bi", "joint", "async", "split"]
+    assert args.model_type in ["gr", "bi", "joint", "async", "split", "total"]
     if args.model_type == "gr": 
         assert args.tree_type in ["groupId", "nodeId", "clusterId"] 
         assert args.reload_dataloader_every_n_epochs is False
@@ -255,7 +262,9 @@ if __name__ == "__main__":
         assert args.model_dim is not None
         assert args.dev_input2output is not None
         if args.do_save == "dat": assert args.tok_num is not None 
-    
+    if args.model_type == "total":
+        if args.do_test: assert args.clusterIdList2corpusList is not None
+
     torch.multiprocessing.set_start_method('spawn')
 
     if torch.cuda.current_device() == 0:
@@ -296,7 +305,7 @@ if __name__ == "__main__":
             mode="max",
             dirpath=args.output_dir,
             filename="{epoch:02d}-{val_em:.2f}",
-            save_top_k=5,
+            save_top_k=15,
         )
     callbacks.append(checkpoint_callback)
 

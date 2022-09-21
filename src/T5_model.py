@@ -117,6 +117,13 @@ class T5BaseClass(pl.LightningModule):
         output = list(chain(*gathered))
         return output
 
+    def _get_dtype(self):
+        if self.hparams.fp16:
+            return "float16"
+        else:
+            return "float32"
+
+
 
     def normalize_answer(self, s):
         def remove_articles(text):
@@ -1457,6 +1464,7 @@ class T5FineTuner(T5grTuner):
                 print(f'@@@ Loading decoder embedding: {self.hparams.embedding_model}')
             self.em_score_list = []
             self.recall_score_list = []
+            self.dev_input2output = json.load(open(os.path.join(self.hparams.dataset, self.hparams.dev_input2output), "r"))
 
         # If in testing mode, load ckpt for inference
         if self.hparams.do_test:
@@ -1507,7 +1515,6 @@ class T5FineTuner(T5grTuner):
             self.tokId2nodeId = nodeId_sup['inv_token_set']
         self.cnt_over = 0
         self.len_test_dataset = len(self.test_dataloader())
-        self.dev_input2output = json.load(open(os.path.join(self.hparams.dataset, self.hparams.dev_input2output), "r"))
 
     def _get_dataset(self, split):
         dataset = GENREDataset(

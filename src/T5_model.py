@@ -117,6 +117,13 @@ class T5BaseClass(pl.LightningModule):
         output = list(chain(*gathered))
         return output
 
+    def _get_dtype(self):
+        if self.hparams.fp16:
+            return "float16"
+        else:
+            return "float32"
+
+
 
     def normalize_answer(self, s):
         def remove_articles(text):
@@ -1570,8 +1577,6 @@ class T5FineTuner(T5grTuner):
             self.tokId2nodeId = nodeId_sup['inv_token_set']
         self.cnt_over = 0
         self.len_test_dataset = len(self.test_dataloader())
-
-
 
     def _get_dataset(self, split):
         dataset = GENREDataset(

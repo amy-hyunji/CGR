@@ -246,6 +246,7 @@ class T5grTuner(T5BaseClass):
             open(os.path.join(self.hparams.dataset, self.hparams.contextualized_file), "rb")
         )
         self.contextualized_emb_num = len(self.contextualized_tokid2emb.keys())
+        print(f"$$$$$$ # of embedding: {self.contextualized_emb_num}")
         self.config = T5Config.from_pretrained(self.hparams.model_name_or_path)
         self.config.update({"fp16": self.hparams.fp16})
         self.config.update({"train_c_emb": self.hparams.train_c_emb}) 
@@ -3573,7 +3574,7 @@ class T5JointTuner(T5BaseClass):
             config = T5Config.from_pretrained(self.hparams.model_name_or_path)
             config.update({'total_emb': None})
             self.model = joint_T5.from_pretrained(
-                self.hparams.model_name_or_path #, config=config
+                self.hparams.model_name_or_path, config=config
             )
             self.emb_enc = T5EncoderModel.from_pretrained(
                 self.hparams.model_name_or_path
@@ -4115,9 +4116,9 @@ class T5JointTuner(T5BaseClass):
         save_path = os.path.join(
             self.hparams.output_dir, f"best_tfmr_{self.current_epoch}"
         )
-        if not os.path.exists(save_path): os.makedirs(save_path)
-        if not os.path.exists(os.path.join(save_path, "model")): os.makedirs(os.path.join(save_path, "model"))
-        if not os.path.exists(os.path.join(save_path, "emb_enc")): os.makedirs(os.path.join(save_path, "emb_enc"))
+        if not os.path.exists(save_path): os.makedirs(save_path, exist_ok=True)
+        if not os.path.exists(os.path.join(save_path, "model")): os.makedirs(os.path.join(save_path, "model"), exist_ok=True)
+        if not os.path.exists(os.path.join(save_path, "emb_enc")): os.makedirs(os.path.join(save_path, "emb_enc"), exist_ok=True)
         self.model.save_pretrained(os.path.join(save_path, "model"))
         self.emb_enc.save_pretrained(os.path.join(save_path, "emb_enc"))
         self.tokenizer.save_pretrained(save_path)

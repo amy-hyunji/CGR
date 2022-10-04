@@ -8,3 +8,5 @@ periflow_sdk
 deepspeed
 faiss-gpu
 scikit-learn
+datasets
+h5py

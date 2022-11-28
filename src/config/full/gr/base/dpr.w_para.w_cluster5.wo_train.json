@@ -14,7 +14,7 @@
     "eval_batch_size": 32,
     "dump_batch_size": null,
     "gradient_accumulation_steps": 8,
-    "n_gpu": 2,
+    "n_gpu": 1,
     "num_workers": 30,
     "resume_from_checkpoint": null,
     "train_file": "dpr/gr_dpr_train_cluster_5.pickle",

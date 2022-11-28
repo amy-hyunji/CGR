@@ -1,5 +1,4 @@
 wandb/
-config/
 pf-template/
 .vscode/
 __pycache__/

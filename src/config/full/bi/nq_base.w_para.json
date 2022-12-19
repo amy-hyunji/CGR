@@ -30,7 +30,7 @@
   "wandb_project": "nq-full",
   "wandb_run_name": "pipeline-bi",
   "check_val_every_n_epoch": 3,
-  "contextualized_file": "tokId_emb.dat",
+  "contextualized_file": "tokId_emb.pickle",
   "groupId2tokIdList": null,
   "tokId2groupId": null,
   "tokId2tokText": null,

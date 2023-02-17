@@ -12,7 +12,6 @@ import datetime
 import numpy as np
 import pandas as pd
 import pytorch_lightning as pl
-#import periflow_sdk as pf
 
 from argparse import ArgumentParser
 from pytorch_lightning import Trainer
@@ -20,8 +19,7 @@ from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor, Callback, ModelSummary
 from pytorch_lightning.plugins import DDPPlugin, DeepSpeedPlugin
 
-from T5_model import T5BiEncoder, T5FineTuner, T5TotalTuner, T5JointTuner, T5MeanTuner, T5AsyncTuner, T5MultiHop, T5_title_context, T5_COT, T5Entail
-from BART_model import BartBiEncoder 
+from biT5_model import BiT5Model
 from pathlib import Path
 from typing import Any, Optional, Union
 from pytorch_lightning.utilities.types import STEP_OUTPUT
@@ -37,96 +35,15 @@ def set_seed(seed):
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
 
-class PeriFlowCallback(Callback):
-    def on_train_batch_start(self,
-                             trainer: pl.Trainer,
-                             pl_module: pl.LightningModule,
-                             batch: Any,
-                             batch_idx: int,
-                             unused: int = 0) -> None:
-        pf.start_step()
 
-    def on_train_batch_end(self,
-                           trainer: pl.Trainer,
-                           pl_module: pl.LightningModule,
-                           outputs: STEP_OUTPUT,
-                           batch: Any,
-                           batch_idx: int,
-                           unused: int = 0) -> None:
-        loss = float(outputs['loss'])
-        pf.metric({
-            "iteration": trainer.global_step,
-            "loss": loss,
-        })
-        pf.end_step()
-
-class PeriFlowTrainer(Trainer):
-    def save_checkpoint(self,
-                        filepath: Union[str, Path],
-                        weights_only: bool = False,
-                        storage_options: Optional[Any] = None) -> None:
-        super().save_checkpoint(filepath, weights_only=weights_only, storage_options=storage_options)
-        pf.upload_checkpoint()
-
-@slack_sender(webhook_url=get_webhook_url(), channel=get_channel())
+# @slack_sender(webhook_url=get_webhook_url(), channel=get_channel())
 def main(args, train_params):
     sys.setrecursionlimit(10000)
     set_seed(args.seed)
-    if args.model_type == "bi":
-        if "t5" in args.embedding_model:
-            model = T5BiEncoder(args)
-        elif "bart" in args.embedding_model:
-            model = BartBiEncoder(args)
-        else:
-            assert False
-    elif args.model_type == "joint": ## del path
-        model = T5JointTuner(args)
-    elif args.model_type == "gr": ## t5 gr tuner 
-        if args.do_title:
-            model = T5_title_context(args)
-            if args.do_cot:
-                model = T5_COT(args)
-        else:
-            model = T5FineTuner(args)
-    elif args.model_type == "split":
-        assert False
-        model = T5MeanTuner(args)
-    elif args.model_type == "async": ## not used
-        model = T5AsyncTuner(args)
-    elif args.model_type == "total": 
-        model = T5TotalTuner(args)
-    elif args.model_type == "multihop":
-        model = T5MultiHop(args)
-    elif args.model_type == "hyper":
-        model = T5Entail(args)
-    else:
-        assert False
+    model = BiT5Model(args)
+    print("using BiT5Model")
 
-    """
-    total_params = sum(p.numel() for p in model.parameters())
-    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    if torch.cuda.current_device() == 0:
-        print('='*80)
-        print(f"# of trainable parameters: {trainable_params}\n# of total parameters: {total_params}")
-        print('='*80)
-    """
-
-    if args.periflow:
-        print(f'Using Periflow..')
-        periflow_callback = PeriFlowCallback()
-        train_params["callbacks"] = [periflow_callback, checkpoint_callback]
-        train_params["enable_checkpointing"] = isinstance(checkpoint_callback, ModelCheckpoint)
-
-        datalen = len(pd.DataFrame(pickle.load(open(os.path.join(args.dataset, args.train_file), "rb"))))
-        num_steps_per_epoch = math.ceil(datalen / args.num_train_epochs)
-        pf.init(total_train_steps=args.num_train_epochs * num_steps_per_epoch)
-
-        trainer = PeriFlowTrainer(
-            **train_params
-        )
-
-    else:
-        trainer = pl.Trainer(**train_params)
+    trainer = pl.Trainer(**train_params)
 
     if args.do_train:
         if torch.cuda.current_device() == 0:
@@ -187,7 +104,7 @@ if __name__ == "__main__":
         output_dir=hparam.output_dir,
         dataset=hparam.dataset,
         model_name_or_path=hparam.model,
-        tokenizer_name_or_path=hparam.tokenizer,
+        tokenizer_name_or_path=hparam.model,
         doc_encoder_model=hparam.doc_encoder_model if "doc_encoder_model" in hparam else None,
         max_input_length=hparam.max_input_length,
         max_output_length=hparam.max_output_length,
@@ -221,16 +138,15 @@ if __name__ == "__main__":
         test_model_path=hparam.test_model_path,
         test_name=arg_.test_name if arg_.test_name else hparam.test_name,
         val_beam_size=arg_.test_beam_size if arg_.test_beam_size else hparam.val_beam_size,
-        ret_num=arg_.test_ret_num if arg_.test_ret_num else hparam.ret_num,
+        ret_num=arg_.test_ret_num if arg_.test_ret_num else hparam.val_beam_size,
         freeze_encoder=hparam.freeze_encoder,
         freeze_vocab_emb=hparam.freeze_vocab_emb,
         contextualized_file=hparam.contextualized_file,  # new - tokId_emb.pickle
+        faiss_file = hparam.faiss_file,
         groupId2tokIdList=hparam.groupId2tokIdList,  # new - tokGroupId_tokIdList.pickle 
         tokId2groupId=hparam.tokId2groupId,  # new - tokId_tokGroupId.pickle 
-        tokId2clusterId=hparam.tokId2clusterId if "tokId2clusterId" in hparam else None,  # new - tokId_tokGroupId.pickle 
         tokId2tokText=hparam.tokId2tokText,  # new - tokId_tokText.pickle 
         tokId2corpus=hparam.tokId2corpus,  # new - tokId_corpus.pickle 
-        corpus2tokIdList=hparam.corpus2tokIdList if "corpus2tokIdList" in hparam else None,  # new - tokId_corpus.pickle 
         corpus2EmbMean=hparam.corpus2EmbMean if "corpus2EmbMean" in hparam else None,  # new - tokId_corpus.pickle 
         tree_type=hparam.tree_type,  # new - nodeId_tokIdList.pickle
         tree_path=hparam.tree_path, # new
@@ -247,42 +163,18 @@ if __name__ == "__main__":
         gr_decoder_only=hparam.gr_decoder_only,
         gr_decoder_only_encoder_ckpt=hparam.gr_decoder_only_encoder_ckpt,
         reload_dataloader_every_n_epochs=hparam.reload_dataloader_every_n_epochs if "reload_dataloader_every_n_epochs" in hparam else False,
-        cluster_num=hparam.cluster_num,
         do_save=hparam.do_save if "do_save" in hparam else None,
         tok_num=hparam.tok_num if "tok_num" in hparam else None,
         model_dim=hparam.model_dim if "model_dim" in hparam else None,
         dump_path=hparam.dump_path if "dump_path" in hparam else hparam.dataset, 
         save_model_only=arg_.save_model_only,
         clusterIdList2corpusList=hparam.clusterIdList2corpusList if "clusterIdList2corpusList" in hparam else None,
-        do_title = hparam.do_title if "do_title" in hparam else False,
-        do_cot = hparam.do_cot if "do_cot" in hparam else False,
-        do_iteration = hparam.do_iteration if "do_iteration" in hparam else False,
-        tie_enc_dec_vocab = hparam.tie_enc_dec_vocab if "tie_enc_dec_vocab" in hparam else False,
-        w_enc = hparam.w_enc if "w_enc" in hparam else False 
+        cluster_num = hparam.cluster_num if "cluster_num" in hparam else None,
+        dat_size = hparam.dat_size if "dat_size" in hparam else 37000000,
     ) 
-    
     args = argparse.Namespace(**args_dict)
     if args.do_test: args.n_gpu = 1
     assert not (args.do_train and args.do_test), "Choose between train|test"
-    assert args.model_type in ["gr", "bi", "joint", "async", "split", "total", "multihop", "hyper"]
-    if args.model_type == "gr": 
-        assert args.tree_type in ["groupId", "nodeId", "clusterId"] 
-        assert args.reload_dataloader_every_n_epochs is False
-    if args.model_type == "bi": 
-        assert args.accelerator == "ddp", "ddp is only supported for bi-encoder!"
-        assert args.bi_loss is not None
-    if args.model_type == "joint" and args.do_test:
-        assert args.eval_batch_size == 1, "Batch Size larger than 1 is not implemented yet!"
-    if args.model_type == "async":
-        assert args.reload_dataloader_every_n_epochs is not False 
-        assert args.train_c_emb is False
-        assert args.do_save in ["pickle", "dat", None]
-        assert args.model_dim is not None
-        assert args.dev_input2output is not None
-        if args.do_save == "dat": assert args.tok_num is not None 
-    if args.model_type == "total":
-        if args.do_test: assert args.clusterIdList2corpusList is not None
-
     torch.multiprocessing.set_start_method('spawn')
 
     if torch.cuda.current_device() == 0:
@@ -291,53 +183,18 @@ if __name__ == "__main__":
         print("#" * 80)
 
     callbacks = []
-    if args.periflow:
-        if args.periflow_dir is not None:
-            # When use PeriFlow with PyTorch Lightning, do not save the checkpoint twice (i.e., save_top_k > 0 && save_last = True)
-            checkpoint_callback = ModelCheckpoint(
-                dirpath=args.periflow_dir,
-                filename="checkpoint-{step:07d}",
-                save_last=False,
-                every_n_epochs=1,
-                save_top_k=1,
-            )
-            pattern = re.compile(r"step=(\d+)")
-            checkpoint_iter = None
-            for ckpt_path in Path(args.periflow_dir).glob("**/*"):
-                step = int(pattern.findall(ckpt_path.name)[0])
-                if checkpoint_iter is None:
-                    checkpoint_iter = step
-                else:
-                    checkpoint_iter = max(checkpoint_iter, step)
-
-            if checkpoint_iter is not None:
-                ckpt_path = checkpoint_callback.format_checkpoint_name(dict(step=checkpoint_iter))
-            else:
-                ckpt_path = None
-        else:
-            checkpoint_callback = Callback()
-            ckpt_path = None
-    else:
-        if args.model_type == "hyper":
-            checkpoint_callback = ModelCheckpoint(
-               monitor="val_total_f1",
-               mode="max",
-               dirpath=args.output_dir,
-               filename="{epoch:02d}-{val_em:.2f}-{val_total_f1:.2f}-{val_vs_f1:.2f}-{val_es_f1:.2f}",
-               save_top_k=5
-            )  
-        else:
-           checkpoint_callback = ModelCheckpoint(
-               monitor="val_em",
-               mode="max",
-               dirpath=args.output_dir,
-               filename="{epoch:02d}-{val_em:.2f}",
-               save_top_k=5,
-           )
-    
+    checkpoint_callback = ModelCheckpoint(
+        monitor="val_em",
+        mode="max",
+        dirpath=args.output_dir,
+        filename="{epoch:02d}-{val_em:.2f}",
+        save_top_k=15,
+    )
     callbacks.append(checkpoint_callback)
 
     if args.lr_scheduler == "constant" and torch.cuda.current_device() == 0:
+        print(f"@@@ Not Using Learning Rate Scheduler")
+    elif hparam.wandb_log == False:
         print(f"@@@ Not Using Learning Rate Scheduler")
     else:
         lr_callback = LearningRateMonitor()

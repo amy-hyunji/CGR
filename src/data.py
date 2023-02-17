@@ -1,7 +1,9 @@
 import os
 import sys
+import copy
 import torch
 import pickle
+import numpy as np
 import pandas as pd
 
 from tqdm import tqdm
@@ -190,6 +192,14 @@ class GENREDataset(Dataset):
         if split == "test": 
             self.dataset = {'input': [], 'output': [], 'output_tokid': []}
             for _input, _output, _output_tok_id in zip(data_dict['input'], data_dict['output'], data_dict['output_tokid']):
+                if self.hparams.model_type=="multihop":
+                    _input = _input.split('<P1>')[0]
+                    while _input.endswith(" "): _input = _input[:-1]
+               
+                if self.hparams.do_title:
+                    _input = _input.split("<title>")[0]
+                    while _input.endswith(" "): _input = _input[:-1]
+
                 if _input in self.dataset['input']: 
                     continue 
                 else:
@@ -200,6 +210,7 @@ class GENREDataset(Dataset):
         else:
             self.dataset = pd.DataFrame(data_dict)
 
+        print(f"# of dataset: {len(self.dataset)}")
         self.len = len(self.dataset)
         if torch.cuda.current_device() == 0:
             print(
@@ -376,3 +387,204 @@ class MEANDataset(Dataset):
             "input": input_,
             "output": output_,
         }
+
+class ENTAILDataset(Dataset):
+    def __init__(self, tokenizer, split, hparams, ee_tokid, es_tokid, corpus_tokenList, modelId2sharedId, tokId2clusterId):
+        self.hparams = hparams
+        self.split = split
+        if split == "train":
+            data_path = self.hparams.train_file
+        elif split == "validation":
+            data_path = self.hparams.dev_file
+        elif split == "test":
+            data_path = self.hparams.test_file
+        else:
+            raise NotImplementedError(f"Inappropriate split type: {split}")
+
+        assert data_path.endswith(".csv"), "Only csv file is possible!"
+        self.dataset = pd.read_csv(os.path.join(self.hparams.dataset, data_path))
+        print(f"# of dataset: {len(self.dataset)}")
+        self.len = len(self.dataset)
+        if torch.cuda.current_device() == 0:
+            print(
+                f"@@@ Loading from {os.path.join(self.hparams.dataset, data_path)}: {self.len}"
+            )
+
+        self.tokenizer = tokenizer
+        self.source_dict = {}
+        self.ee_tokid=ee_tokid
+        self.es_tokid=es_tokid
+        self.corpus_tokenList=corpus_tokenList
+        self.modelId2sharedId=modelId2sharedId
+        self.tokId2clusterId=tokId2clusterId
+
+    def __len__(self):
+        return self.len
+
+    def _iter_split(self, sen_list, sp):
+        ret_list = []
+        for sen in sen_list:
+            ret_list.extend(sen.split(sp))
+        return ret_list
+
+    def get_ret_sen(self, sen, is_input):
+
+        if is_input:
+           sen = sen.split("[Es]")
+           sen = sen[1:]
+           ret_sen_list = []
+           for elem in sen:
+               assert "Ee" in elem 
+               elem = elem.replace("[Ee]", "")
+               while elem.startswith(" "): elem = elem[1:]
+               while elem.endswith(" "): elem = elem[:-1]
+               ret_sen_list.append(elem)
+        else:
+           if type(sen) != list: sen = [sen]
+           sen = self._iter_split(sen, "[BECAUSE]") 
+           sen = self._iter_split(sen, "[AND]") 
+           sen = self._iter_split(sen, "[INFER]")
+
+           ret_sen_list = []
+           for elem in sen:
+               if "[Es]" in elem:
+                  assert "[Ee]" in elem
+                  elem = elem.replace("[Es]", "")
+                  elem = elem.replace("[Ee]", "")
+                  while elem.startswith(" "): elem = elem[1:]
+                  while elem.endswith(" "): elem = elem[:-1]
+                  ret_sen_list.append(elem)
+        return ret_sen_list
+
+    def convert_to_features(self, batch, idx):
+        input_ = batch["input"]
+        output_ = batch["output"]
+
+        source = self.tokenizer.batch_encode_plus(
+            [input_],
+            max_length=self.hparams.max_input_length,
+            padding="max_length",
+            truncation=True,
+            return_tensors="pt",
+        )
+        self.source_dict[input_] = source 
+
+        target = self._get_id(output_, self.hparams.max_output_length, is_input=False)
+
+         
+
+        if idx == 0 and torch.cuda.current_device() == 0:
+            print(f"=" * 80)
+            print(f"input: {input_}")
+            print(f"output: {output_}")
+            print(f"source: {source}")
+            print(f"target: {target}")
+            print(f"=" * 80)
+
+        return source, target, input_, output_
+
+
+    def _get_id(self, sen_list, max_len, is_input):
+        ### output_tokid => parse and add
+        _target = np.array(self.tokenizer.batch_encode_plus(
+            [sen_list],
+            max_length=max_len,
+            padding="max_length",
+            truncation=True,
+        )["input_ids"][0])
+        _target = self._remove_zeros(_target)
+        ret_sen_list = self.get_ret_sen(sen_list, is_input=is_input)
+        ret_tokid_list = [] 
+        for sen in ret_sen_list:
+            ret_tokid_list.append(self.corpus_tokenList[sen])
+
+        es_tokid_list = list(np.where(_target==self.es_tokid)[0])
+        ee_tokid_list = list(np.where(_target==self.ee_tokid)[0])
+
+        target = []
+        temp = copy.deepcopy(_target)
+        idx = 0
+
+        assert len(es_tokid_list) <= len(ret_tokid_list)
+
+        for i, (es, ee, idlist) in enumerate(zip(es_tokid_list, ee_tokid_list, ret_tokid_list)):
+            es = es-idx
+            ee = ee-idx
+            target.extend([self.modelId2sharedId[el] for el in temp[:es+1]])
+            if self.hparams.cluster_num != -1:
+               assert idlist[-1] == 1
+               target.extend([self.tokId2clusterId[el] for el in idlist[:-1]])
+            else:
+               target.extend(idlist[:-1])
+            temp = temp[ee:]
+            idx += ee
+            if i == len(es_tokid_list)-1:
+               target.extend([self.modelId2sharedId[el] for el in temp])
+
+        if len(target) > self.hparams.max_output_length:
+            target = target[: self.hparams.max_output_length]
+            att = [1] * self.hparams.max_output_length
+        else:
+            _leftover = self.hparams.max_output_length - len(target)
+            att = [1] * len(target) + [0] * _leftover
+            target = target + [0] * _leftover
+        assert (
+            len(target) == self.hparams.max_output_length
+            and len(att) == self.hparams.max_output_length
+        ), print(f"length of target: {len(target)}\nlength of attention:  {len(att)}")
+        
+        target_idx = torch.tensor([target])
+        att = torch.tensor([att])
+        target = {"input_ids": target_idx, "attention_mask": att}
+        return target
+
+
+    def convert_to_features_w_enc(self, batch, idx):
+        input_ = batch["input"]
+        output_ = batch["output"]
+
+        source = self._get_id(input_, self.hparams.max_input_length, is_input=True)
+        target = self._get_id(output_, self.hparams.max_output_length, is_input=False)
+
+        if idx == 0 and torch.cuda.current_device() == 0:
+            print(f"=" * 80)
+            print(f"input: {input_}")
+            print(f"output: {output_}")
+            print(f"source: {source}")
+            print(f"target: {target}")
+            print(f"=" * 80)
+
+        return source, target, input_, output_
+
+
+
+    def _remove_zeros(self, ids):
+        if 0 in ids:
+            idx = list(ids).index(0)
+            return ids[:idx]
+        else:
+            return ids
+
+    def __getitem__(self, idx):
+        if self.hparams.w_enc:
+           source, target, input_, output_ = self.convert_to_features_w_enc(
+                     self.dataset.iloc[idx], idx
+                 ) 
+        else:
+           source, target, input_, output_ = self.convert_to_features(
+                     self.dataset.iloc[idx], idx
+                 )
+        source_ids = source["input_ids"].squeeze()
+        src_mask = source["attention_mask"].squeeze()
+        target_ids = target["input_ids"].squeeze()
+        target_mask = target["attention_mask"].squeeze()
+
+        return {
+            "source_ids": source_ids,
+            "target_ids": target_ids,
+            "source_mask": src_mask,
+            "target_mask": target_mask,
+            "input": input_,
+            "output": output_,
+        }
+

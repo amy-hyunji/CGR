@@ -389,7 +389,7 @@ class MEANDataset(Dataset):
         }
 
 class ENTAILDataset(Dataset):
-    def __init__(self, tokenizer, split, hparams, ee_tokid, es_tokid, corpus_tokenList, modelId2sharedId, tokId2clusterId):
+    def __init__(self, tokenizer, split, hparams, ee_tokid, es_tokid, corpus_tokenList, modelId2sharedId, tokId2clusterId, vd_mask, npd_mask):
         self.hparams = hparams
         self.split = split
         if split == "train":
@@ -411,12 +411,15 @@ class ENTAILDataset(Dataset):
             )
 
         self.tokenizer = tokenizer
-        self.source_dict = {}
         self.ee_tokid=ee_tokid
         self.es_tokid=es_tokid
         self.corpus_tokenList=corpus_tokenList
         self.modelId2sharedId=modelId2sharedId
         self.tokId2clusterId=tokId2clusterId
+        self.vd_mask=vd_mask
+        self.npd_mask=npd_mask
+        if self.modelId2sharedId is not None:
+           self.zeros=[0]*len(self.npd_mask)
 
     def __len__(self):
         return self.len
@@ -467,11 +470,11 @@ class ENTAILDataset(Dataset):
             truncation=True,
             return_tensors="pt",
         )
-        self.source_dict[input_] = source 
 
-        target = self._get_id(output_, self.hparams.max_output_length, is_input=False)
-
-         
+        if self.hparams.model_type == "hyper-mem-np-only": 
+           target = self._get_id_np_only(output_)
+        else:
+           target = self._get_id(output_, self.hparams.max_output_length, is_input=False)
 
         if idx == 0 and torch.cuda.current_device() == 0:
             print(f"=" * 80)
@@ -483,6 +486,29 @@ class ENTAILDataset(Dataset):
 
         return source, target, input_, output_
 
+    def _remove_sp(self, sen):
+        sen = sen.replace('[Ee]', '')
+        sen = sen.replace('[Es]', '')
+        while sen.endswith(' '): sen = sen[:-1] 
+        while sen.startswith(' '): sen = sen[1:] 
+        return sen
+
+    def _get_id_np_only(self, sen):
+
+        target_idx = [self.tokId2clusterId[el] for el in self.corpus_tokenList[self._remove_sp(sen)]]
+        target_idx = [self.es_tokid]+target_idx+[self.ee_tokid]
+        if len(target_idx) > self.hparams.max_output_length:
+            target_idx = target_idx[:self.hparams.max_output_length]
+            att = [1]*self.hparams.max_output_length 
+        else:
+            _leftover = self.hparams.max_output_length - len(target_idx)
+            att = [1]*len(target_idx) + [0]*_leftover 
+            target_idx = target_idx+[0]*_leftover 
+        assert len(target_idx)==len(att)==self.hparams.max_output_length 
+        target_idx = torch.tensor([target_idx])
+        att = torch.tensor([att])
+        target = {"input_ids": target_idx, "attention_mask": att}
+        return target
 
     def _get_id(self, sen_list, max_len, is_input):
         ### output_tokid => parse and add
@@ -502,6 +528,7 @@ class ENTAILDataset(Dataset):
         ee_tokid_list = list(np.where(_target==self.ee_tokid)[0])
 
         target = []
+        target_loss_mask = []
         temp = copy.deepcopy(_target)
         idx = 0
 
@@ -510,33 +537,53 @@ class ENTAILDataset(Dataset):
         for i, (es, ee, idlist) in enumerate(zip(es_tokid_list, ee_tokid_list, ret_tokid_list)):
             es = es-idx
             ee = ee-idx
-            target.extend([self.modelId2sharedId[el] for el in temp[:es+1]])
+            # vanilla part
+            if self.modelId2sharedId is not None:
+               _ids = [self.modelId2sharedId[el] for el in temp[:es+1]]
+            else:
+               _ids = temp[:es+1]
+            target.extend(_ids)
+            target_loss_mask.extend([self.vd_mask]*len(_ids))
+            # npd part
             if self.hparams.cluster_num != -1:
                assert idlist[-1] == 1
-               target.extend([self.tokId2clusterId[el] for el in idlist[:-1]])
+               _ids = [self.tokId2clusterId[el] for el in idlist[:-1]]
             else:
-               target.extend(idlist[:-1])
+               _ids = idlist[:-1]
+            target.extend(_ids)
+            target_loss_mask.extend([self.npd_mask]*len(_ids))
+
             temp = temp[ee:]
             idx += ee
-            if i == len(es_tokid_list)-1:
-               target.extend([self.modelId2sharedId[el] for el in temp])
-
-        if len(target) > self.hparams.max_output_length:
-            target = target[: self.hparams.max_output_length]
-            att = [1] * self.hparams.max_output_length
+        if self.modelId2sharedId is not None:
+           _ids = [self.modelId2sharedId[el] for el in temp]
         else:
-            _leftover = self.hparams.max_output_length - len(target)
+           _ids = temp 
+        target.extend(_ids)
+        target_loss_mask.extend([self.vd_mask]*len(_ids))
+
+        if len(target) > max_len:
+            target = target[: max_len]
+            att = [1] * max_len 
+            target_loss_mask = target_loss_mask[:max_len]
+        else:
+            _leftover = max_len - len(target)
             att = [1] * len(target) + [0] * _leftover
             target = target + [0] * _leftover
-        assert (
-            len(target) == self.hparams.max_output_length
-            and len(att) == self.hparams.max_output_length
-        ), print(f"length of target: {len(target)}\nlength of attention:  {len(att)}")
-        
-        target_idx = torch.tensor([target])
-        att = torch.tensor([att])
-        target = {"input_ids": target_idx, "attention_mask": att}
-        return target
+            
+            target_idx = torch.tensor([target])
+            att = torch.tensor([att])
+
+            if self.modelId2sharedId is not None:
+               target_loss_mask = target_loss_mask + [self.zeros]*_leftover 
+               assert (
+                  len(target) == len(att) == len(target_loss_mask) == max_len
+              ), print(f"length of target: {len(target)}\nlength of attention:  {len(att)}\nlength of target_loss_mask: {len(target_loss_mask.shape)}")
+               target_loss_mask = torch.tensor([target_loss_mask])
+               target = {"input_ids": target_idx, "attention_mask": att, "loss_mask": target_loss_mask}
+            else:
+               target = {"input_ids": target_idx, "attention_mask": att}
+            return target
 
 
     def convert_to_features_w_enc(self, batch, idx):
@@ -578,13 +625,26 @@ class ENTAILDataset(Dataset):
         src_mask = source["attention_mask"].squeeze()
         target_ids = target["input_ids"].squeeze()
         target_mask = target["attention_mask"].squeeze()
+        if "loss_mask" in target:
+           target_loss_mask = target["loss_mask"].squeeze()
 
-        return {
-            "source_ids": source_ids,
-            "target_ids": target_ids,
-            "source_mask": src_mask,
-            "target_mask": target_mask,
-            "input": input_,
-            "output": output_,
-        }
+           return {
+               "source_ids": source_ids,
+               "target_ids": target_ids,
+               "source_mask": src_mask,
+               "target_mask": target_mask,
+               "target_loss_mask": target_loss_mask,
+               "input": input_,
+               "output": output_,
+           }
+
+        else:
+           return {
+               "source_ids": source_ids,
+               "target_ids": target_ids,
+               "source_mask": src_mask,
+               "target_mask": target_mask,
+               "input": input_,
+               "output": output_,
+           }
 

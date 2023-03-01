@@ -1437,10 +1437,10 @@ class PreTrainedModel(nn.Module, ModuleUtilsMixin, GenerationMixin, PushToHubMix
         shards, index = shard_checkpoint(state_dict, max_shard_size=max_shard_size)
 
         # Clean the folder from a previous save
-        for filename in os.listdir(save_directory):
-            full_filename = os.path.join(save_directory, filename)
-            if filename.startswith(WEIGHTS_NAME[:-4]) and os.path.isfile(full_filename):
-                os.remove(full_filename)
+        # for filename in os.listdir(save_directory):
+        #     full_filename = os.path.join(save_directory, filename)
+        #     # if filename.startswith(WEIGHTS_NAME[:-4]) and os.path.isfile(full_filename):
+        #         # os.remove(full_filename)
 
         # Save the model
         for shard_file, shard in shards.items():

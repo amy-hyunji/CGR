@@ -35,6 +35,8 @@ from collections import defaultdict
 from sklearn.cluster import KMeans, DBSCAN
 from sklearn.mixture import GaussianMixture 
 from collections import Counter
+from all_gather import my_all_gather, my_all_gather2
+from utils import *
 
 from azure.storage.blob import (
     BlobServiceClient,
@@ -200,7 +202,8 @@ class T5BaseClass(pl.LightningModule):
            gt_es.extend(_gt_es); gt_vs.extend(_gt_vs) 
 
         common = Counter(pred_es) & Counter(gt_es)
-        num_same = sum(common.values())
+        #num_same = sum(common.values())
+        num_same = len(common.keys())
 
         if num_same == 0:
             es_f1 = 0
@@ -210,7 +213,8 @@ class T5BaseClass(pl.LightningModule):
             es_f1 = (2*es_prec*es_rec)/(es_prec+es_rec)
 
         common = Counter(pred_vs) & Counter(gt_vs)
-        num_same = sum(common.values())
+        #num_same = sum(common.values())
+        num_same = len(common.keys())
 
         if num_same == 0:
             vs_f1 = 0
@@ -230,7 +234,8 @@ class T5BaseClass(pl.LightningModule):
         gt_es, gt_vs = self._split_dec(gt_sen)
 
         common = Counter(pred_es) & Counter(gt_es)
-        num_same = sum(common.values())
+        #num_same = sum(common.values())
+        num_same = len(common.keys())
 
         if num_same == 0:
             es_f1 = 0
@@ -240,7 +245,8 @@ class T5BaseClass(pl.LightningModule):
             es_f1 = (2*es_prec*es_rec)/(es_prec+es_rec)
 
         common = Counter(pred_vs) & Counter(gt_vs)
-        num_same = sum(common.values())
+        #num_same = sum(common.values())
+        num_same = len(common.keys())
 
         if num_same == 0:
             vs_f1 = 0
@@ -280,7 +286,8 @@ class T5BaseClass(pl.LightningModule):
        pred_list = list(set([self.normalize_answer(elem) for elem in pred_list]))
        gt_list = list(set([self.normalize_answer(elem) for elem in gt_list]))
        common = Counter(pred_list) & Counter(gt_list)
-       num_same = sum(common.values())
+       # num_same = sum(common.values())
+       num_same = len(common.keys())
 
        if num_same == 0: return 0
 
@@ -294,7 +301,8 @@ class T5BaseClass(pl.LightningModule):
         pred_toks = self.normalize_answer(pred).split()
         gt_toks = self.normalize_answer(gt).split()
         common = Counter(pred_toks) & Counter(gt_toks)
-        num_same = sum(common.values())
+        # num_same = sum(common.values())
+        num_same = len(common.keys())
 
         if num_same == 0: return 0
 
@@ -313,7 +321,8 @@ class T5BaseClass(pl.LightningModule):
            pred_toks = self.normalize_answer(_pred).split()
            gt_toks = self.normalize_answer(_gt).split()
            common = Counter(pred_toks) & Counter(gt_toks)
-           num_same = sum(common.values())
+           #num_same = sum(common.values())
+           num_same = len(common.keys())
 
            if num_same == 0: return 0
 
@@ -2773,7 +2782,8 @@ class T5_COT(T5_title_context):
         pred_toks = self.normalize_answer(pred).split()
         gt_toks = self.normalize_answer(gt).split()
         common = Counter(pred_toks) & Counter(gt_toks)
-        num_same = sum(common.values())
+        #num_same = sum(common.values())
+        num_same = len(common.keys())
 
         if num_same == 0: return 0
 
@@ -5700,6 +5710,134 @@ class T5JointTuner(T5BaseClass):
                   target_path = os.path.join(self.hparams.output_dir, _name)
                   i += 1
 
+class T5JointTuner_global(T5JointTuner):
+    def __init__(self, args):
+        super().__init__(args)
+        self.contrastive_negative_selection = args.wandb_run_name.split('_')[-1]
+    def _get_embedding(self, batch):            
+        last_hidden_state = self(
+                            input_ids=batch["source_ids"], 
+                            attention_mask=batch["source_mask"], 
+                            decoder_inputs_embeds=batch["target_emb"],
+                            decoder_attention_mask=batch["target_mask"],
+                            ).last_hidden_state
+        assert last_hidden_state.shape[1] == batch["target_emb"].shape[1]
+        return last_hidden_state # [bs, target_ids num, 768]
+
+    def _calculate_similarity_global(self, batch, batch_idx):
+        preds = batch['hidden_states'] # output embedding of model
+        gts = batch['target_emb'] 
+        assert preds.shape == gts.shape
+        # target_mask를 기반으로 pad token 아닌 애들만 냅두기
+        preds, gts = self._remove_pad_tokens(batch['target_mask'], preds, gts, batch_idx)
+        return torch.inner(preds, gts)
+
+    
+    def _calculate_loss_global(self, batch, batch_idx, ret_em=False):
+
+        world_size = self.trainer.world_size
+############################################################################
+        attention_mask_to_send = batch['target_mask'].detach()
+        targets_to_send = batch['target_emb'].detach()
+        hidden_states = self._get_embedding(batch) ## npm dir mlm line 275 
+        # print(f"target mask {attention_mask_to_send.unsqueeze(-1).shape}")
+        # print(f"target emb {targets_to_send.shape}")
+        # print(f"hidden state {hidden_states.shape}")
+        in_tensor = torch.cat([
+            attention_mask_to_send.unsqueeze(-1),
+            targets_to_send,
+            hidden_states], -1) # [bs, length, 2+hidden]
+        # print(f"in tensor {in_tensor.shape}")
+        # 모든 프로세스의 tensor(in_tensor) 를 모든 프로세스의 tensor_list(out_tensor) 에 복사합니다.
+        out_tensor = [torch.zeros_like(in_tensor) for _ in range(torch.distributed.get_world_size())]
+        out_tensor = my_all_gather2(out_tensor, in_tensor)
+        out_tensor = torch.stack(out_tensor, 0) # [ws, bs, length, hidden+2]
+        # print(f"out tensor {out_tensor.shape}")
+        if self.contrastive_negative_selection=="half":
+            H = self.trainer.world_size // 2
+            out_tensor = out_tensor[:H] if self.global_rank < H else out_tensor[H:]
+            # local_rank = self.global_rank if self.global_rank < H else self.global_rank - H
+            # world_size = world_size // 2
+
+        elif self.contrastive_negative_selection=="quarter":
+            H = self.trainer.world_size // 4
+            if self.global_rank < H:
+                out_tensor = out_tensor[:H]
+                # local_rank = self.global_rank
+            elif self.global_rank < 2*H:
+                out_tensor = out_tensor[H:2*H]
+                # local_rank = self.global_rank - H
+            elif self.global_rank < 3*H:
+                out_tensor = out_tensor[2*H:3*H]
+                # local_rank = self.global_rank - 2*H
+            else:
+                out_tensor = out_tensor[3*H:]
+                # local_rank = self.global_rank - 3*H
+            # world_size = world_size // 4
+        assert out_tensor.shape[-1]==1 + 2*hidden_states.shape[-1] , print(f"out tensor {out_tensor.shape}, hidden states {hidden_states.shape}")
+
+        all_attention_mask = out_tensor[:, :, :, 0].contiguous()
+        all_targets = out_tensor[:, :, :, 1:769].contiguous()
+        all_hidden_states = out_tensor[:, :, :, 769:].contiguous()
+
+        all_attention_mask = all_attention_mask.reshape(-1, all_attention_mask.shape[-1])
+        all_targets = all_targets.reshape(-1, all_targets.shape[-2] ,all_targets.shape[-1])
+        all_hidden_states = all_hidden_states.reshape(-1, all_hidden_states.shape[-2], all_hidden_states.shape[-1])
+
+        # all_targets = all_targets.int()
+        # print(f"all attention mask {all_attention_mask.shape}")
+        # print(f"all_targets {all_targets.shape}")
+        # print(f"all_hidden_states {all_hidden_states.shape}")
+
+        batch['target_mask'] = all_attention_mask
+        batch['target_emb'] = all_targets
+        batch['hidden_states'] = all_hidden_states
+
+        
+        # from now on, we don't really need to distinguish batch size and length
+        # so do reshape
+        # hidden_states = hidden_states.reshape(-1, hidden_states.shape[-1])
+        # all_hidden_states = all_hidden_states.reshape(-1, all_hidden_states.shape[-1])
+        # # targets = targets.reshape(-1)
+        # all_targets = all_targets.reshape(-1)
+
+        # print(f"all attention mask {all_attention_mask.shape}")
+        # print(f"all_targets {all_targets.shape}")
+        # print(f"all_hidden_states {all_hidden_states.shape}")
+
+
+#####################################################################################
+        ## sim, label 구성 
+        sim = self._calculate_similarity_global(batch, batch_idx)
+        labels = torch.arange(sim.size(0)).long().to(self.device) ## total batch 
+        loss = self.loss_fct(sim, labels)
+        if ret_em:
+            sub_em = self._calculate_sub_em(sim, labels, batch_idx)
+            if batch_idx == 0:
+               self.file.write(f"loss: {loss}\tem: {sub_em}\n")
+               self.file.write('='*80)
+            print(f'loss: {loss}\tem: {sub_em}')
+            return loss, sub_em
+        return loss, None
+    
+    def training_step(self, batch, batch_idx):
+        target_emb, target_mask = self._get_target_embs(batch)
+        batch['target_emb'] = target_emb
+        batch['target_mask'] = target_mask 
+        # total_batch = self.all_gather(batch,sync_grads=True)
+
+        loss, sub_em = self._calculate_loss_global(batch, batch_idx)
+        self.log(
+            "train_loss",
+            loss, 
+            on_step=True,
+            on_epoch=True,
+            prog_bar=False,
+            logger=True,
+            sync_dist=True,
+        )
+        return loss
+        
 class T5MeanTuner(T5grTuner):
     def __init__(self, args):
         super(T5MeanTuner, self).__init__(args)
@@ -5915,7 +6053,7 @@ class T5MeanTuner(T5grTuner):
 class T5Entail(T5BaseClass): 
     def __init__(self, args):
         super(T5Entail, self).__init__()
-        print(f'==========T5Entail===========')
+        if print: print(f'==========T5Entail===========')
         self.save_hyperparameters(args)
         if self.hparams.do_train:         
             self.tokenizer = T5Tokenizer.from_pretrained(
@@ -5925,42 +6063,81 @@ class T5Entail(T5BaseClass):
             self.tokenizer = T5Tokenizer.from_pretrained(self.hparams.test_model_path)
         sp_tokens = ["[Ee]", "[Es]", "[Ve]", "[Vs]", "[HYPOT]", "[QUESTION]", "[ANSWER]", "[BECAUSE]", "[INFER]", "[AND]"]
         self.tokenizer.add_tokens(sp_tokens, special_tokens=True)
+ 
+        if np_only(self.hparams):
+            self.np_only = True 
+        else:
+            self.np_only = False
 
         ### Shared => Vanilla + NPD ###
-        if os.path.exists(os.path.join(self.hparams.output_dir, "shared.modelId2sharedId.pickle")):
-            self.shared_tokId2Emb = pickle.load(open(os.path.join(self.hparams.output_dir, "shared.tokId2emb.pickle"), "rb"))
-            self.shared_tokId2tokText = pickle.load(open(os.path.join(self.hparams.output_dir, "shared.tokId2tokText.pickle"), "rb"))
-            self.shared_tokId2groupId = pickle.load(open(os.path.join(self.hparams.output_dir, "shared.tokId2groupId.pickle"), "rb"))
-            self.shared_groupId2tokId = pickle.load(open(os.path.join(self.hparams.output_dir, "shared.groupId2tokId.pickle"), "rb"))
-            self.modelId2sharedId = pickle.load(open(os.path.join(self.hparams.output_dir, "shared.modelId2sharedId.pickle"), "rb"))
+        if self.np_only:
+            self.shared_tokId2Emb = pickle.load(open(os.path.join(self.hparams.dataset, self.hparams.contextualized_file), "rb"))
+            self.shared_tokId2tokText = pickle.load(open(os.path.join(self.hparams.dataset, self.hparams.tokId2tokText), "rb"))
+            self.shared_tokId2groupId = pickle.load(open(os.path.join(self.hparams.dataset, self.hparams.tokId2groupId), "rb"))
+            self.shared_groupId2tokId = pickle.load(open(os.path.join(self.hparams.dataset, self.hparams.groupId2tokIdList), "rb"))
+            self.contextualized_emb_num = len(self.shared_tokId2Emb.keys())
             self.groupId2tokId = pickle.load(open(os.path.join(self.hparams.dataset, self.hparams.groupId2tokIdList), "rb"))
             self.contextualized_tokid2emb = pickle.load(open(os.path.join(self.hparams.dataset, self.hparams.contextualized_file), "rb"))
+            self.modelId2sharedId = None
+            if self.hparams.model_type == "hyper-mem-np-only":
+               assert self.shared_tokId2tokText[3] == "[Es]"
+               assert self.shared_tokId2tokText[4] == "[Ee]"
+               self.es_tokid = 3; self.ee_tokid = 4
+            elif self.hparams.model_type == "hyper-wo-vd":
+               assert self.shared_tokId2tokText[32101] == "[Es]"
+               assert self.shared_tokId2tokText[32100] == "[Ee]"
+               self.es_tokid = 32101; self.ee_tokid = 32100
+               self.vs_tokid = 32103; self.ve_tokid = 32102
+               self.hypot_tokid = 32104; self.question_tokid = 32105; self.answer_tokid = 32106; self.because_tokid = 32107; self.and_tokid = 32109; self.infer_tokid = 32108
+               self.vanilla_tokid_list = [i for i in range(2,32000)] 
+
+            self.vd_mask=None; self.npd_mask=None
         else:
-            self.contextualized_tokid2emb = pickle.load(open(os.path.join(self.hparams.dataset, self.hparams.contextualized_file), "rb"))
-            self.groupId2tokId = pickle.load(open(os.path.join(self.hparams.dataset, self.hparams.groupId2tokIdList), "rb"))
-            self.tokId2groupId = pickle.load(open(os.path.join(self.hparams.dataset, self.hparams.tokId2groupId), "rb"))
-            self.tokId2tokText = pickle.load(open(os.path.join(self.hparams.dataset, self.hparams.tokId2tokText), "rb"))
-            self.model_tokid2emb = self._get_model_tokid2emb() 
-            self.model_tokid2text = {}
-            for i in range(len(self.tokenizer)):
-               text = self.tokenizer.convert_ids_to_tokens(i)
-               self.model_tokid2text[i] = text 
+            if os.path.exists(os.path.join(self.hparams.output_dir, "shared.modelId2sharedId.pickle")):
+               self.shared_tokId2Emb = pickle.load(open(os.path.join(self.hparams.output_dir, "shared.tokId2emb.pickle"), "rb"))
+               self.shared_tokId2tokText = pickle.load(open(os.path.join(self.hparams.output_dir, "shared.tokId2tokText.pickle"), "rb"))
+               self.shared_tokId2groupId = pickle.load(open(os.path.join(self.hparams.output_dir, "shared.tokId2groupId.pickle"), "rb"))
+               self.shared_groupId2tokId = pickle.load(open(os.path.join(self.hparams.output_dir, "shared.groupId2tokId.pickle"), "rb"))
+               self.modelId2sharedId = pickle.load(open(os.path.join(self.hparams.output_dir, "shared.modelId2sharedId.pickle"), "rb"))
+               self.groupId2tokId = pickle.load(open(os.path.join(self.hparams.dataset, self.hparams.groupId2tokIdList), "rb"))
+               self.contextualized_tokid2emb = pickle.load(open(os.path.join(self.hparams.dataset, self.hparams.contextualized_file), "rb"))
+            else:
+               self.contextualized_tokid2emb = pickle.load(open(os.path.join(self.hparams.dataset, self.hparams.contextualized_file), "rb"))
+               self.groupId2tokId = pickle.load(open(os.path.join(self.hparams.dataset, self.hparams.groupId2tokIdList), "rb"))
+               self.tokId2groupId = pickle.load(open(os.path.join(self.hparams.dataset, self.hparams.tokId2groupId), "rb"))
+               self.tokId2tokText = pickle.load(open(os.path.join(self.hparams.dataset, self.hparams.tokId2tokText), "rb"))
+               self.model_tokid2emb = self._get_model_tokid2emb() 
+               self.model_tokid2text = {}
+               for i in range(len(self.tokenizer)):
+                  text = self.tokenizer.convert_ids_to_tokens(i)
+                  self.model_tokid2text[i] = text 
 
-            self.shared_tokId2Emb, self.shared_tokId2tokText, self.shared_tokId2groupId, self.shared_groupId2tokId, self.modelId2sharedId = self.combine_tokid2emb()
+               self.shared_tokId2Emb, self.shared_tokId2tokText, self.shared_tokId2groupId, self.shared_groupId2tokId, self.modelId2sharedId = self.combine_tokid2emb()
 
-        sp_tokens_list = self.tokenizer.batch_encode_plus(sp_tokens)["input_ids"]
-        self.sp_tokens_list = sp_tokens_list
-        self.ee_tokid = self.modelId2sharedId[sp_tokens_list[0][0]]
-        self.es_tokid = self.modelId2sharedId[sp_tokens_list[1][0]]
-        self.ve_tokid = self.modelId2sharedId[sp_tokens_list[2][0]]
-        self.vs_tokid = self.modelId2sharedId[sp_tokens_list[3][0]]
-        self.hypot_tokid = self.modelId2sharedId[sp_tokens_list[4][0]]
-        self.question_tokid = self.modelId2sharedId[sp_tokens_list[5][0]]
-        self.answer_tokid = self.modelId2sharedId[sp_tokens_list[6][0]]
-        self.because_tokid = self.modelId2sharedId[sp_tokens_list[7][0]]
-        self.infer_tokid = self.modelId2sharedId[sp_tokens_list[8][0]]
-        self.and_tokid = self.modelId2sharedId[sp_tokens_list[9][0]]
+            sp_tokens_list = self.tokenizer.batch_encode_plus(sp_tokens)["input_ids"]
+            self.sp_tokens_list = sp_tokens_list
+            self.ee_tokid = self.modelId2sharedId[sp_tokens_list[0][0]]
+            self.es_tokid = self.modelId2sharedId[sp_tokens_list[1][0]]
+            self.ve_tokid = self.modelId2sharedId[sp_tokens_list[2][0]]
+            self.vs_tokid = self.modelId2sharedId[sp_tokens_list[3][0]]
+            self.hypot_tokid = self.modelId2sharedId[sp_tokens_list[4][0]]
+            self.question_tokid = self.modelId2sharedId[sp_tokens_list[5][0]]
+            self.answer_tokid = self.modelId2sharedId[sp_tokens_list[6][0]]
+            self.because_tokid = self.modelId2sharedId[sp_tokens_list[7][0]]
+            self.infer_tokid = self.modelId2sharedId[sp_tokens_list[8][0]]
+            self.and_tokid = self.modelId2sharedId[sp_tokens_list[9][0]]
 
+            if self.print:
+               print(f'\n\nee: {self.ee_tokid}\nes: {self.es_tokid}\nve: {self.ve_tokid}\nvs: {self.vs_tokid}\nhypot: {self.hypot_tokid}\nquestion: {self.question_tokid}\nanswer: {self.answer_tokid}\nbecause: {self.because_tokid}\ninfer: {self.infer_tokid}\nand: {self.and_tokid}\n\n')
+            
+            self.vanilla_tokid_list = [self.modelId2sharedId[i] for i in range(2,32000)] 
+            assert len(self.contextualized_tokid2emb) == self.modelId2sharedId[3], f"len(self.contextualized_tokid2emb): {len(self.contextualized_tokid2emb)}\nself.modelId2sharedId[3]: {self.modelId2sharedId[3]}"
+            self.vd_mask = [1,1,1]+[0]*(len(self.contextualized_tokid2emb)-3)+[1]*(len(self.tokenizer)-3-6)+[0]*6 # remove sp except for ee, es, ve, vs 
+            self.npd_mask = [1,1,1]+[1]*(len(self.contextualized_tokid2emb)-3)+[0]*(len(self.tokenizer)-3-6)+[0]*6 
+            self.contextualized_emb_num = len(self.shared_tokId2Emb.keys())
+            assert len(self.vd_mask) == len(self.npd_mask) == self.contextualized_emb_num
+            assert self.contextualized_emb_num == len(self.tokenizer)+len(self.contextualized_tokid2emb)-3, f"Contextualized Emb Num: {self.contextualized_emb_num}\tlen(self.tokenizer): {len(self.tokenizer)}\tlen(self.contextualized_tokid2emb): {len(self.contextualized_tokid2emb)}\nadd => {len(self.tokenizer)+len(self.contextualized_tokid2emb)-3}"
+       
         if self.hparams.dev_input2output is not None:
             self.dev_input2output = json.load(open(os.path.join(self.hparams.dataset, self.hparams.dev_input2output), "rb"))
 
@@ -5968,12 +6145,10 @@ class T5Entail(T5BaseClass):
             self.tokId2clusterId = pickle.load(open(os.path.join(self.hparams.dataset, self.hparams.tokId2clusterId), 'rb'))
         else:
             self.tokId2clusterId = None 
+        
         self.corpus_tokenList = pickle.load(open(os.path.join(self.hparams.dataset, self.hparams.corpus2tokIdList), "rb"))
-        self.vanilla_tokid_list = [self.modelId2sharedId[i] for i in range(2,32000)] 
-
         self.trie_dict = pickle.load(open(os.path.join(self.hparams.dataset, self.hparams.tree_path), "rb"))
-        self.contextualized_emb_num = len(self.shared_tokId2Emb.keys())
-        assert self.contextualized_emb_num == len(self.tokenizer)+len(self.contextualized_tokid2emb)-3, f"Contextualized Emb Num: {self.contextualized_emb_num}\tlen(self.tokenizer): {len(self.tokenizer)}\tlen(self.contextualized_tokid2emb): {len(self.contextualized_tokid2emb)}\nadd => {len(self.tokenizer)+len(self.contextualized_tokid2emb)-3}"
+        
         print(f"$$$$$$ # of embedding: {self.contextualized_emb_num}")
         self.config = T5Config.from_pretrained(self.hparams.model_name_or_path)
         self.config.update({"fp16": self.hparams.fp16})
@@ -5982,11 +6157,22 @@ class T5Entail(T5BaseClass):
         self.config.update(
             {"contextualized_emb_num": self.contextualized_emb_num}
         )
-        self.config.update({"vanilla_emb_num": len(self.tokenizer)})
-        self.config.update(
-            {"contextualized_file": os.path.join(self.hparams.output_dir, "shared.tokId2emb.pickle")}
-        )  # tokId_emb.pickle
         self.config.update({"freeze_vocab_emb": self.hparams.freeze_vocab_emb})
+        if self.np_only: 
+            self.config.update(
+               {"contextualized_file": os.path.join(self.hparams.dataset, self.hparams.contextualized_file)} 
+            )  # tokId_emb.pickle
+            if self.hparams.model_type == "hyper-mem-np-only":
+               self.config.update({"vanilla_emb_num": 0})
+            elif self.hparams.model_type == "hyper-wo-vd":
+               self.config.update({'vanilla_emb_num': len(self.tokenizer)})
+            else:
+               assert False
+        else:
+            self.config.update(
+               {"contextualized_file": os.path.join(self.hparams.output_dir, "shared.tokId2emb.pickle")}
+            )  # tokId_emb.pickle
+            self.config.update({"vanilla_emb_num": len(self.tokenizer)})
         self.save_epoch = []
 
         # If in training mode, load ckpt for training
@@ -6031,36 +6217,27 @@ class T5Entail(T5BaseClass):
                 )
             if self.print:
                 print(f"@@@ Loading Model from {self.hparams.test_model_path}")
-            
+          
+            ### TODO: check
+            """
             if self.hparams.tie_enc_dec_vocab:
                if self.hparams.w_enc:
                    self.model.couple_total_vocab()
                else:
                    self.model.couple_encoder_decoder_model_vocab()
+            """
 
             self.test_save_name = os.path.join(self.hparams.output_dir, f"{self.hparams.test_name}_{self.hparams.tree_type}_result_beam{self.hparams.val_beam_size}.json")               
-            if os.path.exists(self.test_save_name):
-                 prev_f = json.load(open(self.test_save_name))
-                 print(f"@@@ Loading Previous file!! => #: {len(prev_f['input'])}")
-                 self.test_input_list = prev_f['input']
-                 self.test_gt_list = prev_f['gt']
-                 self.test_pred_list = prev_f['pred']
-                 self.test_pred_tok_list = prev_f['pred_tok']
-                 self.test_em_score_list = prev_f['em']
-                 self.test_total_f1_score_list= prev_f['total_f1_score']
-                 self.test_vs_f1_score_list = prev_f['vs_f1_score']
-                 self.test_es_f1_score_list = prev_f['es_f1_score']
-            else:
-                 print(f'@@@ Initialize Test!!')
-                 self.test_input_list = []
-                 self.test_gt_list = []
-                 self.test_gt_tok_list = []
-                 self.test_pred_list = []
-                 self.test_pred_tok_list = []
-                 self.test_em_score_list = []
-                 self.test_total_f1_score_list = []
-                 self.test_vs_f1_score_list = []
-                 self.test_es_f1_score_list = []
+            print(f'@@@ Initialize Test!!')
+            self.test_input_list = []
+            self.test_gt_list = []
+            self.test_gt_tok_list = []
+            self.test_pred_list = []
+            self.test_pred_tok_list = []
+            self.test_em_score_list = []
+            self.test_total_f1_score_list = []
+            self.test_vs_f1_score_list = []
+            self.test_es_f1_score_list = []
 
         if self.hparams.freeze_encoder:
             if self.print:
@@ -6128,8 +6305,11 @@ class T5Entail(T5BaseClass):
                return tokId2groupId[t_id]
 
     def _get_model_tokid2emb(self):
-        model = T5Model.from_pretrained(self.hparams.model_name_or_path)    
-        vocab_weight = model.state_dict()["shared.weight"]
+        #model = T5Model.from_pretrained(self.hparams.model_name_or_path)    
+        #vocab_weight = model.state_dict()["shared.weight"]
+        model = T5ForConditionalGeneration.from_pretrained(self.hparams.model_name_or_path)
+        vocab_weight = model.encoder.embed_tokens.weight # 32110
+        print(f'# of vocab => {len(self.tokenizer)}')
         vocab_num = len(self.tokenizer) #vocab_weight.size()[0]
         vocab_id2emb = {}
         for id in range(vocab_num):
@@ -6142,11 +6322,13 @@ class T5Entail(T5BaseClass):
             tokenizer=self.tokenizer,
             split=split,
             hparams=self.hparams,
-            ee_tokid=self.sp_tokens_list[0][0],
-            es_tokid=self.sp_tokens_list[1][0],
+            ee_tokid=self.ee_tokid,#self.sp_tokens_list[0][0],
+            es_tokid=self.es_tokid,#self.sp_tokens_list[1][0],
             corpus_tokenList=self.corpus_tokenList,
             modelId2sharedId=self.modelId2sharedId,
-            tokId2clusterId=self.tokId2clusterId
+            tokId2clusterId=self.tokId2clusterId,
+            vd_mask=self.vd_mask,
+            npd_mask=self.npd_mask
         )
         return dataset
 
@@ -6162,15 +6344,53 @@ class T5Entail(T5BaseClass):
     def _get_groupId_from_tokId(self, tokId):
         return self.shared_tokId2groupId[tokId]
 
+    def forward(
+        self,
+        input_ids,
+        attention_mask,
+        loss_mask=None,
+        decoder_attention_mask=None,
+        decoder_input_ids=None,
+        lm_labels=None,
+        return_dict=True
+    ):
+        if lm_labels is None:
+            assert decoder_input_ids is not None
+            return self.model(
+                input_ids,
+                attention_mask=attention_mask,
+                decoder_input_ids=decoder_input_ids,
+                decoder_attention_mask=decoder_attention_mask,
+                return_dict=return_dict
+            )
+        if decoder_input_ids is None:
+            assert lm_labels is not None
+            return self.model(
+                input_ids,
+                attention_mask=attention_mask,
+                decoder_attention_mask=decoder_attention_mask,
+                labels=lm_labels,
+                return_dict=return_dict,
+                loss_mask=loss_mask
+            ) 
     def _loss(self, batch):
         lm_labels = copy.deepcopy(batch["target_ids"])
         lm_labels[lm_labels[:, :] == self.tokenizer.pad_token_id] = -100
-        outputs = self(
-            input_ids=batch["source_ids"],
-            attention_mask=batch["source_mask"],
-            lm_labels=lm_labels,
-            decoder_attention_mask=batch["target_mask"],
-        )
+        if self.hparams.split_loss:
+           outputs = self(
+               input_ids=batch["source_ids"],
+               attention_mask=batch["source_mask"],
+               loss_mask=batch["target_loss_mask"],
+               lm_labels=lm_labels,
+               decoder_attention_mask=batch["target_mask"],
+           )
+        else:
+           outputs = self(
+               input_ids=batch["source_ids"],
+               attention_mask=batch["source_mask"],
+               lm_labels=lm_labels,
+               decoder_attention_mask=batch["target_mask"]
+           )
         loss = outputs[0]
         return loss
 
@@ -6204,46 +6424,77 @@ class T5Entail(T5BaseClass):
         return indices[0][-1]
 
     def _get_dec_status(self, input_ids):
-        if self.vs_tokid in input_ids and self.es_tokid not in input_ids:
-            return "vanilla", None
-        elif self.vs_tokid not in input_ids and self.es_tokid in input_ids:
-            es_idx = self._find_idx(input_ids, self.es_tokid)
-            sub_input_ids = input_ids[es_idx+1:]
-            if len(sub_input_ids) == 0:
+        if self.hparams.model_type == "hyper-mem-np-only":
+           assert self.es_tokid in input_ids
+           es_idx = self._find_idx(input_ids, self.es_tokid)
+           sub_input_ids = input_ids[es_idx+1:]
+           if len(sub_input_ids) == 0:
                return "npd", [0]
-            else:
-               return "npd", [0]+sub_input_ids 
-        elif self.vs_tokid in input_ids and self.es_tokid in input_ids:
-            vs_idx = self._find_idx(input_ids, self.vs_tokid)
-            es_idx = self._find_idx(input_ids, self.es_tokid)
-            if vs_idx < es_idx:
+           else:
+               return "npd", [0]+sub_input_ids
+        else:
+           if self.vs_tokid in input_ids and self.es_tokid not in input_ids:
+               return "vanilla", None
+           elif self.vs_tokid not in input_ids and self.es_tokid in input_ids:
+               es_idx = self._find_idx(input_ids, self.es_tokid)
                sub_input_ids = input_ids[es_idx+1:]
                if len(sub_input_ids) == 0:
                   return "npd", [0]
                else:
-                  return "npd", [0]+sub_input_ids
-            elif es_idx < vs_idx:
-               return "vanilla", None 
-            else:
+                  return "npd", [0]+sub_input_ids 
+           elif self.vs_tokid in input_ids and self.es_tokid in input_ids:
+               vs_idx = self._find_idx(input_ids, self.vs_tokid)
+               es_idx = self._find_idx(input_ids, self.es_tokid)
+               if vs_idx < es_idx:
+                  sub_input_ids = input_ids[es_idx+1:]
+                  if len(sub_input_ids) == 0:
+                     return "npd", [0]
+                  else:
+                     return "npd", [0]+sub_input_ids
+               elif es_idx < vs_idx:
+                  return "vanilla", None 
+               else:
+                  assert False
+           else:
                assert False
-        else:
-            assert False
 
     def get(self, batch_id, input_ids, score, trie_dict=None):
         if len(input_ids) == 1:
-            return [self.because_tokid, self.and_tokid, self.infer_tokid]
-        elif input_ids[-1] in [self.ee_tokid, self.ve_tokid]:
-            return [self.because_tokid, self.and_tokid, self.infer_tokid, 1]
-        elif input_ids[-1] in [self.because_tokid, self.and_tokid, self.infer_tokid]:
-            return [self.es_tokid, self.vs_tokid]
-        else:
-            dec_type, ids = self._get_dec_status(input_ids)
-            if dec_type == "vanilla":
-               return self.vanilla_tokid_list+[self.ve_tokid]
-            elif dec_type == "npd":
-               return self._get_from_trie(ids, self.trie_dict, 0)
+            if self.hparams.model_type in ["hyper", "hyper-wo-vd"]:
+               ret = [self.because_tokid, self.and_tokid, self.infer_tokid]
+            elif self.hparams.model_type in ["hyper-mem", "hyper-mem-np-only"]:
+               ret = [self.es_tokid]
             else:
                assert False
+        elif input_ids[-1] in [self.ee_tokid]:
+            if self.hparams.model_type in ["hyper", "hyper-wo-vd"]:
+               ret = [self.because_tokid, self.and_tokid, self.infer_tokid]
+            elif self.hparams.model_type in ["hyper-mem", "hyper-mem-np-only"]:
+               ret = [1]
+            else:
+               assert False
+        elif not self.hparams.model_type in ['hyper-mem-np-only'] and input_ids[-1] in [self.ve_tokid]:
+            ret = [self.because_tokid, self.and_tokid, self.infer_tokid, 1]
+        elif not self.hparams.model_type in ['hyper-mem-np-only'] and input_ids[-1] in [self.because_tokid, self.and_tokid, self.infer_tokid]:
+            ret = [self.es_tokid, self.vs_tokid]
+        else:
+            if self.hparams.model_type in ["hyper-mem", "hyper-mem-np-only"]:
+               dec_type, ids = self._get_dec_status(input_ids)
+               assert dec_type == "npd"
+               ret = self._get_from_trie(ids, self.trie_dict, 0)
+            elif self.hparams.model_type in ["hyper", "hyper-wo-vd"]:
+               dec_type, ids = self._get_dec_status(input_ids)
+               if dec_type == "vanilla":
+                  ret = self.vanilla_tokid_list+[self.ve_tokid]
+                  assert 1 not in ret
+               elif dec_type == "npd":
+                  ret = self._get_from_trie(ids, self.trie_dict, 0)
+               else:
+                  assert False
+            else:
+               assert False
+
+        return ret
 
     def _remove_eos(self, input_ids):
         return [el if el!=1 else self.ee_tokid for el in input_ids]
@@ -6354,6 +6605,10 @@ class T5Entail(T5BaseClass):
             ].detach().cpu().numpy().tolist()
             for i in range(inum)
         ]
+        if print:
+            print(f"GT: {batch['target_ids'][0]}")
+            print(f"PRED: {generated_ids[0]}")
+            print('='*80)
         em_list, total_f1, vs_f1, es_f1 = self.calculate_scores(
             generated_text, batch['output'], batch["input"], batch_idx
         )
@@ -6503,33 +6758,7 @@ class T5Entail(T5BaseClass):
         text = self.lmap(str.strip, text)
         return text
 
-    def forward(
-        self,
-        input_ids,
-        attention_mask,
-        decoder_attention_mask=None,
-        decoder_input_ids=None,
-        lm_labels=None,
-        return_dict=True
-    ):
-        if lm_labels is None:
-            assert decoder_input_ids is not None
-            return self.model(
-                input_ids,
-                attention_mask=attention_mask,
-                decoder_input_ids=decoder_input_ids,
-                decoder_attention_mask=decoder_attention_mask,
-                return_dict=return_dict
-            )
-        if decoder_input_ids is None:
-            assert lm_labels is not None
-            return self.model(
-                input_ids,
-                attention_mask=attention_mask,
-                decoder_attention_mask=decoder_attention_mask,
-                labels=lm_labels,
-                return_dict=return_dict
-            ) 
+
 
     def validation_step(self, batch, batch_idx):
         if self.hparams.save_model_only:

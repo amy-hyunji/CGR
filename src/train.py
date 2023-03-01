@@ -20,7 +20,7 @@ from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor, Callback, ModelSummary
 from pytorch_lightning.plugins import DDPPlugin, DeepSpeedPlugin
 
-from T5_model import T5BiEncoder, T5FineTuner, T5TotalTuner, T5JointTuner, T5MeanTuner, T5AsyncTuner, T5MultiHop, T5_title_context, T5_COT, T5Entail
+from T5_model import T5BiEncoder, T5FineTuner, T5TotalTuner, T5JointTuner, T5MeanTuner, T5AsyncTuner, T5MultiHop, T5_title_context, T5_COT, T5Entail , T5JointTuner_global
 from BART_model import BartBiEncoder 
 from pathlib import Path
 from typing import Any, Optional, Union
@@ -81,6 +81,8 @@ def main(args, train_params):
             assert False
     elif args.model_type == "joint": ## del path
         model = T5JointTuner(args)
+    elif args.model_type == "joint_global":
+        model = T5JointTuner_global(args)
     elif args.model_type == "gr": ## t5 gr tuner 
         if args.do_title:
             model = T5_title_context(args)
@@ -97,7 +99,7 @@ def main(args, train_params):
         model = T5TotalTuner(args)
     elif args.model_type == "multihop":
         model = T5MultiHop(args)
-    elif args.model_type == "hyper":
+    elif args.model_type in ["hyper", "hyper-mem", "hyper-mem-np-only", "hyper-wo-vd"]:
         model = T5Entail(args)
     else:
         assert False
@@ -258,13 +260,15 @@ if __name__ == "__main__":
         do_cot = hparam.do_cot if "do_cot" in hparam else False,
         do_iteration = hparam.do_iteration if "do_iteration" in hparam else False,
         tie_enc_dec_vocab = hparam.tie_enc_dec_vocab if "tie_enc_dec_vocab" in hparam else False,
-        w_enc = hparam.w_enc if "w_enc" in hparam else False 
+        w_enc = hparam.w_enc if "w_enc" in hparam else False, 
+        split_loss = hparam.split_loss if "split_loss" in hparam else False,
+        wandb_run_name = hparam.wandb_run_name 
     ) 
     
     args = argparse.Namespace(**args_dict)
     if args.do_test: args.n_gpu = 1
     assert not (args.do_train and args.do_test), "Choose between train|test"
-    assert args.model_type in ["gr", "bi", "joint", "async", "split", "total", "multihop", "hyper"]
+    assert args.model_type in ["gr", "bi", "joint", "async", "split", "total", "multihop", "hyper", "hyper-mem","hyper-mem-np-only", "joint_global", "hyper-wo-vd"]
     if args.model_type == "gr": 
         assert args.tree_type in ["groupId", "nodeId", "clusterId"] 
         assert args.reload_dataloader_every_n_epochs is False
@@ -318,12 +322,20 @@ if __name__ == "__main__":
             checkpoint_callback = Callback()
             ckpt_path = None
     else:
-        if args.model_type == "hyper":
+        if args.model_type in ["hyper"]:
             checkpoint_callback = ModelCheckpoint(
                monitor="val_total_f1",
                mode="max",
                dirpath=args.output_dir,
                filename="{epoch:02d}-{val_em:.2f}-{val_total_f1:.2f}-{val_vs_f1:.2f}-{val_es_f1:.2f}",
+               save_top_k=5
+            ) 
+        elif args.model_type in ["hyper-mem", "hyper-mem-np-only", "hyper-wo-vd"]:
+               checkpoint_callback = ModelCheckpoint(
+               monitor="val_es_f1",
+               mode="max",
+               dirpath=args.output_dir,
+               filename="{epoch:02d}-{val_em:.2f}-{val_total_f1:.2f}-{val_es_f1:.2f}",
                save_top_k=5
             )  
         else:

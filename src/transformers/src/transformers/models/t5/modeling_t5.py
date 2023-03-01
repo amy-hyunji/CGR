@@ -1469,7 +1469,7 @@ config.update({"contextualized_file": "/mnt/entailment/toy_GENRE/dataset/kilt_nq
 model = T5WithContext.from_pretrained("t5-base", config=config)
 """
 @add_start_docstrings("""T5 Model with contextualized embedding""", T5_START_DOCSTRING)
-class T5ForConditionalGeneration(T5PreTrainedModel):
+class _T5ForConditionalGeneration(T5PreTrainedModel):
     _keys_to_ignore_on_load_missing = [
         r"encoder\.embed_tokens\.weight",
         r"decoder\.embed_tokens\.weight",
@@ -1768,7 +1768,7 @@ class T5ForConditionalGeneration(T5PreTrainedModel):
 
 
 @add_start_docstrings("""T5 Model with a `language modeling` head on top.""", T5_START_DOCSTRING)
-class _T5ForConditionalGeneration(T5PreTrainedModel):
+class T5ForConditionalGeneration(T5PreTrainedModel):
     _keys_to_ignore_on_load_missing = [
         r"encoder\.embed_tokens\.weight",
         r"decoder\.embed_tokens\.weight",

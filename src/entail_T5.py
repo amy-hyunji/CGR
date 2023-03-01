@@ -28,7 +28,7 @@ from typing import Optional, Tuple, Union
 
 import torch
 from torch import nn
-from torch.nn import CrossEntropyLoss
+from torch.nn import CrossEntropyLoss, LogSoftmax, NLLLoss
 from torch.utils.checkpoint import checkpoint
 
 from transformers.activations import ACT2FN
@@ -949,7 +949,7 @@ class T5Stack(T5PreTrainedModel):
             if inputs_embeds is None:
                 assert self.embed_tokens is not None, "You have to initialize the model with valid token embeddings"
                 if type(self.embed_tokens)==dict:
-                    #assert False, f"is_decoder: {self.is_decoder}"
+                    assert False
                     if not self.is_decoder:
                         assert False, "Only Decoder is allowed to have dict() for embed_tokens"
                     if self.train_c_emb:
@@ -962,8 +962,6 @@ class T5Stack(T5PreTrainedModel):
                         input_embeds.append(_input_embeds)
                     inputs_embeds = torch.FloatTensor(input_embeds).to(input_ids.device)
                 else:
-                    if self.is_decoder and not self.train_c_emb: 
-                        assert False, "Decoder should have dict() for embed_tokens"
                     inputs_embeds = self.embed_tokens(input_ids)
         else:
             if inputs_embeds is None:
@@ -1531,8 +1529,8 @@ class T5ForConditionalGeneration(T5PreTrainedModel):
         else:
             self.dec_shared, self.lm_head = self.set_lm_head(config.contextualized_file)
 
-        if self.train_c_emb:
-            config.tie_word_embeddings = False
+        #if self.train_c_emb:
+        config.tie_word_embeddings = False
 
         encoder_config = copy.deepcopy(config)
         encoder_config.is_decoder = False
@@ -1548,7 +1546,8 @@ class T5ForConditionalGeneration(T5PreTrainedModel):
         if self.train_c_emb:
             self.decoder = T5Stack(self.decoder_config, self.lm_head, cond=True, train_c_emb=True)
         else:
-            self.decoder = T5Stack(self.decoder_config, self.dec_shared, cond=True)
+            #self.decoder = T5Stack(self.decoder_config, self.dec_shared, cond=True)
+            self.decoder = T5Stack(self.decoder_config, self.lm_head, cond=True)
 
 
         # Initialize weights and apply final processing
@@ -1557,6 +1556,7 @@ class T5ForConditionalGeneration(T5PreTrainedModel):
         # Model parallel
         self.model_parallel = False
         self.device_map = None
+
 
     @add_start_docstrings(PARALLELIZE_DOCSTRING)
     def parallelize(self, device_map=None):
@@ -1613,7 +1613,8 @@ class T5ForConditionalGeneration(T5PreTrainedModel):
         if self.train_c_emb:
             contextualized_emb_list = nn.Embedding.from_pretrained(torch.FloatTensor(contextualized_emb_list), freeze=self.do_test)
         else:
-            contextualized_emb_list = torch.FloatTensor(contextualized_emb_list)
+            #contextualized_emb_list = torch.FloatTensor(contextualized_emb_list)
+            contextualized_emb_list = nn.Embedding.from_pretrained(torch.FloatTensor(contextualized_emb_list), freeze=True)
         if self.fp16:
             contextualized_emb_list = contextualized_emb_list.half()
         return tokid_emb_dict, contextualized_emb_list #[contextualized_emb_num, 768]
@@ -1626,9 +1627,8 @@ class T5ForConditionalGeneration(T5PreTrainedModel):
         enc_embeddings = self.get_input_embeddings()
         dec_embeddings = self.get_output_embeddings()
         with torch.no_grad():
-            dec_embeddings.weight[:3,:] = enc_embeddings.weight[:3,:]
-            assert dec_embeddings.weight.shape[0]-self.config.vanilla_emb_num+3 == self.config.vanilla_emb_num-3, f"dec_embeddings shape: {dec_embeddings.weight.shape}\nvanilla_emb_num: {self.config.vanilla_emb_num}"
-            dec_embeddings.weight[-self.config.vanilla_emb_num+3:,:] = enc_embeddings.weight[3:self.config.vanilla_emb_num,:]
+            dec_embeddings.weight[:3,:] = copy.deepcopy(enc_embeddings.weight[:3,:])
+            dec_embeddings.weight[-self.config.vanilla_emb_num+3:,:] = copy.deepcopy(enc_embeddings.weight[3:self.config.vanilla_emb_num,:])
 
     def get_output_embeddings(self):
         #print(self.lm_head)
@@ -1664,6 +1664,7 @@ class T5ForConditionalGeneration(T5PreTrainedModel):
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
+        loss_mask: Optional[torch.LongTensor] = None
     ) -> Union[Tuple[torch.FloatTensor], Seq2SeqLMOutput]:
         r"""
         labels (`torch.LongTensor` of shape `(batch_size,)`, *optional*):
@@ -1758,23 +1759,30 @@ class T5ForConditionalGeneration(T5PreTrainedModel):
         # lm_logits => [bs, output_token 개수,  contextualized_embedding]
         # labels => [bs,  output_token 개수]
         
-        if self.train_c_emb:
-            lm_head_tensor = self.lm_head.weight#.clone().detach().requires_grad_(False)
-            lm_head_tensor = lm_head_tensor.to(sequence_output.device)
-            lm_logits = torch.einsum("bod,cd->boc", sequence_output, lm_head_tensor) 
+        lm_head_tensor = self.lm_head.weight#.clone().detach().requires_grad_(False)
+        lm_head_tensor = lm_head_tensor.to(sequence_output.device)
+        lm_logits = torch.einsum("bod,cd->boc", sequence_output, lm_head_tensor)
+        """
         else:
             if self.lm_head.get_device() != sequence_output.get_device():
                 self.lm_head = self.lm_head.to(sequence_output.device)
             # sequence -> float, lm_head: double
             #print(f'type of sequence_output: {sequence_output.type()}\ntype of self.lm_head: {self.lm_head.type()}')
             lm_logits = torch.einsum("bod,cd->boc", sequence_output, self.lm_head) 
+        """
 
         loss = None
+        # lm_logits => [bs, output_token 개수, contextualized_embedding]
         if labels is not None:
-            loss_fct = CrossEntropyLoss(ignore_index=-100)
-            loss = loss_fct(lm_logits.view(-1, lm_logits.size(-1)), labels.view(-1)) #[bs*]
+            if loss_mask is not None:
+               lm_logits = lm_logits * loss_mask 
+               softmax = LogSoftmax(dim=1)
+               loss_fct = NLLLoss(ignore_index=-100)
+               loss = loss_fct(softmax(lm_logits.view(-1, lm_logits.size(-1))), labels.view(-1))
+            else:
+               loss_fct = CrossEntropyLoss(ignore_index=-100)
+               loss = loss_fct(lm_logits.view(-1, lm_logits.size(-1)), labels.view(-1)) #[bs*]
             # TODO(thom): Add z_loss https://github.com/tensorflow/mesh/blob/fa19d69eafc9a482aff0b59ddd96b025c0cb207d/mesh_tensorflow/layers.py#L666
-
         if not return_dict:
             output = (lm_logits,) + decoder_outputs[1:] + encoder_outputs
             return ((loss,) + output) if loss is not None else output

@@ -80,7 +80,7 @@ def t5_construct_sp(_model, _tokenizer, emb_f):
     return tokText2tokIdList, tokId2tokText
 
 #@slack_sender(webhook_url=get_webhook_url(), channel=get_channel())
-def t5_construct_corpus(_model, _tokenizer, _corpus, _context, emb_f, tokId2tokText, tokText2tokIdList, tokId2corpus, corpusId_tokenList_dict, cur_tokId, corpusId):
+def t5_construct_corpus(_model, _tokenizer, _corpus, _context, emb_f, tokId2tokText, tokText2tokIdList, tokId2corpus, corpusId_tokenList_dict, cur_tokId, corpusId,stopwords=None):
     if args.idx == 0:
         tokText2tokIdList, tokId2tokText = t5_construct_sp(_model, _tokenizer, emb_f)
         return None, tokText2tokIdList, tokId2tokText, None
@@ -103,6 +103,9 @@ def t5_construct_corpus(_model, _tokenizer, _corpus, _context, emb_f, tokId2tokT
                 assert len(tok_decode) == len(last_hidden_state)
                 _tok_list = []
                 for _tok, _last_hidden_state in zip(tok_decode, last_hidden_state):
+                    if stopwords!=None and _tok in stopwords: ## path for stopwords 
+                        # print('skipping stopword')
+                        continue
                     if _tok == "<pad>": break 
                     tokId2tokText[cur_tokId] = _tok 
                     tokText2tokIdList[_tok].append(cur_tokId)
@@ -156,9 +159,15 @@ def get_toknum(idx):
     elif idx == 10:
         toknum = 3346600 # 3346522
     elif idx == 11:
-        toknum = 2753200 # 2753104
+        if args.data_name == "hotpot":
+            toknum = 3400000
+        else:    
+            toknum = 2753200 # 2753104
     elif idx == 12:
-        toknum = 2547600 # 2547571
+        if args.data_name == "hotpot":
+            toknum = 3500000
+        else:
+            toknum = 2547600 # 2547571
     else:
         assert False
     return toknum
@@ -167,6 +176,14 @@ def dump_each_idx(args):
     toknum = get_toknum(args.idx)
     print(f"### Starting idx: {args.idx}")
     print(f"### toknum: {toknum}")
+
+    if args.stopword_dir:
+        with open(args.stopword_dir) as f:
+            stopwords = f.readlines()
+        print("loading stopwords")
+    else:
+        stopwords = None
+        print("not using stopwords")
 
     if args.idx != 0:
         corpus_file = pd.read_csv(os.path.join(args.corpus, f"idx_{args.idx}.csv"))
@@ -205,7 +222,7 @@ def dump_each_idx(args):
         print(f'## Loading T5EncoderModel')
         model = T5EncoderModel.from_pretrained(args.emb_path).cuda()
         tokenizer = T5Tokenizer.from_pretrained(args.emb_path)
-        tokId2corpus, tokText2tokIdList, tokId2tokText, corpusId_tokenList_dict = t5_construct_corpus(model, tokenizer, corpus, context, emb_f, tokId2tokText, tokText2tokIdList, tokId2corpus, corpusId_tokenList_dict, cur_tokId, corpusId)
+        tokId2corpus, tokText2tokIdList, tokId2tokText, corpusId_tokenList_dict = t5_construct_corpus(model, tokenizer, corpus, context, emb_f, tokId2tokText, tokText2tokIdList, tokId2corpus, corpusId_tokenList_dict, cur_tokId, corpusId,stopwords=stopwords)
     elif args.bart:
         assert False
         print(f'## Loading BartModel')
@@ -231,7 +248,8 @@ def dump_each_idx(args):
 
 def combine_all_idx(args):
     total_f = np.memmap(os.path.join(args.save_path, "tokId_emb.w_para.dat"), dtype="float32", mode="w+", shape=(45000000, 1024))
-    path_list = ["n_kilt_total_corpus.w_para.sub/max_length_2000_idx_0","n_kilt_total_corpus.w_para.sub/max_length_2000_idx_1/", "n_kilt_total_corpus.w_para.sub/idx_2", "n_kilt_total_corpus.w_para.sub/idx_3", "n_kilt_total_corpus.w_para.sub/max_length_2000_idx_4/", "n_kilt_total_corpus.w_para.sub/idx_5", "n_kilt_total_corpus.w_para.sub/idx_6", "n_kilt_total_corpus.w_para.sub/idx_7", "n_kilt_total_corpus.w_para.sub/idx_8", "n_kilt_total_corpus.w_para.sub/idx_9", "n_kilt_total_corpus.w_para.sub/idx_10", "n_kilt_total_corpus.w_para.sub/idx_11", "n_kilt_total_corpus.w_para.sub/max_length_2000_idx_12/"]#, "n_kilt_total_corpus.w_para.sub/max_length_2000_idx_13"]
+   #path_list = ["n_kilt_total_corpus.w_para.sub/max_length_2000_idx_0","n_kilt_total_corpus.w_para.sub/max_length_2000_idx_1/", "n_kilt_total_corpus.w_para.sub/idx_2", "n_kilt_total_corpus.w_para.sub/idx_3", "n_kilt_total_corpus.w_para.sub/max_length_2000_idx_4/", "n_kilt_total_corpus.w_para.sub/idx_5", "n_kilt_total_corpus.w_para.sub/idx_6", "n_kilt_total_corpus.w_para.sub/idx_7", "n_kilt_total_corpus.w_para.sub/idx_8", "n_kilt_total_corpus.w_para.sub/idx_9", "n_kilt_total_corpus.w_para.sub/idx_10", "n_kilt_total_corpus.w_para.sub/idx_11", "n_kilt_total_corpus.w_para.sub/max_length_2000_idx_12/"]#, "n_kilt_total_corpus.w_para.sub/max_length_2000_idx_13"]
+    path_list = [f"{args.save_path}/max_length_{args.max_length}_idx_{i}" for i in range(13)]
     t_tokId = 0; t_corpusId = 0
     # tokId2corpus, tokText2tokIdList, tokId2tokText, corpusId_tokenList_dict
     total_corpus_list = []
@@ -431,8 +449,6 @@ def do_light_cluster(model, tokGroupId2tokIdList, clusterId, c_tokGroupId, clust
     del clusterId2clusterEmb
     return tokGroupId2clusterIdList, clusterId2tokGroupId, clusterId2tokText, tokText2clusterIdList, tokId2clusterId, cluster_path 
 
-
-
 #@slack_sender(webhook_url=get_webhook_url(), channel=get_channel())
 def do_cluster(model, tokGroupId2tokIdList, clusterId, c_tokGroupId, clusterId2clusterEmb, tokId2tokGroupId):
     no_cluster = 0
@@ -545,7 +561,6 @@ def load_data(split):
       raise NotImplementedError('Check the split!')
    return df
 
-
 def bi_construct_dataset(split, corpus2tokenList, emb_f):
     df = load_data(split)
     save_dict = {'input': [], 'output': [], 'output_tokid': []}
@@ -553,7 +568,11 @@ def bi_construct_dataset(split, corpus2tokenList, emb_f):
     for i in tqdm(range(data_len)):
         _input = df['input'][i]
         _output = df['output'][i]
-        output_tok = corpus2tokenList[_output]
+        try:
+           output_tok = corpus2tokenList[_output]
+        except:
+           print(f"Error in {_output}")
+           continue
         output_emb = [emb_f[tok][:] for tok in output_tok]
 
         #if args.t5: assert output_tok[-1] == 1
@@ -568,10 +587,17 @@ def gr_construct_dataset(split, corpus2tokenList, emb_f):
     df = load_data(split)
     save_dict = {'input': [], 'output': [], 'output_tokid': []}
     data_len = len(df)
+    error = 0; no_error = 0
     for i in tqdm(range(data_len)):
         _input = df['input'][i]
         _output = df['output'][i]
-        output_tok = corpus2tokenList[_output]
+        try:
+           output_tok = corpus2tokenList[_output]
+           no_error += 1
+        except:
+           error += 1
+           continue
+        
         output_emb = [emb_f[tok][:] for tok in output_tok]
         
         if args.t5: assert output_tok[-1] == 1
@@ -580,6 +606,7 @@ def gr_construct_dataset(split, corpus2tokenList, emb_f):
         save_dict['input'].append(_input)
         save_dict['output'].append(_output)
         save_dict['output_tokid'].append(output_tok)
+    print(f"Error: {error}\nNo Error: {no_error}")
 
     return save_dict, f"gr_{args.data_name}_contextualized_{split}.pickle"
 
@@ -724,6 +751,7 @@ if __name__ == "__main__":
     parser.add_argument("--t5", action='store_true')
     parser.add_argument("--bart", action='store_true')
     parser.add_argument("--action", required=True, type=str)
+    parser.add_argument("--stopword_dir",default=None,type=str)
     args = parser.parse_args()
 
 
@@ -771,6 +799,31 @@ if __name__ == "__main__":
         dump(train_fname, train_dict)
         dump(dev_fname, dev_dict)
         dump(test_fname, test_dict)   
+        ### create dev_input2output on fly 
+        unique_dev = {"input": [], "output": [], "output_tokid": []}
+        input2output = defaultdict(list) 
+        prev_input = []
+
+        dev_file = dev_fname
+        dev_file = pickle.load(open(os.path.join(args.save_path,dev_file), "rb"))
+
+        for _input, _output, _output_tokid in zip(dev_file["input"], dev_file["output"], dev_file["output_tokid"]):
+            input2output[_input].append(_output)
+            if _input in prev_input:
+                continue
+            else:
+                unique_dev["input"].append(_input) 
+                unique_dev["output"].append(_output)
+                unique_dev["output_tokid"].append(_output_tokid)
+
+        with open(f"{args.save_path}/unique.gr_hotpot_dev_cluster_5.pickle", "wb") as f:
+            pickle.dump(unique_dev, f)
+
+        with open(f"{args.save_path}/dev_input2output.json", "w") as f:
+            json.dump(input2output, f)
+
+        print(f'Dump Dataset for {args.data_name}!')
+        #####
 
     elif args.action == "cluster":   
         print(f'!!!DO Cluster!!!')

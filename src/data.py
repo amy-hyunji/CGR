@@ -169,6 +169,128 @@ class JOINTDataset(Dataset):
             "output": title_,
         }
 
+class TESTDataset(Dataset):
+    def __init__(self, tokenizer, split, hparams, tokid2emb, corpus_tokenList_dict=None):
+        self.hparams = hparams
+        self.split = split
+        if split == "train":
+            data_path = self.hparams.train_file
+        elif split == "validation":
+            data_path = self.hparams.dev_file
+        elif split == "test":
+            data_path = self.hparams.test_file
+        else:
+            raise NotImplementedError(f"Inappropriate split type: {split}")
+
+        assert data_path.endswith(".pickle"), "Only pickle file is possible!"
+        data_dict = pickle.load(open(os.path.join(self.hparams.dataset, data_path), "rb")) # key - input, output, output_tokid, output_tokemb
+        
+        if split == "test": 
+            self.dataset = {'input': [], 'output': [], 'output_tokid': []}
+            for _input, _output, _output_tok_id in zip(data_dict['input'], data_dict['output'], data_dict['output_tokid']):
+                if self.hparams.model_type=="multihop":
+                    _input = _input.split('<P1>')[0]
+                    while _input.endswith(" "): _input = _input[:-1]
+               
+                if self.hparams.do_title:
+                    _input = _input.split("<title>")[0]
+                    while _input.endswith(" "): _input = _input[:-1]
+
+                if _input in self.dataset['input']: 
+                    continue 
+                else:
+                    self.dataset['input'].append(_input)
+                    self.dataset['output'].append(_output)
+                    self.dataset['output_tokid'].append(_output_tok_id)
+            self.dataset = pd.DataFrame(self.dataset)
+        else:
+            self.dataset = pd.DataFrame(data_dict)
+
+        print(f"# of dataset: {len(self.dataset)}")
+        self.len = len(self.dataset)
+        if torch.cuda.current_device() == 0:
+            print(
+                f"@@@ Loading from {os.path.join(self.hparams.dataset, data_path)}: {self.len}"
+            )
+
+        self.tokenizer = tokenizer
+        self.tokid2emb = tokid2emb
+
+    def __len__(self):
+        return self.len
+
+    def convert_to_features(self, batch, idx):
+        input_ = batch["input"]
+        output_ = batch["output"]
+
+        if self.hparams.change_enc:
+            assert False 
+        else:
+            source = self.tokenizer.batch_encode_plus(
+               [input_],
+               max_length=self.hparams.max_input_length,
+               padding="max_length",
+               truncation=True,
+               return_tensors="pt",
+            )
+
+        if self.hparams.change_dec:
+            target = batch["output_tokid"]  # load from file
+            if len(target) > self.hparams.max_output_length:
+               target = target[: self.hparams.max_output_length]
+               att = [1] * self.hparams.max_output_length
+            else:
+               _leftover = self.hparams.max_output_length - len(target)
+               att = [1] * len(target) + [0] * _leftover
+               target = target + [0] * _leftover
+            assert (
+               len(target) == self.hparams.max_output_length
+               and len(att) == self.hparams.max_output_length
+            ), print(f"length of target: {len(target)}\nlength of attention:  {len(att)}")
+           
+            target_idx = torch.tensor([target])
+            att = torch.tensor([att])
+            target = {"input_ids": target_idx, "attention_mask": att}
+        else:
+            target = self.tokenizer.batch_encode_plus(
+               [output_],
+               max_length=self.hparams.max_output_length,
+               padding="max_length",
+               truncation=True,
+               return_tensors="pt"
+            )
+
+        if idx == 0 and torch.cuda.current_device() == 0:
+            print(f"=" * 80)
+            print(f"input: {input_}")
+            print(f"output: {output_}")
+            print(f"source: {source}")
+            print(f"target: {target}")
+            print(f"=" * 80)
+
+        return source, target, input_, output_
+
+
+    def __getitem__(self, idx):
+        source, target, input_, output_ = self.convert_to_features(
+            self.dataset.iloc[idx], idx
+        )
+        source_ids = source["input_ids"].squeeze()
+        src_mask = source["attention_mask"].squeeze()
+        target_ids = target["input_ids"].squeeze()
+        target_mask = target["attention_mask"].squeeze()
+
+        return {
+            "source_ids": source_ids,
+            "target_ids": target_ids,
+            "source_mask": src_mask,
+            "target_mask": target_mask,
+            "input": input_,
+            "output": output_,
+        }
+
+
+
 class GENREDataset(Dataset):
     def __init__(self, tokenizer, split, hparams, tokid2emb, corpus_tokenList_dict=None):
         self.hparams = hparams
@@ -566,24 +688,25 @@ class ENTAILDataset(Dataset):
             target = target[: max_len]
             att = [1] * max_len 
             target_loss_mask = target_loss_mask[:max_len]
+
         else:
             _leftover = max_len - len(target)
             att = [1] * len(target) + [0] * _leftover
             target = target + [0] * _leftover
+            target_loss_mask = target_loss_mask + [self.zeros]*_leftover 
             
-            target_idx = torch.tensor([target])
-            att = torch.tensor([att])
+        target_idx = torch.tensor([target])
+        att_idx = torch.tensor([att])
 
-            if self.modelId2sharedId is not None:
-               target_loss_mask = target_loss_mask + [self.zeros]*_leftover 
-               assert (
-                  len(target) == len(att) == len(target_loss_mask) == max_len
-              ), print(f"length of target: {len(target)}\nlength of attention:  {len(att)}\nlength of target_loss_mask: {len(target_loss_mask.shape)}")
-               target_loss_mask = torch.tensor([target_loss_mask])
-               target = {"input_ids": target_idx, "attention_mask": att, "loss_mask": target_loss_mask}
-            else:
-               target = {"input_ids": target_idx, "attention_mask": att}
-            return target
+        if self.modelId2sharedId is not None:
+           assert (
+              len(target) == len(att) == len(target_loss_mask) == max_len
+          ), print(f"length of target: {len(target)}\nlength of attention:  {len(att)}\nlength of target_loss_mask: {len(target_loss_mask)}")
+           target_loss_mask = torch.tensor([target_loss_mask])
+           target = {"input_ids": target_idx, "attention_mask": att_idx, "loss_mask": target_loss_mask}
+        else:
+           target = {"input_ids": target_idx, "attention_mask": att_idx}
+        return target
 
 
     def convert_to_features_w_enc(self, batch, idx):

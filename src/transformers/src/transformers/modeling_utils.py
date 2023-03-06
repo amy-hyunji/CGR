@@ -16,6 +16,7 @@
 
 import json
 import os
+import sys 
 import re
 import shutil
 import tempfile
@@ -1051,6 +1052,7 @@ class PreTrainedModel(nn.Module, ModuleUtilsMixin, GenerationMixin, PushToHubMix
 
     def _tie_or_clone_weights(self, output_embeddings, input_embeddings):
         """Tie or clone module weights depending of whether we are using TorchScript or not"""
+        #print(f"$$$ Tie or Clone Weights => shape of output_embeddings: {output_embeddings.weight.shape} // shape of input_embeddings: {input_embeddings.weight.shape}") # [3327, 1024]
         if self.config.torchscript:
             output_embeddings.weight = nn.Parameter(input_embeddings.weight.clone())
         else:
@@ -1435,12 +1437,11 @@ class PreTrainedModel(nn.Module, ModuleUtilsMixin, GenerationMixin, PushToHubMix
 
         # Shard the model if it is too big.
         shards, index = shard_checkpoint(state_dict, max_shard_size=max_shard_size)
-
         # Clean the folder from a previous save
-        # for filename in os.listdir(save_directory):
-        #     full_filename = os.path.join(save_directory, filename)
-        #     # if filename.startswith(WEIGHTS_NAME[:-4]) and os.path.isfile(full_filename):
-        #         # os.remove(full_filename)
+        for filename in os.listdir(save_directory):
+            full_filename = os.path.join(save_directory, filename)
+            if filename.startswith(WEIGHTS_NAME[:-4]) and os.path.isfile(full_filename):
+                os.remove(full_filename)
 
         # Save the model
         for shard_file, shard in shards.items():

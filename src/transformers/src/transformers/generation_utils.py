@@ -1663,7 +1663,6 @@ class GenerationMixin:
 
             # prepare model inputs
             model_inputs = self.prepare_inputs_for_generation(input_ids, **model_kwargs)
-
             # forward pass to get next token
             outputs = self(
                 **model_inputs,

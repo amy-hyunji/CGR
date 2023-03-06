@@ -16,15 +16,17 @@ import torch.nn as nn
 import pytorch_lightning as pl
 import torch.distributed as dist
 
-from data import ENTAILDataset, GENREDataset, JOINTDataset, MEANDataset
+from data import ENTAILDataset, GENREDataset, JOINTDataset, MEANDataset, TESTDataset
 #from blob import get_blob_info, upload_directory_to_blob
 
 from grounded_T5 import T5ForConditionalGeneration as grounded_T5
 from joint_T5 import T5Model as joint_T5
 from split_T5 import T5ForConditionalGeneration as split_T5 
 from contextualized_T5 import T5ForConditionalGeneration as contextualized_T5
+from contextualized_T5_fix import T5ForConditionalGeneration as test_T5
 from entail_T5 import T5ForConditionalGeneration as entail_T5
 from entail_T5_w_enc import T5ForConditionalGeneration as entail_T5_w_enc
+from entail_T5_split import T5ForConditionalGeneration as entail_T5_split
 
 from transformers import T5Config, T5Tokenizer, T5Model, T5EncoderModel, T5ForConditionalGeneration 
 from transformers import BertTokenizer, Adafactor, AutoTokenizer
@@ -413,6 +415,7 @@ class T5grTuner(T5BaseClass):
         self.config.update({"fp16": self.hparams.fp16})
         self.config.update({"train_c_emb": self.hparams.train_c_emb}) 
         self.config.update({"do_test": self.hparams.do_test}) 
+        self.config.update({"tie_enc_dec_vocab": self.hparams.tie_enc_dec_vocab}) 
         self.config.update(
             {"contextualized_emb_num": self.contextualized_emb_num}
         )
@@ -420,6 +423,10 @@ class T5grTuner(T5BaseClass):
             {"contextualized_file": os.path.join(self.hparams.dataset, self.hparams.contextualized_file)}
         )  # tokId_emb.pickle
         self.config.update({"freeze_vocab_emb": self.hparams.freeze_vocab_emb})
+        self.config.update({"change_lm_head": self.hparams.change_lm_head})
+        self.config.update({"change_dec": self.hparams.change_dec})
+        self.config.update({"change_enc": self.hparams.change_enc})
+        self.config.update({"original_T5": self.hparams.original_T5})
         self.groupId2tokId= pickle.load(open(os.path.join(self.hparams.dataset, self.hparams.groupId2tokIdList), "rb"))
         self.tokId2groupId = pickle.load(open(os.path.join(self.hparams.dataset, self.hparams.tokId2groupId), 'rb'))
         self.tokId2tokText = pickle.load(open(os.path.join(self.hparams.dataset, self.hparams.tokId2tokText), 'rb'))
@@ -1737,6 +1744,7 @@ class T5FineTuner(T5grTuner):
         super(T5FineTuner, self).__init__(args)
         # If in training mode, load ckpt for training
         if self.hparams.do_train:
+            if self.print: print(self.config)
             if self.hparams.train_c_emb:
                 self.model = contextualized_T5.from_pretrained(
                     self.hparams.model_name_or_path, config=self.config, ignore_mismatched_sizes=True
@@ -1745,6 +1753,7 @@ class T5FineTuner(T5grTuner):
                 self.model = contextualized_T5.from_pretrained(
                     self.hparams.model_name_or_path, config=self.config
                 )
+
             if self.hparams.gr_decoder_only_encoder_ckpt is not None:
                 print(f'===== Loading encoder ckpt from.. {self.hparams.gr_decoder_only_encoder_ckpt}')
                 m = torch.load(os.path.join(self.hparams.gr_decoder_only_encoder_ckpt, "pytorch_model.bin"))
@@ -2192,6 +2201,397 @@ class T5FineTuner(T5grTuner):
             }
         else:
             return em_list, recall_list
+
+
+class T5TestTuner(T5grTuner):
+    def __init__(self, args):
+        super(T5TestTuner, self).__init__(args)
+        if self.print: print(f" &&&&&& Loading.. T5TestTuner!!")
+        # If in training mode, load ckpt for training
+        if self.hparams.do_train:
+            if self.print: print(self.config)
+            if self.hparams.train_c_emb:
+                self.model = test_T5.from_pretrained(
+                    self.hparams.model_name_or_path, config=self.config, ignore_mismatched_sizes=True
+                )
+            else:
+                self.model = test_T5.from_pretrained(
+                    self.hparams.model_name_or_path, config=self.config
+                )
+
+            if self.hparams.gr_decoder_only_encoder_ckpt is not None:
+                print(f'===== Loading encoder ckpt from.. {self.hparams.gr_decoder_only_encoder_ckpt}')
+                m = torch.load(os.path.join(self.hparams.gr_decoder_only_encoder_ckpt, "pytorch_model.bin"))
+                model_dict = self.model.state_dict()
+                for k in m.keys():
+                    if 'decoder.embed_tokens' in k:
+                        continue
+                    if k in model_dict:
+                        pname = k
+                        pval = m[k]
+                        model_dict[pname] = pval.clone().to(model_dict[pname].device)
+                self.model.load_state_dict(model_dict, strict=False)
+            else:
+                print(f'===== Encoder ckpt is same as Decoder ckpt')
+            if self.hparams.gr_decoder_only:
+                for n, p in self.model.get_encoder().named_parameters():
+                    p.requires_grad = False
+            self.tokenizer = T5Tokenizer.from_pretrained(
+                self.hparams.tokenizer_name_or_path
+            )
+            if self.hparams.periflow:
+                self.connect_str, self.container_name = get_blob_info()
+                self.blob_service_client = BlobServiceClient.from_connection_string(self.connect_str)
+            if self.print:
+                print(f"@@@ Loading Model from {self.hparams.model_name_or_path}")
+                print(f'@@@ Loading decoder embedding: {self.hparams.embedding_model}')
+            self.em_score_list = []
+            self.recall_score_list = []
+            self.dev_input2output = json.load(open(os.path.join(self.hparams.dataset, self.hparams.dev_input2output), "r"))
+
+        # If in testing mode, load ckpt for inference
+        if self.hparams.do_test:
+            self.model = test_T5.from_pretrained(
+                self.hparams.test_model_path, config=self.config, ignore_mismatched_sizes=True
+            )
+            self.tokenizer = T5Tokenizer.from_pretrained(self.hparams.test_model_path)
+            if self.print:
+                print(f"@@@ Loading Model from {self.hparams.test_model_path}")
+            
+            self.test_save_name = os.path.join(self.hparams.output_dir, f"{self.hparams.test_name}_{self.hparams.tree_type}_mbs_{self.hparams.max_beam_search}_result_beam{self.hparams.val_beam_size}.json")               
+            if os.path.exists(self.test_save_name):
+                 prev_f = json.load(open(self.test_save_name))
+                 print(f"@@@ Loading Previous file!! => #: {len(prev_f['input'])}")
+                 self.test_input_list = prev_f['input']
+                 self.test_gt_list = prev_f['gt']
+                 self.test_gt_tok_list = prev_f['gt_tok']
+                 self.test_pred_list = prev_f['pred']
+                 self.test_pred_tok_list = prev_f['pred_tok']
+                 self.test_em_score_list = prev_f['em']
+                 self.test_recall_score_list = prev_f['recall']
+            else:
+                 print(f'@@@ Initialize Test!!')
+                 self.test_input_list = []
+                 self.test_gt_list = []
+                 self.test_gt_tok_list = []
+                 self.test_pred_list = []
+                 self.test_pred_tok_list = []
+                 self.test_em_score_list = []
+                 self.test_recall_score_list = []
+
+        if self.hparams.freeze_encoder:
+            if self.print:
+                print(f"@@@ Freeze Encoder!")
+                encoder = self.model.get_encoder()
+                for n, p in encoder.named_parameters():
+                    p.requires_grad=False
+        #### Tokenizer for generation step!
+        self.dec_tok = AutoTokenizer.from_pretrained(
+            self.hparams.embedding_model
+        )
+        
+        if self.hparams.tree_type == "nodeId":
+            nodeId_sup = pickle.load(open(os.path.join(self.hparams.dataset, self.hparams.nodeId_sup), 'rb'))
+            self.nodeId2groupdId = nodeId_sup['group_set']
+            self.nodeId2tokId = nodeId_sup['token_set']
+            self.groupId2nodeId = nodeId_sup['inv_group_set']
+            self.tokId2nodeId = nodeId_sup['inv_token_set']
+        self.cnt_over = 0
+        self.len_test_dataset = len(self.test_dataloader())
+
+    def _get_dataset(self, split):
+        dataset = TESTDataset(
+            tokenizer=self.tokenizer,
+            split=split,
+            hparams=self.hparams,
+            tokid2emb=self.contextualized_tokid2emb 
+        )
+        return dataset
+    def _get_max_tokId_from_tokIdList(self, tokIdList, score):
+        tokIdList = sorted(tokIdList)
+        idx = score[tokIdList].detach().cpu().numpy().argmax()
+        max_tokId = tokIdList[idx]
+        return max_tokId
+    def _get_tokIdList_from_nodeIdList(self, nodeIdList, score):                        
+        assert self.hparams.tree_type == "nodeId"            
+        tokIdList = []
+        if self.hparams.max_beam_search:
+            for nodeId in nodeIdList:
+                max_tokId = self._get_max_tokId_from_tokIdList(list(self.nodeId2tokId[nodeId]), score)
+                tokIdList.append(max_tokId)
+            return list(set(tokIdList))
+        else:                
+            for nodeId in nodeIdList:
+                tokIdList.extend(list(self.nodeId2tokId[nodeId]))                
+            return list(set(tokIdList))
+
+    def _get_tokIdList_from_groupIdList(self, groupIdList, score):
+        assert self.hparams.tree_type == "groupId"
+        tokIdList = []
+        
+        # for groupId Tree with max beam search
+        if self.hparams.max_beam_search:
+            for groupId in groupIdList:
+                max_tokId = self._get_max_tokId_from_tokIdList(self.groupId2tokId[groupId], score)
+                tokIdList.append(max_tokId)
+            return list(set(tokIdList))
+        # for normal groupId Tree
+        else:
+            for groupId in groupIdList:
+                tokIdList.extend(self.groupId2tokId[groupId])
+            return list(set(tokIdList))
+   
+    def _get_nodeId_from_tokId(self, tokId):
+        nodeId = list(self.tokId2node/_teId[tokId])
+        assert len(nodeId) == 1
+        return nodeId[0] 
+    
+    def _get_groupId_from_tokId(self, tokId):
+        return self.tokId2groupId[tokId]
+
+
+    def _loss(self, batch):
+        lm_labels = copy.deepcopy(batch["target_ids"])
+        lm_labels[lm_labels[:, :] == self.tokenizer.pad_token_id] = -100
+        outputs = self(
+            input_ids=batch["source_ids"],
+            attention_mask=batch["source_mask"],
+            lm_labels=lm_labels,
+            decoder_attention_mask=batch["target_mask"],
+        )
+        loss = outputs[0]
+        return loss
+
+    def training_step(self, batch, batch_idx):
+        loss = self._loss(batch)
+        self.log(
+            "train loss",
+            loss,
+            on_step=True,
+            on_epoch=True,
+            prog_bar=False,
+            logger=True,
+            sync_dist=True,
+        )
+        return loss
+    def get_list(self, batch_id, input_ids, score, trie_list):
+        # starts with pad token & groupId for pad token is -1
+        assert input_ids[0] == 0
+        assert trie_list is not None and isinstance(trie_list, list)
+        return self._get_from_trie(input_ids, trie_list[batch_id], score)
+    
+    def get(self, batch_id, input_ids, score, trie_dict=None):
+        # starts with pad token & groupId for pad token is -1
+        assert input_ids[0] == 0
+        if trie_dict is None:
+            trie_dict = self.trie
+        return self._get_from_trie(input_ids, trie_dict, score)
+
+    """
+    input_ids가 들어오면, 해당 tokId가 속한 groupId 찾고, 그걸 가지고 trie_dict 넘어간 다음
+    해당 subtree의 key들(groupId) 를 모은 tokId return
+    """
+    def _get_from_trie(self, input_ids, trie_dict, score):
+        #print(f"input_ids: {input_ids}")
+        if self.hparams.tree_type == "groupId":
+            if len(input_ids) == 0:
+                possible_GroupList = list(trie_dict.keys())
+                tokIdList = self._get_tokIdList_from_groupIdList(possible_GroupList, score)
+                return tokIdList
+            else:
+                curGroupId = self._get_groupId_from_tokId(input_ids[0])
+                if curGroupId in list(trie_dict.keys()):
+                    return self._get_from_trie(input_ids[1:], trie_dict[curGroupId], score) 
+                else:
+                    return []
+        elif self.hparams.tree_type == "nodeId":
+            if input_ids[-1] == 1:
+                return []
+            else:
+                NodeId = self._get_nodeId_from_tokId(input_ids[-1])
+                next_nId_List = list(trie_dict[NodeId])
+                tokIdList = self._get_tokIdList_from_nodeIdList(next_nId_List, score)
+                return tokIdList
+        elif self.hparams.tree_type == "clusterId":
+            if len(input_ids) == 0:
+                return list(trie_dict.keys()) 
+            else:
+                if input_ids[0] in list(trie_dict.keys()):
+                    return self._get_from_trie(input_ids[1:], trie_dict[clusterId], score)
+                else:
+                    return []
+        else:
+            raise NotImplementedError('tree type should be either groupId_tree or nodeId_tree!')
+
+    def calculate_scores(self, preds, gt_text, query, batch_idx):
+        em_list = []
+        recall_list = []
+        for idx, (_query, _pred, _gt) in enumerate(zip(query, preds, gt_text)):
+            _em = self._calculate_em(_pred[0], _gt)
+            _recall = self._calculate_recall(_pred, _gt)
+            """
+            if self.print and idx == 0:
+                print(f"$" * 50)
+                print(f"query: {_query}\npreds: {_pred}\ngt: {_gt}")
+                print(f"em: {_em} // recall: {_recall}")
+                print(f"$" * 50)
+                print(" ")
+            """
+            em_list.append(_em)
+            recall_list.append(_recall)
+        return em_list, recall_list
+
+    def _val_step(self, batch, batch_idx, return_elem=False):
+        # calculates recall and em -> returns the list of each score
+        _generated_ids = self.model.generate(
+            batch["source_ids"],
+            attention_mask=batch["source_mask"],
+            use_cache=True,
+            #decoder_attention_mask=batch["target_mask"],
+            max_length=self.hparams.max_output_length,
+            num_beams=self.hparams.val_beam_size,
+            num_return_sequences=self.hparams.val_beam_size,
+            prefix_allowed_tokens_fn=lambda batch_id, sent, scores: self.get(
+                batch_id, sent.tolist(), scores
+            ),
+            early_stopping=True,
+        )
+        _generated_text = self.ids_to_text(_generated_ids)
+        inum = len(_generated_ids) // self.hparams.val_beam_size
+        assert inum == len(batch["output"])
+        generated_text = [
+            _generated_text[
+                i * self.hparams.val_beam_size : (i + 1) * self.hparams.val_beam_size
+            ]
+            for i in range(inum)
+        ]
+        generated_ids = [
+            _generated_ids[
+               i * self.hparams.val_beam_size : (i+1) * self.hparams.val_beam_size
+            ].detach().cpu().numpy().tolist()
+            for i in range(inum)
+        ]
+        output_list = [self.dev_input2output[_input] for _input in batch["input"]]
+        em_list, recall_list = self.calculate_scores(
+            generated_text, output_list, batch["input"], batch_idx
+        )
+        if return_elem:
+            assert (
+                len(list(batch["input"]))
+                == len(list(generated_text))
+                == len(list(em_list))
+            )
+            return {
+                "input": list(batch["input"]),
+                "gt": list(batch["output"]),
+                "gt_tok": list(batch["target_ids"].detach().cpu().numpy().tolist()),
+                "pred": list(generated_text),
+                "pred_tok": list(generated_ids),
+                "em": list(em_list),
+                "recall": list(recall_list),
+            }
+        else:
+            return em_list, recall_list
+
+    def _find_unique_path(self, seq, trie):
+        _ids = seq.tolist()
+        _ids = [int(elem) for elem in _ids]
+        
+        generated_ids = []
+        if _ids[-1] == 0:
+            for el in range(len(_ids)):
+                if el != 0 and _ids[el] == 0:
+                    continue
+                else:
+                    generated_ids.append(_ids[el])
+        else:
+            generated_ids = _ids 
+        assert generated_ids[-1] != 0
+        generated_ids = generated_ids[:-1]
+        
+        cur_dict = trie 
+        for i in range(len(generated_ids) - 1):
+            cur_dict = cur_dict[int(generated_ids[i])]
+        if len(cur_dict[generated_ids[-1]]) == 0:
+            add_list.append(generated_ids)
+        else:
+            cur_dict = cur_dict[int(generated_ids[-1])]
+            # check if it is an unique path
+            keys = list(cur_dict.keys())
+            if len(keys) > 1:
+                print(f"More than 1: {keys}")
+                keys = [keys[0]]
+            while len(cur_dict[keys[0]]) != 0:
+                generated_ids.append(keys[0])
+                cur_dict = cur_dict[keys[0]]
+                keys = list(cur_dict.keys())
+                if len(keys) > 1:
+                    print(f"More than 1: {keys}")
+                    keys = [keys[0]]
+            generated_ids.append(1)
+        return generated_ids
+
+    def _test_step(self, batch, batch_idx, return_elem=False):
+       
+        # for case where it resume test 
+        test_input = batch['input'] 
+        test_output = batch['output']
+        test_source_ids = batch['source_ids']
+        test_source_masks = batch['source_mask']
+        test_target_ids = batch['target_ids']
+        test_target_masks = batch['target_mask']
+
+        _generated_ids = self.model.generate(
+            test_source_ids, 
+            attention_mask=test_source_masks,
+            use_cache=True,
+            decoder_attention_mask=test_target_masks,
+            max_length=self.hparams.max_output_length,
+            num_beams=self.hparams.val_beam_size,
+            num_return_sequences=self.hparams.ret_num,
+            prefix_allowed_tokens_fn=lambda batch_id, sent, scores: self.get(
+                batch_id, sent.tolist(), scores
+            ),
+            early_stopping=True,
+        )
+        _generated_text = self.ids_to_text(_generated_ids)
+        inum = len(_generated_ids) // self.hparams.ret_num
+        assert inum == len(test_output) 
+        generated_text = [
+            _generated_text[
+                i * self.hparams.ret_num : (i + 1) * self.hparams.ret_num
+            ]
+            for i in range(inum)
+        ]
+        generated_ids = [
+            _generated_ids[
+                i * self.hparams.ret_num : (i+1) * self.hparams.ret_num
+            ].detach().cpu().numpy().tolist()
+            for i in range(inum)
+        ]
+
+        em_list, recall_list = self.calculate_scores(
+            generated_text, batch["output"], batch["input"], batch_idx
+        )
+
+        if return_elem:
+            assert (
+                len(list(test_input))
+                == len(list(generated_text))
+                == len(list(em_list))
+            )
+            return {
+                "input": list(test_input),
+                "gt": list(test_output),
+                "gt_tok": [el.detach().cpu().numpy().tolist() for el in test_target_ids],
+                "pred": list(generated_text),
+                "pred_tok": list(generated_ids),
+                "em": list(em_list),
+                "recall": list(recall_list),
+            }
+        else:
+            return em_list, recall_list
+
 
 class T5_title_context(T5grTuner):
     def __init__(self, args):
@@ -5213,7 +5613,7 @@ class T5JointTuner(T5BaseClass):
                     decoder_attention_mask=decoder_attention_mask
                 ) 
         
-    def _get_embedding(self, batch):            
+    def _get_embedding(self, batch): ## embedding of query        
         last_hidden_state = self(
                             input_ids=batch["source_ids"], 
                             attention_mask=batch["source_mask"], 
@@ -5225,7 +5625,7 @@ class T5JointTuner(T5BaseClass):
 
     def _calculate_similarity(self, batch, batch_idx):
         preds = self._get_embedding(batch) # output embedding of model
-        gts = batch['target_emb'] 
+        gts = batch['target_emb'] ## embedding of context 
         assert preds.shape == gts.shape
         # target_mask를 기반으로 pad token 아닌 애들만 냅두기
         preds, gts = self._remove_pad_tokens(batch['target_mask'], preds, gts, batch_idx)
@@ -5303,7 +5703,7 @@ class T5JointTuner(T5BaseClass):
         for _tok, _emb in zip(_title_tok_list, title_hidden_state):
             tokText_emb[_tok] = _emb.unsqueeze(0).to(self.device) 
         tokText_emb["</s>"] = end_emb.to(self.device)
-        return tokText_emb
+        return tokText_emb ## title embeddings sliced 
 
     def _get_target_embs(self, batch):
         target_emb_list = []; target_mask_list = []
@@ -5481,11 +5881,17 @@ class T5JointTuner(T5BaseClass):
         _decoder_inputs_embeds = [[self.pad_emb]]
         _decoder_inputs_ids = [[self.pad_tokenid]]
         _beam_score = [0]
+        # print(len(_decoder_inputs_embeds))
+        # print(len(_decoder_inputs_embeds[0]))
+        # print(len(_decoder_inputs_embeds[0][0]))
+
         
         _dec_input = torch.cat([torch.cat(embs, dim=0).unsqueeze(0).to(self.device) for embs in _decoder_inputs_embeds], dim=0) 
         _enc_input = torch.cat([batch['source_ids']], dim=0)
         _enc_attention = torch.cat([batch['source_mask']], dim=0) 
-        
+        # print(_enc_input.size())
+
+        # print(_dec_input.size())
         model_output = self(
             input_ids=_enc_input,
             attention_mask=_enc_attention,
@@ -5518,7 +5924,7 @@ class T5JointTuner(T5BaseClass):
             _dec_input = torch.cat([torch.cat(embs, dim=0).unsqueeze(0).to(self.device) for embs in _decoder_inputs_embeds], dim=0) 
             _enc_input = torch.cat([batch['source_ids']]*leftover, dim=0)
             _enc_attention = torch.cat([batch['source_mask']]*leftover, dim=0)
-            assert _dec_input.shape[0] == _enc_input.shape[0] == _enc_attention.shape[0]
+            assert _dec_input.shape[0] == _enc_input.shape[0] == _enc_attention.shape[0], f"dec_input shape{_dec_input.shape}, _enc_input shape {_enc_input.shape}, _enc_attention shape {_enc_attention.shape}"
 
             model_output = self(
                 input_ids=_enc_input,
@@ -5688,12 +6094,14 @@ class T5JointTuner(T5BaseClass):
         save_path = os.path.join(
             self.hparams.output_dir, f"best_tfmr_{self.current_epoch}"
         )
-        if not os.path.exists(save_path): os.makedirs(save_path, exist_ok=True)
-        if not os.path.exists(os.path.join(save_path, "model")): os.makedirs(os.path.join(save_path, "model"), exist_ok=True)
-        if not os.path.exists(os.path.join(save_path, "emb_enc")): os.makedirs(os.path.join(save_path, "emb_enc"), exist_ok=True)
-        self.model.save_pretrained(os.path.join(save_path, "model"))
-        self.emb_enc.save_pretrained(os.path.join(save_path, "emb_enc"))
-        self.tokenizer.save_pretrained(save_path)
+        # if not os.path.exists(save_path): os.makedirs(save_path, exist_ok=True)
+        # if not os.path.exists(os.path.join(save_path, "model")): os.makedirs(os.path.join(save_path, "model"), exist_ok=True)
+        # if not os.path.exists(os.path.join(save_path, "emb_enc")): os.makedirs(os.path.join(save_path, "emb_enc"), exist_ok=True)
+        if self.global_rank==0:
+            self.tokenizer.save_pretrained(save_path)
+            self.model.save_pretrained(os.path.join(save_path, "model"))
+            self.emb_enc.save_pretrained(os.path.join(save_path, "emb_enc"))
+        
 
         if self.hparams.periflow:
             assert False
@@ -5777,8 +6185,8 @@ class T5JointTuner_global(T5JointTuner):
         assert out_tensor.shape[-1]==1 + 2*hidden_states.shape[-1] , print(f"out tensor {out_tensor.shape}, hidden states {hidden_states.shape}")
 
         all_attention_mask = out_tensor[:, :, :, 0].contiguous()
-        all_targets = out_tensor[:, :, :, 1:769].contiguous()
-        all_hidden_states = out_tensor[:, :, :, 769:].contiguous()
+        all_targets = out_tensor[:, :, :, 1:1025].contiguous()
+        all_hidden_states = out_tensor[:, :, :, 1025:].contiguous()
 
         all_attention_mask = all_attention_mask.reshape(-1, all_attention_mask.shape[-1])
         all_targets = all_targets.reshape(-1, all_targets.shape[-2] ,all_targets.shape[-1])
@@ -6483,6 +6891,992 @@ class T5Entail(T5BaseClass):
                assert dec_type == "npd"
                ret = self._get_from_trie(ids, self.trie_dict, 0)
             elif self.hparams.model_type in ["hyper", "hyper-wo-vd"]:
+               dec_type, ids = self._get_dec_status(input_ids)
+               if dec_type == "vanilla":
+                  ret = self.vanilla_tokid_list+[self.ve_tokid]
+                  assert 1 not in ret
+               elif dec_type == "npd":
+                  ret = self._get_from_trie(ids, self.trie_dict, 0)
+               else:
+                  assert False
+            else:
+               assert False
+
+        return ret
+
+    def _remove_eos(self, input_ids):
+        return [el if el!=1 else self.ee_tokid for el in input_ids]
+
+    """
+    input_ids가 들어오면, 해당 tokId가 속한 groupId 찾고, 그걸 가지고 trie_dict 넘어간 다음
+    해당 subtree의 key들(groupId) 를 모은 tokId return
+    """
+    def _get_from_trie(self, input_ids, trie_dict, score):
+        #print(f"input_ids: {input_ids}")
+        if self.hparams.tree_type == "groupId":
+            if len(input_ids) == 0:
+                possible_GroupList = list(trie_dict.keys())
+                tokIdList = self._get_tokIdList_from_groupIdList(possible_GroupList, score)
+                return list(self._remove_eos(tokIdList)) 
+            else:
+                curGroupId = self._get_groupId_from_tokId(input_ids[0])
+                if curGroupId in list(trie_dict.keys()):
+                    return self._get_from_trie(input_ids[1:], trie_dict[curGroupId], score) 
+                else:
+                    return []
+        elif self.hparams.tree_type == "nodeId":
+            if input_ids[-1] == 1:
+                return []
+            else:
+                NodeId = self._get_nodeId_from_tokId(input_ids[-1])
+                next_nId_List = list(trie_dict[NodeId])
+                tokIdList = self._get_tokIdList_from_nodeIdList(next_nId_List, score)
+                return tokIdList
+        elif self.hparams.tree_type == "clusterId":
+            if len(input_ids) == 0:
+                return list(trie_dict.keys()) 
+            else:
+                if input_ids[0] in list(trie_dict.keys()):
+                    return self._get_from_trie(input_ids[1:], trie_dict[clusterId], score)
+                else:
+                    return []
+        else:
+            raise NotImplementedError('tree type should be either groupId_tree or nodeId_tree!')
+
+    def calculate_scores(self, preds, gt_text, query, batch_idx):
+        em_list = []; total_f1 = []
+        vs_f1 = []; es_f1 = []
+        for idx, (_query, _pred, _gt) in enumerate(zip(query, preds, gt_text)):
+            assert len(_pred) == 1, f"pred: {_pred}" 
+            assert isinstance(_gt, str)
+            _pred = _pred[0]
+            _em = self._calculate_em(_pred, _gt)
+            _es_f1, _vs_f1 = self._calculate_entail_f1(_pred, _gt)
+            _total_f1 = self._calculate_tok_f1(_pred, _gt)
+            if self.print and idx == 0:
+                print(f"$" * 50)
+                print(f"query: {_query}\npreds: {_pred}\ngt: {_gt}")
+                print(f"em: {_em} // es_f1: {_es_f1} // vs_f1: {_vs_f1} // total_f1: {_total_f1}")
+                print(f"$" * 50)
+                print(" ")
+            em_list.append(_em); total_f1.append(_total_f1)
+            vs_f1.append(_vs_f1); es_f1.append(_es_f1)
+        return em_list, total_f1, vs_f1, es_f1 
+
+
+    def iter_calculate_scores(self, preds, gt_text):
+        em_list = []; total_f1 = []
+        vs_f1 = []; es_f1 = []
+        for idx, (_pred, _gt) in enumerate(zip(preds, gt_text)):
+            assert type(_pred) == list; assert type(_gt) == list 
+            _pred = _pred[:len(_gt)]
+            _em = set(_pred)==set(_gt) 
+            _es_f1, _vs_f1 = self._calculate_iter_entail_f1(_pred, _gt)
+            _total_f1 = self._calculate_iter_tok_f1(_pred, _gt)
+            if self.print and idx == 0:
+                print(f"$" * 50)
+                print(f"preds: {_pred}\ngt: {_gt}")
+                print(f"em: {_em} // es_f1: {_es_f1} // vs_f1: {_vs_f1} // total_f1: {_total_f1}")
+                print(f"$" * 50)
+                print(" ")
+            em_list.append(_em); total_f1.append(_total_f1)
+            vs_f1.append(_vs_f1); es_f1.append(_es_f1)
+        return em_list, total_f1, vs_f1, es_f1 
+
+    def _val_step(self, batch, batch_idx, return_elem=False):
+        # calculates recall and em -> returns the list of each score
+        _generated_ids = self.model.generate(
+            batch["source_ids"],
+            attention_mask=batch["source_mask"],
+            use_cache=True,
+            #decoder_attention_mask=batch["target_mask"],
+            max_length=self.hparams.max_output_length,
+            num_beams=self.hparams.val_beam_size,
+            num_return_sequences=self.hparams.ret_num,
+            prefix_allowed_tokens_fn=lambda batch_id, sent, scores: self.get(
+                batch_id, sent.tolist(), scores
+            ),
+            early_stopping=True,
+        )
+        _generated_text = self.ids_to_text(_generated_ids, skip_special_tokens=True)
+        inum = len(_generated_ids) // self.hparams.ret_num 
+        assert inum == len(batch["output"])
+        generated_text = [
+            _generated_text[
+                i * self.hparams.ret_num : (i + 1) * self.hparams.ret_num
+            ]
+            for i in range(inum)
+        ]
+        generated_ids = [
+            _generated_ids[
+               i * self.hparams.ret_num : (i+1) * self.hparams.ret_num
+            ].detach().cpu().numpy().tolist()
+            for i in range(inum)
+        ]
+        if print:
+            print(f"GT: {batch['target_ids'][0]}")
+            print(f"PRED: {generated_ids[0]}")
+            print('='*80)
+        em_list, total_f1, vs_f1, es_f1 = self.calculate_scores(
+            generated_text, batch['output'], batch["input"], batch_idx
+        )
+        if return_elem:
+            assert (
+                len(list(batch["input"]))
+                == len(list(generated_text))
+                == len(list(em_list))
+            )
+            return {
+                "input": list(batch["input"]),
+                "gt": list(batch["output"]),
+                "gt_tok": list(batch["target_ids"].detach().cpu().numpy().tolist()),
+                "pred": list(generated_text),
+                "pred_tok": list(generated_ids),
+                "em": list(em_list),
+                "total_f1": list(total_f1),
+                "vs_f1": list(vs_f1),
+                "es_f1": list(es_f1),
+            }
+        else:
+            return em_list, total_f1, vs_f1, es_f1 
+
+    def _find_unique_path(self, seq, trie):
+        _ids = seq.tolist()
+        _ids = [int(elem) for elem in _ids]
+        
+        generated_ids = []
+        if _ids[-1] == 0:
+            for el in range(len(_ids)):
+                if el != 0 and _ids[el] == 0:
+                    continue
+                else:
+                    generated_ids.append(_ids[el])
+        else:
+            generated_ids = _ids 
+        assert generated_ids[-1] != 0
+        generated_ids = generated_ids[:-1]
+        
+        cur_dict = trie 
+        for i in range(len(generated_ids) - 1):
+            cur_dict = cur_dict[int(generated_ids[i])]
+        if len(cur_dict[generated_ids[-1]]) == 0:
+            add_list.append(generated_ids)
+        else:
+            cur_dict = cur_dict[int(generated_ids[-1])]
+            # check if it is an unique path
+            keys = list(cur_dict.keys())
+            if len(keys) > 1:
+                print(f"More than 1: {keys}")
+                keys = [keys[0]]
+            while len(cur_dict[keys[0]]) != 0:
+                generated_ids.append(keys[0])
+                cur_dict = cur_dict[keys[0]]
+                keys = list(cur_dict.keys())
+                if len(keys) > 1:
+                    print(f"More than 1: {keys}")
+                    keys = [keys[0]]
+            generated_ids.append(1)
+        return generated_ids
+
+    def _test_step(self, batch, batch_idx, return_elem=False):
+       
+        # for case where it resume test 
+        test_input = []
+        for _input in batch['input']:
+            if _input in self.test_input_list: continue
+            else: test_input.append(_input) 
+        test_num = len(test_input)
+        start_num = len(batch['input'])-test_num
+        if test_num == 0: return None
+        test_output = batch['output'][start_num:]
+        test_source_ids = batch['source_ids'][start_num:]
+        test_source_masks = batch['source_mask'][start_num:]
+        test_target_ids = batch['target_ids'][start_num:]
+        test_target_masks = batch['target_mask'][start_num:]
+        assert len(test_output) == test_num, f'test_output: {len(test_output)}\ttest_num: {test_num}'
+        _trie_list = [copy.deepcopy(self.trie_dict) for _ in range(test_num)]
+        
+        _generated_ids = self.model.generate(
+             test_source_ids, 
+             attention_mask=test_source_masks,
+             use_cache=True,
+             max_length=self.hparams.max_output_length,
+             num_beams=self.hparams.val_beam_size,
+             num_return_sequences=self.hparams.ret_num,
+             prefix_allowed_tokens_fn=lambda batch_id, sent, scores: self.get(
+                 batch_id, sent.tolist(), scores
+             ),
+             early_stopping=True,
+        )
+        _generated_text = self.ids_to_text(_generated_ids, skip_special_tokens=True)
+        inum = len(_generated_ids) // self.hparams.ret_num
+        assert inum == len(batch['output']) 
+        generated_text = [
+            _generated_text[
+                i * self.hparams.ret_num: (i + 1) * self.hparams.ret_num
+            ]
+            for i in range(inum)
+        ]
+        generated_ids = [
+            _generated_ids[
+                i * self.hparams.ret_num : (i+1) * self.hparams.ret_num
+            ].detach().cpu().numpy().tolist()
+            for i in range(inum)
+        ]
+        em_list, total_f1, vs_f1, es_f1 = self.calculate_scores(
+            generated_text, batch["output"], batch["input"], batch_idx
+        )
+        if return_elem:
+            assert (
+                len(list(test_input))
+                == len(list(generated_text))
+                == len(list(em_list))
+            )
+            return {
+                "input": list(test_input),
+                "gt": list(test_output),
+                "pred": list(generated_text),
+                "pred_tok": list(generated_ids),
+                "em": list(em_list),
+                "total_f1": list(total_f1),
+                "vs_f1": list(vs_f1),
+                "es_f1": list(es_f1),
+            }
+        else:
+            return em_list, total_f1, vs_f1, es_f1 
+
+
+    def ids_to_text(self, _generated_ids, skip_special_tokens=True):
+        generated_ids = []
+        for _ids in _generated_ids:
+            _ids = copy.deepcopy(_ids)
+            _ids = _ids.detach().cpu().numpy()
+            _text = [self.shared_tokId2tokText[_id] for _id in _ids]
+            generated_ids.append(self.tokenizer.convert_tokens_to_ids(_text))
+        gen_text = self.tokenizer.batch_decode(
+            generated_ids, skip_special_tokens=skip_special_tokens, clean_up_tokenization_spaces=True
+        )
+        text = []
+        if not skip_special_tokens:
+            for elem in gen_text: 
+               rep_elem = elem.replace('<pad>', '')
+               text.append(rep_elem)
+        else:
+            text = gen_text
+        text = self.lmap(str.strip, text)
+        return text
+
+
+
+    def validation_step(self, batch, batch_idx):
+        if self.hparams.save_model_only:
+           self.convert_checkpoint("new_ckpt")
+           print(f"Done saving checkpoint.. {self.current_epoch}")
+           sys.exit()
+
+        em_score, total_f1_score, vs_f1_score, es_f1_score = self._val_step(batch, batch_idx)
+        self.em_score_list.extend(list(em_score))
+        self.total_f1_score_list.extend(list(total_f1_score)) 
+        self.vs_f1_score_list.extend(list(vs_f1_score)) 
+        self.es_f1_score_list.extend(list(es_f1_score)) 
+
+    def validation_epoch_end(self, outputs):
+        avg_em = np.mean(np.array(self.em_score_list))
+        avg_total_f1 = np.mean(np.array(self.total_f1_score_list))
+        avg_vs_f1 = np.mean(np.array(self.vs_f1_score_list))
+        avg_es_f1 = np.mean(np.array(self.es_f1_score_list))
+        self.em_score_list = []
+        self.total_f1_score_list = []
+        self.vs_f1_score_list = []
+        self.es_f1_score_list = []
+
+        self.log(
+            "val_em",
+            avg_em,
+            on_step=False,
+            on_epoch=True,
+            prog_bar=True,
+            logger=True,
+            sync_dist=True,
+        )
+        self.log(
+            "val_total_f1",
+            avg_total_f1,
+            on_step=False,
+            on_epoch=True,
+            prog_bar=True,
+            logger=True,
+            sync_dist=True,
+        )
+        self.log(
+            "val_vs_f1",
+            avg_vs_f1,
+            on_step=False,
+            on_epoch=True,
+            prog_bar=True,
+            logger=True,
+            sync_dist=True,
+        )
+        self.log(
+            "val_es_f1",
+            avg_es_f1,
+            on_step=False,
+            on_epoch=True,
+            prog_bar=True,
+            logger=True,
+            sync_dist=True,
+        )
+        return
+
+
+    def _iter_test_step(self, batch, batch_idx, return_elem=False):
+        test_input = []
+        for _input in batch["input"]:
+            if _input in self.test_input_list: continue
+            else: test_input.append(_input)
+        test_num = len(test_input)
+        start_num = len(batch['input'])-test_num 
+
+        if test_num == 0: return None 
+        test_output = [self.dev_input2output[el] for el in test_input] 
+        test_source_ids = batch["source_ids"][start_num:]
+        test_source_masks = batch["source_mask"][start_num:]
+        test_target_ids = batch["target_ids"][start_num:]
+        test_target_masks = batch["target_mask"][start_num:]
+        assert len(test_output) == test_num, f"test_output: {len(test_output)}\ntest_num: {test_num}"
+
+        _test_input = test_input
+
+        test_pred = [[] for _ in range(len(batch["input"]))]
+        iternum = np.array([len(el) for el in test_output]).max()
+
+        for iter_idx in range(iternum):
+           _generated_ids = self.model.generate(
+                     test_source_ids,
+                     attention_mask=test_source_masks,
+                     use_cache=True,
+                     max_length=self.hparams.max_output_length,
+                     num_beams=self.hparams.val_beam_size,
+                     num_return_sequences=self.hparams.ret_num,
+                     prefix_allowed_tokens_fn=lambda batch_id, sent, scores: self.get(batch_id, sent.tolist(), scores),
+                     early_stopping=True
+                 )
+           _generated_text = self.ids_to_text(_generated_ids)
+           inum = len(_generated_ids) // self.hparams.ret_num 
+           assert inum == len(batch['output'])
+         
+           generated_text = [
+               _generated_text[
+                  i*self.hparams.ret_num:(i+1)*self.hparams.ret_num
+               ]
+               for i in range(inum)
+           ]
+
+
+           generated_ids = [
+               _generated_ids[
+                  i*self.hparams.ret_num:(i+1)*self.hparams.ret_num
+               ]
+               for i in range(inum)
+           ]
+
+           for idx, elem in enumerate(generated_text):
+               test_pred[idx].append(elem[0])
+           test_source_ids, test_source_masks, _test_input = self.tokenize4next_hop(_test_input, generated_text)
+
+        em_list, total_f1, vs_f1, es_f1 = self.iter_calculate_scores(
+            test_pred, test_output
+         )
+
+        if return_elem:
+            assert len(list(test_input))==len(list(generated_text))==len(list(em_list))
+            return {
+               "input": list(test_input),
+               "gt": list(test_output),
+               "pred": list(generated_text),
+               "pred_tok": list(generated_ids),
+               "em": list(em_list),
+               "total_f1": list(total_f1),
+               "vs_f1": list(vs_f1),
+               "es_f1": list(es_f1),
+            }
+        else:
+            return em_list, total_f1, vs_f1, es_f1
+
+    def tokenize4next_hop(self, input_list, pred_list):
+        sen_list = [f"{_input} {_pred[0]}" for _input, _pred in zip(input_list, pred_list)]
+        tok_ret = self.tokenizer.batch_encode_plus(
+                  sen_list,
+                  max_length=self.hparams.max_input_length,
+                  padding="max_length",
+                  truncation=True,
+                  return_tensors="pt"
+              )
+        return tok_ret["input_ids"].to(self.device), tok_ret["attention_mask"].to(self.device), sen_list
+
+    def test_step(self, batch, batch_idx):
+        if self.hparams.do_iteration:
+           ret_dict = self._iter_test_step(batch, batch_idx, return_elem=True)
+        else:
+           ret_dict = self._test_step(batch, batch_idx, return_elem=True)
+        if ret_dict is None: return None
+
+        self.test_input_list.extend(ret_dict["input"])
+        self.test_gt_list.extend(ret_dict["gt"])
+        self.test_pred_list.extend(ret_dict["pred"])
+        self.test_pred_tok_list.extend(ret_dict["pred_tok"])
+        self.test_em_score_list.extend(ret_dict["em"])
+        self.test_total_f1_score_list.extend(ret_dict["total_f1"])
+        self.test_vs_f1_score_list.extend(ret_dict["vs_f1"])
+        self.test_es_f1_score_list.extend(ret_dict["es_f1"])
+        self._save_test() 
+
+    def _save_test(self, epoch_end=False):
+        os.makedirs(self.hparams.output_dir, exist_ok=True)
+        _input = self.gather_list(self.test_input_list) 
+        _gt = self.gather_list(self.test_gt_list)
+        _pred = self.gather_list(self.test_pred_list)
+        _pred_tok = self.gather_list(self.test_pred_tok_list)
+        _em = self.gather_list(self.test_em_score_list)
+        _total_f1 = self.gather_list(self.test_total_f1_score_list)
+        _test_vs = self.gather_list(self.test_vs_f1_score_list)
+        _test_es = self.gather_list(self.test_es_f1_score_list)
+        assert len(_input) == len(_gt) == len(_pred) == len(_em) == len(_total_f1) == len(_test_vs) == len(_test_es) == len(_pred_tok)
+        if self.print:
+            with open(self.test_save_name, "w") as f:
+                 json.dump(
+                     {
+                         "input": _input,
+                         "gt": _gt,
+                         "pred": _pred,
+                         "pred_tok": _pred_tok,
+                         "em": _em,
+                         "total_f1": _total_f1,
+                         "vs_f1": _test_vs,
+                         "es_f1": _test_es,
+                     },
+                     f,
+                 )
+            if epoch_end:
+                 print(
+                     f"Saving in {self.test_save_name}!\nnumber of elements: {len(_input)}"
+                 )
+                 print(f"EM: {np.array(_em).mean()}")
+                 print(f"Total F1: {np.array(_total_f1).mean()}")
+                 print(f"Vs F1: {np.array(_test_vs).mean()}")
+                 print(f"Es F1: {np.array(_test_es).mean()}")
+    
+    def test_epoch_end(self, outputs):
+        self._save_test(epoch_end=True)
+
+    def configure_optimizers(self):
+        model = self.model
+        no_decay = ["bias", "LayerNorm.weight"]
+        optimizer_grouped_parameters = [
+            {
+                "params": [
+                    p
+                    for n, p in model.named_parameters()
+                    if not any(nd in n for nd in no_decay)
+                ],
+                "weight_decay": self.hparams.weight_decay,
+            },
+            {
+                "params": [
+                    p
+                    for n, p in model.named_parameters()
+                    if any(nd in n for nd in no_decay)
+                ],
+                "weight_decay": 0.0,
+            },
+        ]
+        optimizer = Adafactor(
+            optimizer_grouped_parameters,
+            lr=self.hparams.learning_rate,
+            warmup_init=False,
+            scale_parameter=False,
+            relative_step=False,
+        )
+        self.opt = optimizer
+        if self.hparams.lr_scheduler == "constant":
+            return [optimizer]
+        elif self.hparams.lr_scheduler == "exponential":
+            len_data = len(self.train_dataloader())
+            denominator = self.hparams.n_gpu
+            steps_per_epoch = (
+                (len_data // denominator) + 1
+            ) // self.hparams.gradient_accumulation_steps
+            scheduler = torch.optim.lr_scheduler.OneCycleLR(
+                optimizer,
+                max_lr=self.hparams.learning_rate,
+                steps_per_epoch=steps_per_epoch,
+                pct_start=0.1,
+                epochs=self.hparams.num_train_epochs,
+                anneal_strategy="linear",
+                cycle_momentum=False,
+            )
+            return [optimizer], [
+                {"scheduler": scheduler, "interval": "step", "name": "learning_rate"}
+            ]
+        else:
+            raise NotImplementedError("Choose lr_schduler from (constant|exponential)")
+
+    def on_save_checkpoint(self, checkpoint):
+        save_path = os.path.join(
+            self.hparams.output_dir, f"best_tfmr_{self.current_epoch}"
+        )
+        try:
+            self.model.save_pretrained(save_path)
+            self.tokenizer.save_pretrained(save_path)
+            self.save_epoch.append(self.current_epoch)
+        except:
+            print(f"Fail to save ... {self.current_epoch}")
+        if len(self.save_epoch) > 5:
+            rm_file = f"best_tfmr_{self.save_epoch[0]}"
+            os.system(f"rm -rf {os.path.join(self.hparams.output_dir, rm_file)}")
+        target_path = save_path
+        if self.hparams.periflow:
+            success = False
+            i = 1
+            while not success:
+               try:
+                  upload_directory_to_blob(save_path, target=target_path, container_name=self.container_name)
+                  success = True
+               except:
+                  print(f'Failed on Uploading {target_path}')
+                  _name = "best_tfmr_"*i+f"{self.current_epoch}"
+                  target_path = os.path.join(self.hparams.output_dir, _name)
+                  i += 1
+
+    def convert_checkpoint(self, sub_path=None):
+        if sub_path is None:
+           save_path = os.path.join(
+               self.hparams.output_dir, f"best_tfmr_{self.current_epoch}"
+           )
+        else:
+           save_path = os.path.join(
+               self.hparams.output_dir, sub_path     
+           )
+        self.model.save_pretrained(save_path)
+        self.tokenizer.save_pretrained(save_path)
+        self.save_epoch.append(self.current_epoch)
+        if len(self.save_epoch) > 5:
+            rm_file = f"best_tfmr_{self.save_epoch[0]}"
+            os.system(f"rm -rf {os.path.join(self.hparams.output_dir, rm_file)}")
+        target_path = save_path
+        if self.hparams.periflow:
+            success = False
+            i = 1
+            while not success:
+               try:
+                  upload_directory_to_blob(save_path, target=target_path, container_name=self.container_name)
+                  success = True
+               except:
+                  print(f'Failed on Uploading {target_path}')
+                  _name = "best_tfmr_"*i+f"{self.current_epoch}"
+                  target_path = os.path.join(self.hparams.output_dir, _name)
+                  i += 1
+
+
+class T5Split(T5BaseClass): 
+    def __init__(self, args):
+        super(T5Split, self).__init__()
+        if print: print(f'==========T5Split===========')
+        self.save_hyperparameters(args)
+        if self.hparams.do_train:         
+            self.tokenizer = T5Tokenizer.from_pretrained(
+                self.hparams.tokenizer_name_or_path
+            )
+        if self.hparams.do_test:
+            self.tokenizer = T5Tokenizer.from_pretrained(self.hparams.test_model_path)
+        sp_tokens = ["[Ee]", "[Es]", "[Ve]", "[Vs]", "[HYPOT]", "[QUESTION]", "[ANSWER]", "[BECAUSE]", "[INFER]", "[AND]"]
+        self.tokenizer.add_tokens(sp_tokens, special_tokens=True)
+ 
+        if np_only(self.hparams):
+            raise NotImplementedError('np_only case is not Implemented Yet!') 
+            self.np_only = True 
+        else:
+            self.np_only = False
+
+        ### Shared => Vanilla + NPD ###
+        if self.np_only:
+            self.shared_tokId2Emb = pickle.load(open(os.path.join(self.hparams.dataset, self.hparams.contextualized_file), "rb"))
+            self.shared_tokId2tokText = pickle.load(open(os.path.join(self.hparams.dataset, self.hparams.tokId2tokText), "rb"))
+            self.shared_tokId2groupId = pickle.load(open(os.path.join(self.hparams.dataset, self.hparams.tokId2groupId), "rb"))
+            self.shared_groupId2tokId = pickle.load(open(os.path.join(self.hparams.dataset, self.hparams.groupId2tokIdList), "rb"))
+            self.contextualized_emb_num = len(self.shared_tokId2Emb.keys())
+            self.total_emb_num = self.contextualized_emb_num
+            self.groupId2tokId = pickle.load(open(os.path.join(self.hparams.dataset, self.hparams.groupId2tokIdList), "rb"))
+            self.contextualized_tokid2emb = pickle.load(open(os.path.join(self.hparams.dataset, self.hparams.contextualized_file), "rb"))
+            self.modelId2sharedId = None
+            self.vd_mask=None; self.npd_mask=None
+        else:
+            if os.path.exists(os.path.join(self.hparams.output_dir, "shared.modelId2sharedId.pickle")):
+               self.shared_tokId2Emb = pickle.load(open(os.path.join(self.hparams.output_dir, "shared.tokId2emb.pickle"), "rb"))
+               self.shared_tokId2tokText = pickle.load(open(os.path.join(self.hparams.output_dir, "shared.tokId2tokText.pickle"), "rb"))
+               self.shared_tokId2groupId = pickle.load(open(os.path.join(self.hparams.output_dir, "shared.tokId2groupId.pickle"), "rb"))
+               self.shared_groupId2tokId = pickle.load(open(os.path.join(self.hparams.output_dir, "shared.groupId2tokId.pickle"), "rb"))
+               self.modelId2sharedId = pickle.load(open(os.path.join(self.hparams.output_dir, "shared.modelId2sharedId.pickle"), "rb"))
+               self.groupId2tokId = pickle.load(open(os.path.join(self.hparams.dataset, self.hparams.groupId2tokIdList), "rb"))
+               self.contextualized_tokid2emb = pickle.load(open(os.path.join(self.hparams.dataset, self.hparams.contextualized_file), "rb"))
+            else:
+               self.contextualized_tokid2emb = pickle.load(open(os.path.join(self.hparams.dataset, self.hparams.contextualized_file), "rb"))
+               self.groupId2tokId = pickle.load(open(os.path.join(self.hparams.dataset, self.hparams.groupId2tokIdList), "rb"))
+               self.tokId2groupId = pickle.load(open(os.path.join(self.hparams.dataset, self.hparams.tokId2groupId), "rb"))
+               self.tokId2tokText = pickle.load(open(os.path.join(self.hparams.dataset, self.hparams.tokId2tokText), "rb"))
+               self.model_tokid2emb = self._get_model_tokid2emb() 
+               self.model_tokid2text = {}
+               print(f"len(self.tokenizer): {len(self.tokenizer)}")
+               for i in range(len(self.tokenizer)):
+                  text = self.tokenizer.convert_ids_to_tokens(i)
+                  self.model_tokid2text[i] = text 
+
+               self.shared_tokId2Emb, self.shared_tokId2tokText, self.shared_tokId2groupId, self.shared_groupId2tokId, self.modelId2sharedId = self.combine_tokid2emb()
+
+            sp_tokens_list = self.tokenizer.batch_encode_plus(sp_tokens)["input_ids"]
+            self.sp_tokens_list = sp_tokens_list
+            self.ee_tokid = self.modelId2sharedId[sp_tokens_list[0][0]]
+            self.es_tokid = self.modelId2sharedId[sp_tokens_list[1][0]]
+            self.ve_tokid = self.modelId2sharedId[sp_tokens_list[2][0]]
+            self.vs_tokid = self.modelId2sharedId[sp_tokens_list[3][0]]
+            self.hypot_tokid = self.modelId2sharedId[sp_tokens_list[4][0]]
+            self.question_tokid = self.modelId2sharedId[sp_tokens_list[5][0]]
+            self.answer_tokid = self.modelId2sharedId[sp_tokens_list[6][0]]
+            self.because_tokid = self.modelId2sharedId[sp_tokens_list[7][0]]
+            self.infer_tokid = self.modelId2sharedId[sp_tokens_list[8][0]]
+            self.and_tokid = self.modelId2sharedId[sp_tokens_list[9][0]]
+
+            if self.print:
+               print(f'\n\nee: {self.ee_tokid}\nes: {self.es_tokid}\nve: {self.ve_tokid}\nvs: {self.vs_tokid}\nhypot: {self.hypot_tokid}\nquestion: {self.question_tokid}\nanswer: {self.answer_tokid}\nbecause: {self.because_tokid}\ninfer: {self.infer_tokid}\nand: {self.and_tokid}\n\n')
+            
+            self.vanilla_tokid_list = [self.modelId2sharedId[i] for i in range(2,32000)]
+            if self.print:
+               print(f"Vanilla TokId List starts from .. {self.modelId2sharedId[3]} to {self.modelId2sharedId[32000]}")
+            assert len(self.contextualized_tokid2emb) == self.modelId2sharedId[3], f"len(self.contextualized_tokid2emb): {len(self.contextualized_tokid2emb)}\nself.modelId2sharedId[3]: {self.modelId2sharedId[3]}"
+            self.vd_mask = [1,1,1]+[0]*(len(self.contextualized_tokid2emb)-3)+[1]*(len(self.tokenizer)-3-6)+[0]*6 # remove sp except for ee, es, ve, vs 
+            self.npd_mask = [1,1,1]+[1]*(len(self.contextualized_tokid2emb)-3)+[0]*(len(self.tokenizer)-3-6)+[0]*6 
+            self.total_emb_num = len(self.shared_tokId2Emb.keys())
+            self.contextualized_emb_num = len(self.contextualized_tokid2emb)-3
+            assert len(self.vd_mask) == len(self.npd_mask) == self.total_emb_num
+            assert self.total_emb_num == len(self.tokenizer)+len(self.contextualized_tokid2emb)-3, f"Total Emb Num: {self.total_emb_num}\tlen(self.tokenizer): {len(self.tokenizer)}\tlen(self.contextualized_tokid2emb): {len(self.contextualized_tokid2emb)}\nadd => {len(self.tokenizer)+len(self.contextualized_tokid2emb)-3}"
+       
+        if self.hparams.dev_input2output is not None:
+            self.dev_input2output = json.load(open(os.path.join(self.hparams.dataset, self.hparams.dev_input2output), "rb"))
+
+        if self.hparams.cluster_num != -1:
+            self.tokId2clusterId = pickle.load(open(os.path.join(self.hparams.dataset, self.hparams.tokId2clusterId), 'rb'))
+        else:
+            self.tokId2clusterId = None 
+        
+        self.corpus_tokenList = pickle.load(open(os.path.join(self.hparams.dataset, self.hparams.corpus2tokIdList), "rb"))
+        self.trie_dict = pickle.load(open(os.path.join(self.hparams.dataset, self.hparams.tree_path), "rb"))
+        
+        print(f"$$$$$$ # of embedding: {self.total_emb_num}")
+        self.config = T5Config.from_pretrained(self.hparams.model_name_or_path)
+        self.config.update({"fp16": self.hparams.fp16})
+        self.config.update({"train_c_emb": self.hparams.train_c_emb}) 
+        self.config.update({"do_test": self.hparams.do_test}) 
+        self.config.update(
+            {"contextualized_emb_num": self.contextualized_emb_num}
+        )
+        self.config.update({"freeze_vocab_emb": self.hparams.freeze_vocab_emb})
+        self.config.update({'change_lm_head': self.hparams.change_lm_head})
+        self.config.update({'change_dec': self.hparams.change_dec})
+        self.config.update({'change_enc': self.hparams.change_enc})
+        self.config.update({'original_T5': self.hparams.original_T5})
+        self.config.update({'tie_enc_dec_vocab': self.hparams.tie_enc_dec_vocab})
+        self.config.update(
+           {"contextualized_file": os.path.join(self.hparams.dataset, self.hparams.contextualized_file)}
+        )  # tokId_emb.pickle
+        self.config.update(
+           {'model_vocab_file': os.path.join(self.hparams.dataset, "modelId2Emb.pickle")}      
+        )
+        self.config.update({"vanilla_emb_num": len(self.tokenizer)})
+        self.config.update({"total_emb_num": self.total_emb_num})
+        self.save_epoch = []
+
+        # If in training mode, load ckpt for training
+        if self.hparams.do_train:
+            if self.hparams.train_c_emb:
+                self.model = entail_T5_split.from_pretrained(
+                              self.hparams.model_name_or_path, config=self.config, ignore_mismatched_sizes=True
+                          )
+            else:
+                self.model = entail_T5_split.from_pretrained(
+                    self.hparams.model_name_or_path, config=self.config
+                )
+            self.model.resize_token_embeddings(len(self.tokenizer))
+
+            if self.print:
+                print(f"@@@ Loading Model from {self.hparams.model_name_or_path}")
+                print(f'@@@ Loading decoder embedding: {self.hparams.embedding_model}')
+
+            self.em_score_list = []
+            self.total_f1_score_list = []
+            self.vs_f1_score_list = []
+            self.es_f1_score_list = []
+
+
+        # If in testing mode, load ckpt for inference
+        if self.hparams.do_test:
+            self.model = entail_T5_split.from_pretrained(
+               self.hparams.test_model_path, config=self.config#, ignore_mismatched_sizes=True
+            )
+            if self.print:
+                print(f"@@@ Loading Model from {self.hparams.test_model_path}")
+          
+            self.test_save_name = os.path.join(self.hparams.output_dir, f"{self.hparams.test_name}_{self.hparams.tree_type}_result_beam{self.hparams.val_beam_size}.json")               
+            print(f'@@@ Initialize Test!!')
+            self.test_input_list = []
+            self.test_gt_list = []
+            self.test_gt_tok_list = []
+            self.test_pred_list = []
+            self.test_pred_tok_list = []
+            self.test_em_score_list = []
+            self.test_total_f1_score_list = []
+            self.test_vs_f1_score_list = []
+            self.test_es_f1_score_list = []
+
+        if self.hparams.freeze_encoder:
+            if self.print:
+                print(f"@@@ Freeze Encoder!")
+                encoder = self.model.get_encoder()
+                for n, p in encoder.named_parameters():
+                    p.requires_grad=False
+        
+        self.cnt_over = 0
+        self.len_test_dataset = len(self.test_dataloader())
+
+    def combine_tokid2emb(self):
+        shared_tokId2Emb = copy.deepcopy(self.contextualized_tokid2emb)
+        shared_tokId2tokText = copy.deepcopy(self.tokId2tokText)
+        shared_tokId2groupId = copy.deepcopy(self.tokId2groupId)
+        shared_groupId2tokId = copy.deepcopy(self.groupId2tokId)
+        modelId2sharedId = {}
+
+        tokId = len(shared_tokId2Emb); groupId = len(shared_groupId2tokId)
+
+        for id, text in self.model_tokid2text.items():
+            if id==0 or id==1 or id==2:
+               modelId2sharedId[id] = id  
+               continue
+            modelId2sharedId[id] = tokId 
+            if text not in shared_tokId2tokText.values():
+               assert tokId not in shared_tokId2Emb 
+               assert groupId not in shared_groupId2tokId 
+               shared_tokId2Emb[tokId] = self.model_tokid2emb[id]
+               shared_tokId2tokText[tokId] = text 
+               shared_tokId2groupId[tokId] = groupId 
+               shared_groupId2tokId[groupId] = [tokId] 
+               tokId +=1; groupId += 1
+            else:
+               assert tokId not in shared_tokId2Emb
+               gId = self.text2gId(self.tokId2tokText, self.tokId2groupId, text)
+               assert gId in shared_groupId2tokId
+               shared_tokId2Emb[tokId] = self.model_tokid2emb[id]
+               shared_tokId2tokText[tokId] = text 
+               shared_tokId2groupId[tokId] = gId 
+               shared_groupId2tokId[gId].append(tokId)
+               tokId += 1
+
+        print(f"# of Contextualized Token Embedding: {len(self.contextualized_tokid2emb)}")
+        print(f"# of Model Token Embedding: {len(self.model_tokid2emb)}")
+        print(f"# of Shared Token Embedding: {len(shared_tokId2Emb)}")
+
+        os.makedirs(self.hparams.output_dir, exist_ok=True)
+        with open(os.path.join(self.hparams.output_dir, "shared.tokId2emb.pickle"), "wb") as f:
+           pickle.dump(shared_tokId2Emb, f)
+        with open(os.path.join(self.hparams.output_dir, "shared.tokId2tokText.pickle"), "wb") as f:
+           pickle.dump(shared_tokId2tokText, f)
+        with open(os.path.join(self.hparams.output_dir, "shared.tokId2groupId.pickle"), "wb") as f:
+           pickle.dump(shared_tokId2groupId, f)
+        with open(os.path.join(self.hparams.output_dir, "shared.groupId2tokId.pickle"), "wb") as f:
+           pickle.dump(shared_groupId2tokId, f)
+        with open(os.path.join(self.hparams.output_dir, "shared.modelId2sharedId.pickle"), "wb") as f:
+           pickle.dump(modelId2sharedId, f)
+
+        return shared_tokId2Emb, shared_tokId2tokText, shared_tokId2groupId, shared_groupId2tokId, modelId2sharedId
+
+    def text2gId(self, tokId2tokText, tokId2groupId, text):
+        for t_id, t_text in tokId2tokText.items():
+           if t_text == text:
+               return tokId2groupId[t_id]
+
+    def _get_model_tokid2emb(self):
+        #model = T5Model.from_pretrained(self.hparams.model_name_or_path)    
+        #vocab_weight = model.state_dict()["shared.weight"]
+        model = T5ForConditionalGeneration.from_pretrained(self.hparams.model_name_or_path)
+        vocab_weight = model.encoder.embed_tokens.weight # 32110
+        vocab_num = len(self.tokenizer) #vocab_weight.size()[0]
+        vocab_id2emb = {}
+        for id in range(vocab_num):
+           emb = vocab_weight[id].detach().cpu().numpy()
+           vocab_id2emb[id] = emb
+        with open(os.path.join(self.hparams.dataset, "modelId2Emb.pickle"), 'wb') as f:
+           pickle.dump(vocab_id2emb, f)
+        return vocab_id2emb
+
+    def _get_dataset(self, split):
+        dataset = ENTAILDataset(
+            tokenizer=self.tokenizer,
+            split=split,
+            hparams=self.hparams,
+            ee_tokid=self.ee_tokid,#self.sp_tokens_list[0][0],
+            es_tokid=self.es_tokid,#self.sp_tokens_list[1][0],
+            corpus_tokenList=self.corpus_tokenList,
+            modelId2sharedId=self.modelId2sharedId,
+            tokId2clusterId=self.tokId2clusterId,
+            vd_mask=self.vd_mask,
+            npd_mask=self.npd_mask
+        )
+        return dataset
+
+    def _get_tokIdList_from_groupIdList(self, groupIdList, score):
+        assert self.hparams.tree_type == "groupId"
+        tokIdList = []
+        
+        for groupId in groupIdList:
+            tokIdList.extend(self.groupId2tokId[groupId])
+            #tokIdList.extend(self.shared_groupId2tokId[groupId]) #### vanilla tokId도 list에 들어가는 상황
+        return list(set(tokIdList))
+   
+    def _get_groupId_from_tokId(self, tokId):
+        return self.shared_tokId2groupId[tokId]
+
+    def forward(
+        self,
+        input_ids,
+        attention_mask,
+        loss_mask=None,
+        decoder_attention_mask=None,
+        decoder_input_ids=None,
+        lm_labels=None,
+        return_dict=True
+    ):
+        if lm_labels is None:
+            assert decoder_input_ids is not None
+            return self.model(
+                input_ids,
+                attention_mask=attention_mask,
+                decoder_input_ids=decoder_input_ids,
+                decoder_attention_mask=decoder_attention_mask,
+                return_dict=return_dict
+            )
+        if decoder_input_ids is None:
+            assert lm_labels is not None
+            return self.model(
+                input_ids,
+                attention_mask=attention_mask,
+                decoder_attention_mask=decoder_attention_mask,
+                labels=lm_labels,
+                return_dict=return_dict,
+                loss_mask=loss_mask
+            ) 
+    def _loss(self, batch):
+        lm_labels = copy.deepcopy(batch["target_ids"])
+        lm_labels[lm_labels[:, :] == self.tokenizer.pad_token_id] = -100
+        if self.hparams.split_loss:
+           outputs = self(
+               input_ids=batch["source_ids"],
+               attention_mask=batch["source_mask"],
+               loss_mask=batch["target_loss_mask"],
+               lm_labels=lm_labels,
+               decoder_attention_mask=batch["target_mask"],
+           )
+        else:
+           outputs = self(
+               input_ids=batch["source_ids"],
+               attention_mask=batch["source_mask"],
+               lm_labels=lm_labels,
+               decoder_attention_mask=batch["target_mask"]
+           )
+        loss = outputs[0]
+        return loss
+
+    def training_step(self, batch, batch_idx):
+        loss = self._loss(batch)
+        self.log(
+            "train loss",
+            loss,
+            on_step=True,
+            on_epoch=True,
+            prog_bar=False,
+            logger=True,
+            sync_dist=True,
+        )
+        return loss
+
+    def get_list(self, batch_id, input_ids, score, trie_list):
+        # starts with pad token & groupId for pad token is -1
+        assert input_ids[0] == 0
+        assert trie_list is not None and isinstance(trie_list, list)
+        return self._get_from_trie(input_ids, trie_list[batch_id], score)
+
+    def _find_idx(self, input_ids, idx):
+        n_input_ids = np.array(input_ids)
+        indices = np.where(n_input_ids == idx)
+        return indices[0][-1]
+
+    def _get_dec_status(self, input_ids):
+        if self.hparams.model_type == "hyper-mem-np-only":
+           assert self.es_tokid in input_ids
+           es_idx = self._find_idx(input_ids, self.es_tokid)
+           sub_input_ids = input_ids[es_idx+1:]
+           if len(sub_input_ids) == 0:
+               return "npd", [0]
+           else:
+               return "npd", [0]+sub_input_ids
+        else:
+           if self.vs_tokid in input_ids and self.es_tokid not in input_ids:
+               return "vanilla", None
+           elif self.vs_tokid not in input_ids and self.es_tokid in input_ids:
+               es_idx = self._find_idx(input_ids, self.es_tokid)
+               sub_input_ids = input_ids[es_idx+1:]
+               if len(sub_input_ids) == 0:
+                  return "npd", [0]
+               else:
+                  return "npd", [0]+sub_input_ids 
+           elif self.vs_tokid in input_ids and self.es_tokid in input_ids:
+               vs_idx = self._find_idx(input_ids, self.vs_tokid)
+               es_idx = self._find_idx(input_ids, self.es_tokid)
+               if vs_idx < es_idx:
+                  sub_input_ids = input_ids[es_idx+1:]
+                  if len(sub_input_ids) == 0:
+                     return "npd", [0]
+                  else:
+                     return "npd", [0]+sub_input_ids
+               elif es_idx < vs_idx:
+                  return "vanilla", None 
+               else:
+                  assert False
+           else:
+               assert False
+
+    def get(self, batch_id, input_ids, score, trie_dict=None):
+        if len(input_ids) == 1:
+            if self.hparams.model_type in ["hyper", "hyper-wo-vd", "hyper-split"]:
+               ret = [self.because_tokid, self.and_tokid, self.infer_tokid]
+            elif self.hparams.model_type in ["hyper-mem", "hyper-mem-np-only"]:
+               ret = [self.es_tokid]
+            else:
+               assert False
+        elif input_ids[-1] in [self.ee_tokid]:
+            if self.hparams.model_type in ["hyper", "hyper-wo-vd", "hyper-split"]:
+               ret = [self.because_tokid, self.and_tokid, self.infer_tokid]
+            elif self.hparams.model_type in ["hyper-mem", "hyper-mem-np-only"]:
+               ret = [1]
+            else:
+               assert False
+        elif not self.hparams.model_type in ['hyper-mem-np-only'] and input_ids[-1] in [self.ve_tokid]:
+            ret = [self.because_tokid, self.and_tokid, self.infer_tokid, 1]
+        elif not self.hparams.model_type in ['hyper-mem-np-only'] and input_ids[-1] in [self.because_tokid, self.and_tokid, self.infer_tokid]:
+            ret = [self.es_tokid, self.vs_tokid]
+        else:
+            if self.hparams.model_type in ["hyper-mem", "hyper-mem-np-only"]:
+               dec_type, ids = self._get_dec_status(input_ids)
+               assert dec_type == "npd"
+               ret = self._get_from_trie(ids, self.trie_dict, 0)
+            elif self.hparams.model_type in ["hyper", "hyper-wo-vd", "hyper-split"]:
                dec_type, ids = self._get_dec_status(input_ids)
                if dec_type == "vanilla":
                   ret = self.vanilla_tokid_list+[self.ve_tokid]

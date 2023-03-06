@@ -20,7 +20,7 @@ from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor, Callback, ModelSummary
 from pytorch_lightning.plugins import DDPPlugin, DeepSpeedPlugin
 
-from T5_model import T5BiEncoder, T5FineTuner, T5TotalTuner, T5JointTuner, T5MeanTuner, T5AsyncTuner, T5MultiHop, T5_title_context, T5_COT, T5Entail , T5JointTuner_global
+from T5_model import T5TestTuner, T5BiEncoder, T5FineTuner, T5TotalTuner, T5JointTuner, T5MeanTuner, T5AsyncTuner, T5MultiHop, T5_title_context, T5_COT, T5Entail , T5JointTuner_global, T5Split
 from BART_model import BartBiEncoder 
 from pathlib import Path
 from typing import Any, Optional, Union
@@ -90,6 +90,8 @@ def main(args, train_params):
                 model = T5_COT(args)
         else:
             model = T5FineTuner(args)
+    elif args.model_type == "gr-test":
+        model = T5TestTuner(args)
     elif args.model_type == "split":
         assert False
         model = T5MeanTuner(args)
@@ -101,6 +103,8 @@ def main(args, train_params):
         model = T5MultiHop(args)
     elif args.model_type in ["hyper", "hyper-mem", "hyper-mem-np-only", "hyper-wo-vd"]:
         model = T5Entail(args)
+    elif args.model_type in ['hyper-split']:
+        model = T5Split(args)
     else:
         assert False
 
@@ -262,13 +266,24 @@ if __name__ == "__main__":
         tie_enc_dec_vocab = hparam.tie_enc_dec_vocab if "tie_enc_dec_vocab" in hparam else False,
         w_enc = hparam.w_enc if "w_enc" in hparam else False, 
         split_loss = hparam.split_loss if "split_loss" in hparam else False,
-        wandb_run_name = hparam.wandb_run_name 
+        wandb_run_name = hparam.wandb_run_name,
+        original_T5 = hparam.original_T5 if "original_T5" in hparam else None,
+        change_lm_head = hparam.change_lm_head if "change_lm_head" in hparam else None,
+        change_dec = hparam.change_dec if "change_dec" in hparam else None,
+        change_enc = hparam.change_enc if "change_enc" in hparam else None
     ) 
     
     args = argparse.Namespace(**args_dict)
     if args.do_test: args.n_gpu = 1
+    if args.original_T5:
+       assert not(args.change_lm_head or args.change_enc or args.change_dec) 
+       assert args.tie_enc_dec_vocab
+    else:
+       if not (args.change_lm_head or args.change_enc or args.change_dec) and args.model_type == "gr-test":
+          print(f"All change_lm_head / change_enc / change_dec is False! Are you sure this is the config you want?")
+          assert False
     assert not (args.do_train and args.do_test), "Choose between train|test"
-    assert args.model_type in ["gr", "bi", "joint", "async", "split", "total", "multihop", "hyper", "hyper-mem","hyper-mem-np-only", "joint_global", "hyper-wo-vd"]
+    assert args.model_type in ["gr", "gr-test", "bi", "joint", "async", "split", "total", "multihop", "hyper", "hyper-mem","hyper-mem-np-only", "joint_global", "hyper-wo-vd", "hyper-split"]
     if args.model_type == "gr": 
         assert args.tree_type in ["groupId", "nodeId", "clusterId"] 
         assert args.reload_dataloader_every_n_epochs is False
@@ -330,7 +345,7 @@ if __name__ == "__main__":
                filename="{epoch:02d}-{val_em:.2f}-{val_total_f1:.2f}-{val_vs_f1:.2f}-{val_es_f1:.2f}",
                save_top_k=5
             ) 
-        elif args.model_type in ["hyper-mem", "hyper-mem-np-only", "hyper-wo-vd"]:
+        elif args.model_type in ["hyper-mem", "hyper-mem-np-only", "hyper-wo-vd", "hyper-split"]:
                checkpoint_callback = ModelCheckpoint(
                monitor="val_es_f1",
                mode="max",
@@ -356,7 +371,7 @@ if __name__ == "__main__":
         callbacks.append(lr_callback)
 
     if args.accelerator == "ddp":
-        plugins = DDPPlugin(find_unused_parameters=False)
+        plugins = DDPPlugin(find_unused_parameters=True)
         fp_16 = False
         args.fp16 = False
         if torch.cuda.current_device() == 0:

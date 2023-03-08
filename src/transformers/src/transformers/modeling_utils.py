@@ -1056,7 +1056,12 @@ class PreTrainedModel(nn.Module, ModuleUtilsMixin, GenerationMixin, PushToHubMix
         if self.config.torchscript:
             output_embeddings.weight = nn.Parameter(input_embeddings.weight.clone())
         else:
-            output_embeddings.weight = input_embeddings.weight
+            if isinstance(input_embeddings, list) and isinstance(output_embeddings, list):
+               for (i, o) in zip(input_embeddings, output_embeddings):
+                  o.weight = i.weight 
+            else:
+               assert not isinstance(input_embeddings, list) and not isinstance(output_embeddings, list)
+               output_embeddings.weight = input_embeddings.weight
 
         if getattr(output_embeddings, "bias", None) is not None:
             output_embeddings.bias.data = nn.functional.pad(

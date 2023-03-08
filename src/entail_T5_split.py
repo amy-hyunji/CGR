@@ -1537,10 +1537,10 @@ class T5ForConditionalGeneration(T5PreTrainedModel):
         self.original_T5 = config.original_T5
         self.config = config
 
-        if config.tie_enc_dec_vocab:
-            config.tie_word_embeddings = True
-        else:
+        if not config.tie_vocab_emb and not config.tie_np_emb:
             config.tie_word_embeddings = False 
+        else:
+            config.tie_word_embeddings = True 
 
         encoder_config = copy.deepcopy(config)
         encoder_config.is_decoder = False
@@ -1553,6 +1553,7 @@ class T5ForConditionalGeneration(T5PreTrainedModel):
         self.decoder_config.num_layers = config.num_decoder_layers
 
         if self.original_T5:
+            assert not self.config.tie_np_emb
             assert not (self.change_lm_head or self.change_dec or self.change_enc)
             self.shared = nn.Embedding(config.vocab_size, config.d_model)
             self.lm_head = nn.Linear(config.d_model, config.vocab_size, bias=False)
@@ -1571,27 +1572,39 @@ class T5ForConditionalGeneration(T5PreTrainedModel):
                    self.shared = self.set_npd_emb(config.contextualized_file, is_npd=True)
             else:
                 self.shared = nn.Embedding(config.vocab_size, config.d_model)
+                # self.shared = nn.Embedding(32110, config.d_model)
             self.encoder = T5Stack(encoder_config, self.shared)
 
             # Decoder Vocab
             if self.change_dec:
                 if self.do_test:
-                   np_emb = nn.Embedding(int(contextualized_emb_num), config.d_model)
+                   self.np_emb = nn.Embedding(int(config.contextualized_emb_num), config.d_model)
                 else:
-                   np_emb = self.set_npd_emb(config.contextualized_file, is_npd=True) 
-                self.decoder = T5Stack(self.decoder_config, self.shared, np_emb)
+                   self.np_emb = self.set_npd_emb(config.contextualized_file, is_npd=True) 
+                self.decoder = T5Stack(self.decoder_config, self.shared, self.np_emb)
             else:
+                assert not self.config.tie_np_emb
+                self.np_emb = None
                 self.decoder = T5Stack(self.decoder_config, self.shared)
 
             # LM Head
             if self.change_lm_head:
-                self.lm_head = self.set_npd_emb(config.contextualized_file, is_npd=True)
-                self.dec_shared = self.set_npd_emb(config.model_vocab_file, is_npd=False)
+                # assert not config.tie_word_embeddings 
+                # tie => self.lm_head with self.np_emb || self.dec_shared with self.shared
+                if self.do_test:
+                   self.lm_head = nn.Embedding(int(config.contextualized_emb_num), config.d_model)
+                   self.dec_shared = nn.Embedding(config.vocab_size, config.d_model)
+                else:
+                   self.lm_head = self.set_npd_emb(config.contextualized_file, is_npd=True)
+                   self.dec_shared = self.set_npd_emb(config.model_vocab_file, is_npd=False)
             elif self.original_T5:
                 self.lm_head = nn.Linear(config.d_model, config.vocab_size, bias=False) 
             else:
                 self.lm_head = nn.Linear(config.d_model, int(config.contextualized_emb_num), bias=False)
-                self.dec_shared = self.set_npd_emb(config.model_vocab_file, is_npd=False)
+                if self.do_test:
+                   self.dec_shared = nn.Embedding(config.vocab_size, config.d_model)
+                else:
+                   self.dec_shared = self.set_npd_emb(config.model_vocab_file, is_npd=False)
 
         # Initialize weights and apply final processing
         self.post_init()
@@ -1632,7 +1645,22 @@ class T5ForConditionalGeneration(T5PreTrainedModel):
         self.decoder.update_embed_tokens(self.dec_shared) #= T5Stack(self.decoder_config, self.dec_shared, cond=True).cuda()
 
     def get_input_embeddings(self):
-        return self.shared
+        if self.original_T5:
+           assert self.np_emb is None
+           return self.shared 
+        else:
+           if self.config.tie_np_emb and self.config.tie_vocab_emb:
+              print(f"Return List [shared, np_emb]")
+              return [self.shared, self.np_emb]
+           elif self.config.tie_np_emb and not self.config.tie_vocab_emb:
+              print(f"Return np_emb")
+              return self.np_emb
+           elif not self.config.tie_np_emb and self.config.tie_vocab_emb:
+              print(f"Return shared")
+              return self.shared
+           else:
+              assert False 
+        sys.exit()
 
     def set_input_embeddings(self, new_embeddings):
         #assert False
@@ -1661,7 +1689,10 @@ class T5ForConditionalGeneration(T5PreTrainedModel):
 
     def set_output_embeddings(self, new_embeddings):
         #assert False
-        self.lm_head = new_embeddings
+        if self.original_T5:
+            self.lm_head  = new_embeddings
+        else:
+            self.dec_shared = new_embeddings
 
     def couple_encoder_decoder_model_vocab(self):
         assert False
@@ -1675,9 +1706,17 @@ class T5ForConditionalGeneration(T5PreTrainedModel):
         #print(self.lm_head)
         #assert False
         if self.original_T5:
+           assert self.np_emb is None
            return self.lm_head
         else:
-           return self.dec_shared
+           if self.config.tie_np_emb and self.config.tie_vocab_emb:
+              return [self.dec_shared, self.lm_head]
+           elif self.config.tie_np_emb and not self.config.tie_vocab_emb:
+              return self.lm_head 
+           elif not self.config.tie_np_emb and self.config.tie_vocab_emb:
+              return self.dec_shared
+           else:
+              assert False 
 
     def get_encoder(self):
         return self.encoder

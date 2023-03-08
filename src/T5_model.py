@@ -5807,7 +5807,6 @@ class T5JointTuner(T5BaseClass):
 
     def _get_from_trie(self, input_ids, trie_dict):
         assert self.hparams.tree_type == "groupId"
-        
         if len(input_ids) == 0:
             possible_GroupList = list(trie_dict.keys())
             tokIdList = self._get_tokIdList_from_groupIdList(possible_GroupList)
@@ -5877,7 +5876,7 @@ class T5JointTuner(T5BaseClass):
         leftover = self.hparams.val_beam_size
         end_df = {'ids': [], 'beam_score': []}
 
-        # 처음에는 하나만 넣고 그 다음부터 val_beam_size 만큼
+        # 처음에는 하나만 넣고 그 다음부터 val_beam_size 만큼 -> start를 pad로 하는 이유..?
         _decoder_inputs_embeds = [[self.pad_emb]]
         _decoder_inputs_ids = [[self.pad_tokenid]]
         _beam_score = [0]
@@ -5902,7 +5901,8 @@ class T5JointTuner(T5BaseClass):
         scores = torch.inner(model_output.to(self.device), self.total_emb.to(self.device))
         scores = nn.functional.log_softmax(scores, dim=2)
         scores = scores.squeeze(1)
-        next_possible_tokens = np.array([self.get(ids, trie_dict) for ids in _decoder_inputs_ids])
+        next_possible_tokens = np.array([self.get(ids, trie_dict) for ids in _decoder_inputs_ids]) ## 고정된 token 수가 들어가는게 맞는가? val_beam_size =1 이라서 그런가?  
+        # print(len(next_possible_tokens[0]))
     
         t_df = self._calculate_beam_score(scores, next_possible_tokens, _beam_score, _decoder_inputs_ids, leftover, first=True)
 
@@ -5920,7 +5920,8 @@ class T5JointTuner(T5BaseClass):
                 _decoder_inputs_ids.append(ids)
                 _beam_score.append(score)
 
-        while leftover > 0:
+################### used when beam size is larger than 1 ###########################
+        while leftover > 0: ## left over 가 없어질때까지 위의 step 반복 
             _dec_input = torch.cat([torch.cat(embs, dim=0).unsqueeze(0).to(self.device) for embs in _decoder_inputs_embeds], dim=0) 
             _enc_input = torch.cat([batch['source_ids']]*leftover, dim=0)
             _enc_attention = torch.cat([batch['source_mask']]*leftover, dim=0)
@@ -7526,7 +7527,6 @@ class T5Split(T5BaseClass):
                self.tokId2tokText = pickle.load(open(os.path.join(self.hparams.dataset, self.hparams.tokId2tokText), "rb"))
                self.model_tokid2emb = self._get_model_tokid2emb() 
                self.model_tokid2text = {}
-               print(f"len(self.tokenizer): {len(self.tokenizer)}")
                for i in range(len(self.tokenizer)):
                   text = self.tokenizer.convert_ids_to_tokens(i)
                   self.model_tokid2text[i] = text 
@@ -7584,7 +7584,8 @@ class T5Split(T5BaseClass):
         self.config.update({'change_dec': self.hparams.change_dec})
         self.config.update({'change_enc': self.hparams.change_enc})
         self.config.update({'original_T5': self.hparams.original_T5})
-        self.config.update({'tie_enc_dec_vocab': self.hparams.tie_enc_dec_vocab})
+        self.config.update({'tie_vocab_emb': self.hparams.tie_vocab_emb})
+        self.config.update({'tie_np_emb': self.hparams.tie_np_emb})
         self.config.update(
            {"contextualized_file": os.path.join(self.hparams.dataset, self.hparams.contextualized_file)}
         )  # tokId_emb.pickle
@@ -7605,7 +7606,6 @@ class T5Split(T5BaseClass):
                 self.model = entail_T5_split.from_pretrained(
                     self.hparams.model_name_or_path, config=self.config
                 )
-            self.model.resize_token_embeddings(len(self.tokenizer))
 
             if self.print:
                 print(f"@@@ Loading Model from {self.hparams.model_name_or_path}")
@@ -7622,6 +7622,22 @@ class T5Split(T5BaseClass):
             self.model = entail_T5_split.from_pretrained(
                self.hparams.test_model_path, config=self.config#, ignore_mismatched_sizes=True
             )
+            
+            enc_vocab = {}; dec_vocab = {}; np_vocab = {}
+            dec_embeddings = self.model.decoder.np_embed_tokens.weight
+            for i in range(dec_embeddings.shape[0]):
+               np_vocab[i] = dec_embeddings[i]
+            dec_shared = self.model.decoder.embed_tokens.weight 
+            for i in range(dec_shared.shape[0]):
+               dec_vocab[i] = dec_shared[i]
+            enc_shared = self.model.encoder.embed_tokens.weight 
+            for i in range(enc_shared.shape[0]):
+               enc_vocab[i] = enc_shared[i]
+            sys.exit()
+
+            with open(os.path.join(self.hparams.output_dir, "np_emb.pickle"), "wb") as f:
+               pickle.dump(dec_vocab, f)
+
             if self.print:
                 print(f"@@@ Loading Model from {self.hparams.test_model_path}")
           
@@ -7707,6 +7723,7 @@ class T5Split(T5BaseClass):
         #vocab_weight = model.state_dict()["shared.weight"]
         model = T5ForConditionalGeneration.from_pretrained(self.hparams.model_name_or_path)
         vocab_weight = model.encoder.embed_tokens.weight # 32110
+        print(f'# of vocab => {len(self.tokenizer)}')
         vocab_num = len(self.tokenizer) #vocab_weight.size()[0]
         vocab_id2emb = {}
         for id in range(vocab_num):
@@ -7721,8 +7738,8 @@ class T5Split(T5BaseClass):
             tokenizer=self.tokenizer,
             split=split,
             hparams=self.hparams,
-            ee_tokid=self.ee_tokid,#self.sp_tokens_list[0][0],
-            es_tokid=self.es_tokid,#self.sp_tokens_list[1][0],
+            ee_tokid=self.sp_tokens_list[0][0],
+            es_tokid=self.sp_tokens_list[1][0],
             corpus_tokenList=self.corpus_tokenList,
             modelId2sharedId=self.modelId2sharedId,
             tokId2clusterId=self.tokId2clusterId,
@@ -7984,7 +8001,9 @@ class T5Split(T5BaseClass):
             ),
             early_stopping=True,
         )
+        print(f"Generated Ids: {_generated_ids[0]}")
         _generated_text = self.ids_to_text(_generated_ids, skip_special_tokens=True)
+        print(f"Generated Text: {_generated_text[0]}")
         inum = len(_generated_ids) // self.hparams.ret_num 
         assert inum == len(batch["output"])
         generated_text = [
@@ -8093,7 +8112,7 @@ class T5Split(T5BaseClass):
                  batch_id, sent.tolist(), scores
              ),
              early_stopping=True,
-        )
+        ) # _generated_ids -> clusterId
         _generated_text = self.ids_to_text(_generated_ids, skip_special_tokens=True)
         inum = len(_generated_ids) // self.hparams.ret_num
         assert inum == len(batch['output']) 

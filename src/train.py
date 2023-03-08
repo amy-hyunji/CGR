@@ -263,7 +263,8 @@ if __name__ == "__main__":
         do_title = hparam.do_title if "do_title" in hparam else False,
         do_cot = hparam.do_cot if "do_cot" in hparam else False,
         do_iteration = hparam.do_iteration if "do_iteration" in hparam else False,
-        tie_enc_dec_vocab = hparam.tie_enc_dec_vocab if "tie_enc_dec_vocab" in hparam else False,
+        tie_vocab_emb = hparam.tie_vocab_emb if "tie_vocab_emb" in hparam else None,
+        tie_np_emb = hparam.tie_np_emb if "tie_np_emb" in hparam else None,
         w_enc = hparam.w_enc if "w_enc" in hparam else False, 
         split_loss = hparam.split_loss if "split_loss" in hparam else False,
         wandb_run_name = hparam.wandb_run_name,
@@ -337,7 +338,7 @@ if __name__ == "__main__":
             checkpoint_callback = Callback()
             ckpt_path = None
     else:
-        if args.model_type in ["hyper"]:
+        if args.model_type in ["hyper", "hyper-split"]:
             checkpoint_callback = ModelCheckpoint(
                monitor="val_total_f1",
                mode="max",
@@ -345,7 +346,7 @@ if __name__ == "__main__":
                filename="{epoch:02d}-{val_em:.2f}-{val_total_f1:.2f}-{val_vs_f1:.2f}-{val_es_f1:.2f}",
                save_top_k=5
             ) 
-        elif args.model_type in ["hyper-mem", "hyper-mem-np-only", "hyper-wo-vd", "hyper-split"]:
+        elif args.model_type in ["hyper-mem", "hyper-mem-np-only", "hyper-wo-vd"]:
                checkpoint_callback = ModelCheckpoint(
                monitor="val_es_f1",
                mode="max",

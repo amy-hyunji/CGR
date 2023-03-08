@@ -655,6 +655,7 @@ class ENTAILDataset(Dataset):
         idx = 0
 
         assert len(es_tokid_list) <= len(ret_tokid_list)
+        assert len(es_tokid_list)>0 and len(ee_tokid_list)>0
 
         for i, (es, ee, idlist) in enumerate(zip(es_tokid_list, ee_tokid_list, ret_tokid_list)):
             es = es-idx
@@ -697,7 +698,7 @@ class ENTAILDataset(Dataset):
             
         target_idx = torch.tensor([target])
         att_idx = torch.tensor([att])
-
+      
         if self.modelId2sharedId is not None:
            assert (
               len(target) == len(att) == len(target_loss_mask) == max_len

@@ -2,6 +2,7 @@ import os
 import sys
 import json
 import faiss
+import random
 import argparse
 import pickle
 import pandas as pd
@@ -580,6 +581,73 @@ def do_cluster(model, tokGroupId2tokIdList, clusterId, c_tokGroupId, clusterId2c
     del clusterId2clusterEmb
     return tokGroupId2clusterIdList, clusterId2tokGroupId, clusterId2tokText, tokText2clusterIdList, tokId2clusterId, cluster_path 
 
+
+def do_random_choose(model, tokGroupId2tokIdList, clusterId, c_tokGroupId, clusterId2clusterEmb, tokId2tokGroupId, emb_f):
+    no_cluster = 0
+    total_cluster = 0
+    tokText_emb = {}
+    
+    # clusterId2clusterEmb = np.memmap(cluster_path, dtype="float32", mode="w+", shape=(37000000,1024)) 
+    # clusterId = 0 # 0,1 is for <pad> and </s>
+
+    start_idx = True
+    for tokGroupId, tokIdList in tqdm(tokGroupId2tokIdList.items()):
+
+        text = tokId2tokText[tokIdList[0]]
+        prev = False
+        start_idx = False
+        """
+        emb_list = []
+        for _id in tokIdList:
+            if is_inside(emb_f[_id][:], emb_list):
+               continue 
+            else:
+               emb_list.append(emb_f[_id][:])
+        """
+        emb_list = [emb_f[_id][:] for _id in tokIdList]
+        assert args.cluster_num == 1
+        centers = random.choices(emb_list, k=args.cluster_num)
+        predicts = [0]*len(emb_list)
+
+        clusterIdDict = {}
+        for i, center in enumerate(centers):
+            clusterIdDict[i] = clusterId 
+            chooseId2tokText[clusterId] = text 
+            clusterId2clusterEmb[clusterId][:] = center 
+            clusterId += 1
+
+        assert len(tokIdList) == len(predicts)
+        for _predict, _id in zip(predicts, tokIdList):
+            _group = tokId2tokGroupId[_id]
+            _clusterId = clusterIdDict[_predict]
+            tokGroupId2chooseIdList[_group].append(_clusterId)
+            chooseId2tokGroupId[_clusterId] = _group 
+            tokId2chooseId[_id] = _clusterId 
+            tokText2chooseIdList[text].append(_clusterId)
+       
+       
+        if args.ee_sp:
+           if text == "<pad>" or text == "</s>" or text == "<unk>" or text=="[Ee]" or text == "[Es]":
+               assert len(tokIdList) == 1 and len(tokText2clusterIdList[text]) == 1, f"text: {text}\ntokIdList: {tokIdList}\ntokText2clusterIdList[text]: {tokText2clusterIdList[text]}"
+
+        else:
+           if text == "<pad>" or text == "</s>" or text == "<unk>":
+               assert len(tokIdList) == 1 and len(tokText2chooseIdList[text]) == 1, f"text: {text}\ntokIdList: {tokIdList}\ntokText2clusterIdList[text]: {tokText2chooseIdList[text]}"
+
+        if args.t5:
+            if clusterId == 1: assert tokId2chooseId[0] == 0
+            if clusterId == 2: assert tokId2chooseId[1] == 1
+            if clusterId == 3: assert tokId2chooseId[2] == 2
+            if clusterId == 4 and args.ee_sp: assert tokId2chooseId[3] == 3
+            if clusterId == 5 and args.ee_sp: assert tokId2chooseId[4] == 4
+
+    print(f'no_cluster: {no_cluster}\ttotal_cluster: {total_cluster}')
+    clusterId2clusterEmb.flush()
+    del clusterId2clusterEmb
+    return tokGroupId2chooseIdList, chooseId2tokGroupId, chooseId2tokText, tokText2chooseIdList, tokId2chooseId, choose_path 
+
+
+
 def load_data(split):
    if split == "train":
       df = pd.read_csv(args.train_file)
@@ -915,6 +983,37 @@ if __name__ == "__main__":
         dump(f"clusterId2tokText_{args.cluster_num}.pickle", clusterId2tokText)
         dump(f"tokText2clusterIdList_{args.cluster_num}.pickle", tokText2clusterIdList)
         dump(f"tokId2clusterId_{args.cluster_num}.pickle", tokId2clusterId)
+
+    elif args.action == "random_choose":   
+        print(f'!!!DO Random Choose!!!')
+        choose_path = os.path.join(args.save_path, f"chooseId_emb_{args.cluster_num}.dat")
+
+        tokGroupId2chooseIdList = defaultdict(list)
+        chooseId2tokGroupId = {}
+        chooseId2tokText = {}
+        tokText2chooseIdList = defaultdict(list)
+        tokId2chooseId = {}
+        chooseId = 0
+        c_tokGroupId = 0
+        chooseId2chooseEmb = np.memmap(choose_path, dtype="float32", mode="w+", shape=(45000000,1024)) 
+        chooseId2chooseEmb.flush()
+
+        emb_f = np.memmap(os.path.join(args.save_path, "tokId_emb.w_para.dat"), dtype="float32", mode="readonly", shape=(45000000, 1024))
+        tokGroupId2tokIdList = pickle.load(open(os.path.join(args.save_path, "tokGroupId2tokIdList.pickle"), 'rb'))
+        tokId2tokText = pickle.load(open(os.path.join(args.save_path, "tokId2tokText.pickle"), 'rb'))
+        tokId2tokGroupId = pickle.load(open(os.path.join(args.save_path, "tokId2tokGroupId.pickle"), 'rb'))
+
+        model = T5EncoderModel.from_pretrained(args.emb_path).cuda()
+
+        tokGroupId2chooseIdList, chooseId2tokGroupId, chooseId2tokText, tokText2chooseIdList, tokId2chooseId, choose_path = do_random_choose(model, tokGroupId2tokIdList, chooseId, c_tokGroupId, chooseId2chooseEmb, tokId2tokGroupId, emb_f)
+        
+        #chooseIdList2corpusId = get_chooseIdList2corpusId(corpusId_tokenList_dict, tokId2chooseId)
+
+        dump(f"tokGroupId2chooseIdList_{args.cluster_num}.pickle", tokGroupId2chooseIdList)
+        dump(f"chooseId2tokGroupId_{args.cluster_num}.pickle", chooseId2tokGroupId)
+        dump(f"chooseId2tokText_{args.cluster_num}.pickle", chooseId2tokText)
+        dump(f"tokText2chooseIdList_{args.cluster_num}.pickle", tokText2chooseIdList)
+        dump(f"tokId2chooseId_{args.cluster_num}.pickle", tokId2chooseId)
 
     elif args.action == "cluster_dataset":
         print('Dumping full ver.')

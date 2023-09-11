@@ -28,12 +28,12 @@ from collections import defaultdict
 from sklearn.cluster import KMeans, DBSCAN
 from sklearn.mixture import GaussianMixture 
 
-from azure.storage.blob import (
-    BlobServiceClient,
-    BlobClient,
-    ContainerClient,
-    __version__,
-)
+# from azure.storage.blob import (
+#     BlobServiceClient,
+#     BlobClient,
+#     ContainerClient,
+#     __version__,
+# )
 
 class BartBaseClass(pl.LightningModule):
     def __init__(self):

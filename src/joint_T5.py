@@ -946,7 +946,7 @@ class T5Stack(T5PreTrainedModel):
                 inputs_embeds = torch.cat(inputs_embeds, dim=0)
                 print(f'inputs_embeds.shape: {inputs_embeds.shape}')
             else:
-                print(f'is embedding: {input_ids}')
+                # print(f'is embedding: {input_ids}')
                 inputs_embeds = self.embed_tokens(input_ids)
 
         batch_size, seq_length = input_shape

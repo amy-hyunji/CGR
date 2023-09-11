@@ -19,6 +19,7 @@ from pytorch_lightning import Trainer
 from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor, Callback, ModelSummary
 from pytorch_lightning.plugins import DDPPlugin, DeepSpeedPlugin
+from pytorch_lightning.strategies import DDPStrategy, DeepSpeedStrategy
 
 from T5_model import T5TestTuner, T5BiEncoder, T5FineTuner, T5TotalTuner, T5JointTuner, T5MeanTuner, T5AsyncTuner, T5MultiHop, T5_title_context, T5_COT, T5Entail , T5JointTuner_global, T5Split
 from BART_model import BartBiEncoder 
@@ -26,8 +27,8 @@ from pathlib import Path
 from typing import Any, Optional, Union
 from pytorch_lightning.utilities.types import STEP_OUTPUT
 
-from knockknock import slack_sender
-from slack import get_webhook_url, get_channel
+# from knockknock import slack_sender
+# from slack import get_webhook_url, get_channel
 
 
 def set_seed(seed):
@@ -68,7 +69,7 @@ class PeriFlowTrainer(Trainer):
         super().save_checkpoint(filepath, weights_only=weights_only, storage_options=storage_options)
         pf.upload_checkpoint()
 
-@slack_sender(webhook_url=get_webhook_url(), channel=get_channel())
+# @slack_sender(webhook_url=get_webhook_url(), channel=get_channel())
 def main(args, train_params):
     sys.setrecursionlimit(10000)
     set_seed(args.seed)
@@ -103,7 +104,7 @@ def main(args, train_params):
         model = T5MultiHop(args)
     elif args.model_type in ["hyper", "hyper-mem", "hyper-mem-np-only", "hyper-wo-vd"]:
         model = T5Entail(args)
-    elif args.model_type in ['hyper-split']:
+    elif args.model_type in ['hyper-split', 'hyper-split-mem']:
         model = T5Split(args)
     else:
         assert False
@@ -220,7 +221,6 @@ if __name__ == "__main__":
         dev_file=hparam.dev_file,
         test_file=arg_.test_file if arg_.test_file else hparam.test_file,
         dev_input2output=hparam.dev_input2output if "dev_input2output" in hparam else None,
-        corpus_file=hparam.corpus_file if "corpus_file" in hparam else None,
         constrained_decoding=True,
         do_train=hparam.do_train,
         do_test=hparam.do_test,
@@ -230,7 +230,7 @@ if __name__ == "__main__":
         ret_num=arg_.test_ret_num if arg_.test_ret_num else hparam.ret_num,
         freeze_encoder=hparam.freeze_encoder,
         freeze_vocab_emb=hparam.freeze_vocab_emb,
-        contextualized_file=hparam.contextualized_file,  # new - tokId_emb.pickle
+        np_emb_file=hparam.np_emb_file if "np_emb_file" in hparam else None,  # new - tokId_emb.pickle
         groupId2tokIdList=hparam.groupId2tokIdList,  # new - tokGroupId_tokIdList.pickle 
         tokId2groupId=hparam.tokId2groupId,  # new - tokId_tokGroupId.pickle 
         tokId2clusterId=hparam.tokId2clusterId if "tokId2clusterId" in hparam else None,  # new - tokId_tokGroupId.pickle 
@@ -271,20 +271,22 @@ if __name__ == "__main__":
         original_T5 = hparam.original_T5 if "original_T5" in hparam else None,
         change_lm_head = hparam.change_lm_head if "change_lm_head" in hparam else None,
         change_dec = hparam.change_dec if "change_dec" in hparam else None,
-        change_enc = hparam.change_enc if "change_enc" in hparam else None
+        change_enc = hparam.change_enc if "change_enc" in hparam else None,
+        loss_weight = hparam.loss_weight if "loss_weight" in hparam else None,
+        contextualized_file = hparam.contextualized_file if "contextualized_file" in hparam else None
     ) 
     
     args = argparse.Namespace(**args_dict)
     if args.do_test: args.n_gpu = 1
     if args.original_T5:
        assert not(args.change_lm_head or args.change_enc or args.change_dec) 
-       assert args.tie_enc_dec_vocab
+       assert args.tie_vocab_emb
     else:
        if not (args.change_lm_head or args.change_enc or args.change_dec) and args.model_type == "gr-test":
           print(f"All change_lm_head / change_enc / change_dec is False! Are you sure this is the config you want?")
           assert False
     assert not (args.do_train and args.do_test), "Choose between train|test"
-    assert args.model_type in ["gr", "gr-test", "bi", "joint", "async", "split", "total", "multihop", "hyper", "hyper-mem","hyper-mem-np-only", "joint_global", "hyper-wo-vd", "hyper-split"]
+    assert args.model_type in ["gr", "gr-test", "bi", "joint", "async", "split", "total", "multihop", "hyper", "hyper-mem","hyper-mem-np-only", "joint_global", "hyper-wo-vd", "hyper-split", 'hyper-split-mem']
     if args.model_type == "gr": 
         assert args.tree_type in ["groupId", "nodeId", "clusterId"] 
         assert args.reload_dataloader_every_n_epochs is False
@@ -338,7 +340,7 @@ if __name__ == "__main__":
             checkpoint_callback = Callback()
             ckpt_path = None
     else:
-        if args.model_type in ["hyper", "hyper-split"]:
+        if args.model_type in ["hyper", "hyper-split", 'hyper-split-mem']:
             checkpoint_callback = ModelCheckpoint(
                monitor="val_total_f1",
                mode="max",
@@ -372,13 +374,13 @@ if __name__ == "__main__":
         callbacks.append(lr_callback)
 
     if args.accelerator == "ddp":
-        plugins = DDPPlugin(find_unused_parameters=True)
+        plugins = DDPStrategy(find_unused_parameters=True)
         fp_16 = False
         args.fp16 = False
         if torch.cuda.current_device() == 0:
             print(f"@@@ Using DDP without FP16")
     elif args.accelerator == "deepspeed":
-        plugins = DeepSpeedPlugin(stage=2, load_full_weights=True)
+        plugins = DeepSpeedStrategy(stage=2, load_full_weights=True)
         fp_16 = True
         args.fp16 = True
         if torch.cuda.current_device() == 0:
@@ -393,7 +395,7 @@ if __name__ == "__main__":
         max_epochs=args.num_train_epochs,
         precision=16 if fp_16 else 32,
         default_root_dir=args.output_dir,
-        checkpoint_callback=True,
+        # checkpoint_callback=True,
         val_check_interval=args.val_check_interval,
         logger=wandb_logger,
         check_val_every_n_epoch=args.check_val_every_n_epoch,

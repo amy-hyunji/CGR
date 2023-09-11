@@ -18,34 +18,80 @@ import re
 
 
 
-def encode_list(title_list, context_list, _model, _tokenizer):
+def encode_list(title_list, context_list, _model, _tokenizer,end_emb=None):
 
     if context_list is not None:       
         # assert False, f"Context list: {context_list}" 
         assert len(title_list)==len(context_list), f"Length of titles({len(title_list)}) and contexts({len(context_list)}) does not match"
-        input_list = [f"{_title.strip()}: {_sen.strip()}" for (_title, _sen) in zip(title_list, context_list)]
-        title_tok = [len(_tokenizer(_input, return_tensors='pt', add_special_tokens=True).input_ids[0]) for _input in input_list]
+        input_list = [f"{_title.strip()} {_sen.strip()}" for (_title, _sen) in zip(title_list, context_list)]
+        title_tok = [len(_tokenizer(_input, return_tensors='pt', add_special_tokens=True).input_ids[0]) for _input in title_list]
+        # print([_tokenizer(_input, return_tensors='pt', add_special_tokens=True).input_ids[0] for _input in title_list])
+        # assert False
+        _tok = _tokenizer(
+            input_list, 
+            return_tensors='pt', 
+            add_special_tokens=True, 
+            padding="longest",
+        )
+        _input_ids = _tok['input_ids'].to(model.device)
+        _attention_mask = _tok["attention_mask"].to(model.device)
+        #encoder = model.get_encoder().eval()
+        model_ret = model(input_ids=_input_ids, attention_mask=_attention_mask, return_dict=True)
+
         #print("title_tok: ", title_tok)
+        last_hidden_state = [np.append(state[:toklen-1].detach().cpu().numpy(),[end_emb],axis=0) for (state, toklen) in zip(model_ret['last_hidden_state'], title_tok)]
+        # last_hidden_state = [state[:toklen].detach().cpu().numpy() for (state, toklen) in zip(model_ret['last_hidden_state'], title_tok)]
+
+        assert len(title_tok) == len(model_ret['last_hidden_state'])
+        _tok_decode = [tokenizer.convert_ids_to_tokens(_ids)[:toklen-1] + ["</s>"] for (_ids, toklen) in zip(_input_ids, title_tok)]
+        _input_ids = [np.append(_ids.detach().cpu().numpy()[:toklen-1],[1]) for (_ids, toklen) in zip(_input_ids, title_tok)]
+        # print(last_hidden_state)
+        # print(end_emb)
+        # print(_tok_decode)
+        # print(_input_ids)
     else:
         input_list = title_list
         # assert False, print(input_list)
         title_tok = [len(_tokenizer(_title, return_tensors='pt', add_special_tokens=True).input_ids[0]) for _title in title_list]
-    ## QUESTION : why not process the input without padding?     
-    _tok = _tokenizer(
-                input_list, 
-                return_tensors='pt', 
-                add_special_tokens=True, 
-                padding="longest",
-            )
-    _input_ids = _tok['input_ids'].to(model.device)
-    _attention_mask = _tok["attention_mask"].to(model.device)
-    #encoder = model.get_encoder().eval()
-    model_ret = model(input_ids=_input_ids, attention_mask=_attention_mask, return_dict=True)
-    assert len(title_tok) == len(model_ret['last_hidden_state'])
 
-    last_hidden_state = [state[:toklen].detach().cpu().numpy() for (state, toklen) in zip(model_ret['last_hidden_state'], title_tok)]
-    _tok_decode = [tokenizer.convert_ids_to_tokens(_ids)[:toklen] for (_ids, toklen) in zip(_input_ids, title_tok)]
-    _input_ids = _input_ids.detach().cpu().numpy()
+        _tok = _tokenizer(
+            input_list, 
+            return_tensors='pt', 
+            add_special_tokens=True, 
+            padding="longest",
+        )
+        _input_ids = _tok['input_ids'].to(model.device)
+        _attention_mask = _tok["attention_mask"].to(model.device)
+        #encoder = model.get_encoder().eval()
+        model_ret = model(input_ids=_input_ids, attention_mask=_attention_mask, return_dict=True)
+        assert len(title_tok) == len(model_ret['last_hidden_state'])
+
+        last_hidden_state = [state[:toklen].detach().cpu().numpy() for (state, toklen) in zip(model_ret['last_hidden_state'], title_tok)]
+        _tok_decode = [tokenizer.convert_ids_to_tokens(_ids)[:toklen] for (_ids, toklen) in zip(_input_ids, title_tok)]
+        _input_ids = [_ids.detach().cpu().numpy()[:toklen] for (_ids, toklen) in zip(_input_ids, title_tok)]
+
+    # QUESTION : why not process the input without padding?     
+    # _tok = _tokenizer(
+    #             input_list, 
+    #             return_tensors='pt', 
+    #             add_special_tokens=True, 
+    #             padding="longest",
+    #         )
+    # _input_ids = _tok['input_ids'].to(model.device)
+    # _attention_mask = _tok["attention_mask"].to(model.device)
+    # #encoder = model.get_encoder().eval()
+    # model_ret = model(input_ids=_input_ids, attention_mask=_attention_mask, return_dict=True)
+    # assert len(title_tok) == len(model_ret['last_hidden_state'])
+
+    # # last_hidden_state = [state[:toklen].detach().cpu().numpy() for (state, toklen) in zip(model_ret['last_hidden_state'], title_tok)]
+    # last_hidden_state = [np.append(state[:toklen].detach().cpu().numpy(),end_emb) for (state, toklen) in zip(model_ret['last_hidden_state'], title_tok)]
+    # # _tok_decode = [tokenizer.convert_ids_to_tokens(_ids)[:toklen] for (_ids, toklen) in zip(_input_ids, title_tok)]
+    # _tok_decode = [tokenizer.convert_ids_to_tokens(_ids)[:toklen] + ["</s>"] for (_ids, toklen) in zip(_input_ids, title_tok)]
+    # # _input_ids = _input_ids.detach().cpu().numpy()
+    # # _input_ids = [_ids.detach().cpu().numpy()[:toklen] for (_ids, toklen) in zip(_input_ids, title_tok)]
+    # _input_ids = [np.append(_ids.detach().cpu().numpy()[:toklen],[1]) for (_ids, toklen) in zip(_input_ids, title_tok)]
+
+
     return _tok_decode, _input_ids, last_hidden_state   
 
 def t5_construct_sp(_model, _tokenizer, emb_f):
@@ -102,11 +148,15 @@ def t5_construct_corpus(_model, _tokenizer, _corpus, _context, emb_f,stopwords=N
     tokId2corpus = {}
     corpusId_tokenList_dict = {} # for grouptree
     # print(stopwords)
+
     ##  add_special_token TRUE 일때 맞춰서 바꾸기, special token은 반복적으로 등장하게 되는데 불필요하게 cur_tokId+=1을 하면 안되니까 별도로 처리
     for i in tqdm(range(0, len(_corpus), args.dump_batch)):
         iter_corpus = _corpus[i:i+args.dump_batch]
+        iter_context = _context[i:i+args.dump_batch]
+        # iter_context = None
+        # iter_corpus = [t+c for (t,c) in zip(_corpus[i:i+args.dump_batch], _context[i:i+args.dump_batch])]
         # print(iter_corpus)
-        tok_decode_list, _, last_hidden_state_list = encode_list(iter_corpus, None, _model, _tokenizer)
+        tok_decode_list, _, last_hidden_state_list = encode_list(iter_corpus, iter_context, _model, _tokenizer,emb_f[1][:])
         for elem, tok_decode, last_hidden_state in zip(iter_corpus, tok_decode_list, last_hidden_state_list):
             assert len(tok_decode) == len(last_hidden_state)
             _tok_list = []
@@ -391,8 +441,8 @@ def bi_construct_dataset(split, corpus2tokenList, emb_f):
     save_dict = {'input': [], 'output': [], 'output_tokid': []}
     data_len = len(df)
     for i in tqdm(range(data_len)):
-        _input = df['input'][i]
-        _output = df['output'][i]
+        _input = df['query'][i]
+        _output = df['title'][i]
         output_tok = corpus2tokenList[_output]
 
         if args.t5: assert output_tok[-1] == 1
@@ -409,8 +459,8 @@ def gr_construct_dataset(split, corpus2tokenList, emb_f):
     save_dict = {'input': [], 'output': [], 'output_tokid': []}
     data_len = len(df)
     for i in tqdm(range(data_len)):
-        _input = df['input'][i]
-        _output = df['output'][i]
+        _input = df['query'][i]
+        _output = df['title'][i]
         output_tok = corpus2tokenList[_output]
         
         if args.t5: assert output_tok[-1] == 1
@@ -689,7 +739,7 @@ if __name__ == "__main__":
     parser.add_argument("--action", default=None, required=True, type=str)
     parser.add_argument("--cluster_method", default="k-means", type=str)
     parser.add_argument("--dump_batch", default=1, type=int)
-    parser.add_argument("--cluster_num", default=5, type=int)
+    parser.add_argument("--cluster_num", default=1116, type=int)
     parser.add_argument("--dim",default=1024,type=int)
     parser.add_argument("--t5", action='store_true')
     parser.add_argument("--bart", action='store_true')
@@ -726,8 +776,8 @@ if __name__ == "__main__":
             tokenizer = T5Tokenizer.from_pretrained(args.emb_path)
             ### special parts
             tokenizer.add_tokens(["<title>","<context>"])
-        
-            tokId2corpus, tokText2tokIdList, tokId2tokText, corpusId_tokenList_dict = t5_construct_corpus(model, tokenizer, corpus, None, emb_f,stopwords=stopwords)
+            print("adding context and title tokens")
+            tokId2corpus, tokText2tokIdList, tokId2tokText, corpusId_tokenList_dict = t5_construct_corpus(model, tokenizer, corpus, list(corpus_file['context']), emb_f,stopwords=stopwords) 
             tokGroupId2tokText, tokId2tokGroupId, tokGroupId2tokIdList = t5_construct_group(tokText2tokIdList)
             group_trie = t5_construct_group_prefix_tree(corpusId_tokenList_dict)
         elif args.bart:
@@ -866,7 +916,7 @@ if __name__ == "__main__":
         dump(dev_fname, dev_dict)
         dump(test_fname, test_dict)  
 
-        dat2pik(args)
+        # dat2pik(args)
           
 
 

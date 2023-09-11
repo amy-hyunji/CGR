@@ -1,7 +1,7 @@
 {
     "output_dir": "../outputs/joint/nq_toy_base_no_context",
     "dataset": "../dataset/kilt_nq/",
-    "model": "t5-base",
+    "model": "t5-large",
     "max_input_length": 40,
     "max_output_length": 15,
     "max_context_length": 1000,
@@ -22,7 +22,7 @@
     "do_test": true,
     "test_model_path": "../outputs/joint/nq_toy_base_no_context/best_tfmr_21",
     "test_name": "epoch21",
-    "val_beam_size": 5,
+    "val_beam_size": 1,
     "wandb_log": false,
     "wandb_project": "toy_genre_joint",
     "wandb_run_name": "join_batch10",

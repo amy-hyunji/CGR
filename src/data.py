@@ -542,6 +542,7 @@ class ENTAILDataset(Dataset):
         self.npd_mask=npd_mask
         if self.modelId2sharedId is not None:
            self.zeros=[0]*len(self.npd_mask)
+           self.ones=[1]*len(self.npd_mask)
 
     def __len__(self):
         return self.len
@@ -650,7 +651,7 @@ class ENTAILDataset(Dataset):
         ee_tokid_list = list(np.where(_target==self.ee_tokid)[0])
 
         target = []
-        target_loss_mask = []
+        target_vd_loss_mask = []; target_npd_loss_mask = []
         temp = copy.deepcopy(_target)
         idx = 0
 
@@ -666,7 +667,11 @@ class ENTAILDataset(Dataset):
             else:
                _ids = temp[:es+1]
             target.extend(_ids)
-            target_loss_mask.extend([self.vd_mask]*len(_ids))
+            if self.hparams.split_loss:
+               target_vd_loss_mask.extend([self.vd_mask]*len(_ids))
+            else:
+               target_vd_loss_mask.extend([self.ones]*len(_ids))
+            target_npd_loss_mask.extend([self.zeros]*len(_ids))
             # npd part
             if self.hparams.cluster_num != -1:
                assert idlist[-1] == 1
@@ -674,37 +679,47 @@ class ENTAILDataset(Dataset):
             else:
                _ids = idlist[:-1]
             target.extend(_ids)
-            target_loss_mask.extend([self.npd_mask]*len(_ids))
+            target_vd_loss_mask.extend([self.zeros]*len(_ids))
+            if self.hparams.split_loss:
+               target_npd_loss_mask.extend([self.npd_mask]*len(_ids))
+            else:
+               target_npd_loss_mask.extend([self.ones]*len(_ids))
 
-            temp = temp[ee:]
+            temp = temp[ee:] ## ee부터 시작하는게 맞음 -> idlist[:-1]로 npd에서 마지막이 없다! 
             idx += ee
         if self.modelId2sharedId is not None:
            _ids = [self.modelId2sharedId[el] for el in temp]
         else:
            _ids = temp 
         target.extend(_ids)
-        target_loss_mask.extend([self.vd_mask]*len(_ids))
+        if self.hparams.split_loss:
+           target_vd_loss_mask.extend([self.vd_mask]*len(_ids))
+        else:
+           target_vd_loss_mask.extend([self.ones]*len(_ids))
+        target_npd_loss_mask.extend([self.zeros]*len(_ids))
 
         if len(target) > max_len:
             target = target[: max_len]
             att = [1] * max_len 
-            target_loss_mask = target_loss_mask[:max_len]
-
+            target_vd_loss_mask = target_vd_loss_mask[:max_len]
+            target_npd_loss_mask = target_npd_loss_mask[:max_len]
         else:
             _leftover = max_len - len(target)
             att = [1] * len(target) + [0] * _leftover
             target = target + [0] * _leftover
-            target_loss_mask = target_loss_mask + [self.zeros]*_leftover 
+            target_vd_loss_mask = target_vd_loss_mask + [self.zeros]*_leftover 
+            target_npd_loss_mask = target_npd_loss_mask + [self.zeros]*_leftover 
             
         target_idx = torch.tensor([target])
         att_idx = torch.tensor([att])
       
         if self.modelId2sharedId is not None:
            assert (
-              len(target) == len(att) == len(target_loss_mask) == max_len
-          ), print(f"length of target: {len(target)}\nlength of attention:  {len(att)}\nlength of target_loss_mask: {len(target_loss_mask)}")
-           target_loss_mask = torch.tensor([target_loss_mask])
-           target = {"input_ids": target_idx, "attention_mask": att_idx, "loss_mask": target_loss_mask}
+              len(target) == len(att) == len(target_vd_loss_mask) == len(target_npd_loss_mask) == max_len
+          ), print(f"length of target: {len(target)}\nlength of attention:  {len(att)}\nlength of target_loss_mask: {len(target_vd_loss_mask)}")
+           target_vd_loss_mask = torch.tensor([target_vd_loss_mask])
+           target_npd_loss_mask = torch.tensor([target_npd_loss_mask])
+           target = {"input_ids": target_idx, "attention_mask": att_idx, "loss_vd_mask": target_vd_loss_mask, "loss_npd_mask": target_npd_loss_mask}
         else:
            target = {"input_ids": target_idx, "attention_mask": att_idx}
         return target
@@ -749,15 +764,17 @@ class ENTAILDataset(Dataset):
         src_mask = source["attention_mask"].squeeze()
         target_ids = target["input_ids"].squeeze()
         target_mask = target["attention_mask"].squeeze()
-        if "loss_mask" in target:
-           target_loss_mask = target["loss_mask"].squeeze()
+        if "loss_vd_mask" in target and "loss_npd_mask" in target:
+           target_vd_loss_mask = target["loss_vd_mask"].squeeze()
+           target_npd_loss_mask = target["loss_npd_mask"].squeeze()
 
            return {
                "source_ids": source_ids,
                "target_ids": target_ids,
                "source_mask": src_mask,
                "target_mask": target_mask,
-               "target_loss_mask": target_loss_mask,
+               "target_vd_loss_mask": target_vd_loss_mask,
+               "target_npd_loss_mask": target_npd_loss_mask,
                "input": input_,
                "output": output_,
            }

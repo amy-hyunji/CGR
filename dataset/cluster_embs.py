@@ -240,7 +240,7 @@ def no_split_do_cluster():
 
 if __name__ == "__main__":
    parser = ArgumentParser()
-   parser.add_argument('--cluster_num', default=15, type=int)
+   parser.add_argument('--cluster_num', default=5, type=int)
    parser.add_argument('--filenum', default=14, type=int)
    parser.add_argument('--is_split', action='store_true')
    parser.add_argument('--do_total', action='store_true')

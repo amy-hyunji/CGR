@@ -14,6 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import sys
 import inspect
 import warnings
 from dataclasses import dataclass
@@ -535,10 +536,12 @@ class GenerationMixin:
     ) -> torch.LongTensor:
 
         if model_kwargs is not None and "decoder_input_ids" in model_kwargs:
-            return model_kwargs.pop("decoder_input_ids")
+            ret = model_kwargs.pop("decoder_input_ids")
+            return ret
         else:
             decoder_start_token_id = self._get_decoder_start_token_id(decoder_start_token_id, bos_token_id)
-            return torch.ones((batch_size, 1), dtype=torch.long, device=self.device) * decoder_start_token_id
+            ret = torch.ones((batch_size, 1), dtype=torch.long, device=self.device) * decoder_start_token_id
+            return ret
 
     def _get_decoder_start_token_id(self, decoder_start_token_id: int = None, bos_token_id: int = None) -> int:
         decoder_start_token_id = (
@@ -1122,6 +1125,7 @@ class GenerationMixin:
             num_return_sequences if num_return_sequences is not None else self.config.num_return_sequences
         )
 
+        # self.config.is_encoder_decoder = True
         pad_token_id = pad_token_id if pad_token_id is not None else self.config.pad_token_id
         eos_token_id = eos_token_id if eos_token_id is not None else self.config.eos_token_id
 

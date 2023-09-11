@@ -24,6 +24,7 @@ import pickle
 import warnings
 import numpy
 import numpy as np
+from tqdm import tqdm
 from typing import Optional, Tuple, Union
 
 import torch
@@ -911,10 +912,10 @@ class T5Stack(T5PreTrainedModel):
     # self.config.contextualized_emb_num
     def _assign_ids(self, input_ids):
         input_embeds = []
-        # print(input_ids)
-        # print(f"Contextualized Emb Num: {self.config.contextualized_emb_num}")
-        # print(f"embed_tokens.weight: {self.embed_tokens.weight.shape}")
-        # print(f"np_embed_tokens.weight: {self.np_embed_tokens.weight.shape}")
+        # print(f"input_ids: {input_ids}")
+        # print(f"Contextualized Emb Num: {self.config.contextualized_emb_num}") # 3347
+        # print(f"embed_tokens.weight: {self.embed_tokens.weight.shape}") # 32128
+        # print(f"np_embed_tokens.weight: {self.np_embed_tokens.weight.shape}") # 3347
         for ids in input_ids:
             # print(f"* ids: {ids}")
             if ids < 3:
@@ -924,7 +925,9 @@ class T5Stack(T5PreTrainedModel):
             else:
                embs = self.np_embed_tokens.weight[ids-3]
             input_embeds.append(torch.unsqueeze(embs, 0))
-        return torch.cat(input_embeds, dim=0)
+        ret = torch.cat(input_embeds, dim=0)
+        # print(f'Shape of ret => {ret.shape}') # [300,1024]
+        return ret
 
     def forward(
         self,
@@ -1605,6 +1608,21 @@ class T5ForConditionalGeneration(T5PreTrainedModel):
                    self.dec_shared = nn.Embedding(config.vocab_size, config.d_model)
                 else:
                    self.dec_shared = self.set_npd_emb(config.model_vocab_file, is_npd=False)
+     
+            """
+            print(f"*** Dump Np Embeddings")
+            dec_embeddings = self.decoder.np_embed_tokens.weight 
+            np_vocab = np.memmap("train_start.np_vocab.dat", dtype="float32", mode="w+", shape=(dec_embeddings.shape[0], 1024))
+            for i in tqdm(range(dec_embeddings.shape[0])):
+               np_vocab[i][:] = dec_embeddings[i][:].detach().numpy() 
+
+            print(f"*** Dump Encoder Embeddings")
+            enc_shared = self.encoder.embed_tokens.weight 
+            enc_vocab = np.memmap("enc_vocab.dat", dtype="float32", mode="w+", shape=(enc_shared.shape[0], 1024))
+            for i in tqdm(range(enc_shared.shape[0])):
+               enc_vocab[i][:] = enc_shared[i][:].detach().numpy()
+            """
+                  
 
         # Initialize weights and apply final processing
         self.post_init()
@@ -1747,7 +1765,8 @@ class T5ForConditionalGeneration(T5PreTrainedModel):
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
-        loss_mask: Optional[torch.LongTensor] = None
+        vd_loss_mask: Optional[torch.LongTensor] = None,
+        npd_loss_mask: Optional[torch.LongTensor] = None
     ) -> Union[Tuple[torch.FloatTensor], Seq2SeqLMOutput]:
         r"""
         labels (`torch.LongTensor` of shape `(batch_size,)`, *optional*):
@@ -1863,16 +1882,22 @@ class T5ForConditionalGeneration(T5PreTrainedModel):
         else:
             lm_logits = self.lm_head(sequence_output)
             dec_logits = self.dec_shared(sequence_output)
-        logits = torch.cat([lm_logits, dec_logits], dim=-1)
+        logits = torch.cat([lm_logits, dec_logits], dim=-1) #[bs, len, d]
 
         loss = None
         # lm_logits => [bs, output_token 개수, contextualized_embedding]
         if labels is not None:
-            if loss_mask is not None:
-               logits = logits * loss_mask 
+            if vd_loss_mask is not None:
+               assert npd_loss_mask is not None
+               vd_logits = logits * vd_loss_mask 
+               npd_logits = logits * npd_loss_mask 
                softmax = LogSoftmax(dim=1)
                loss_fct = NLLLoss(ignore_index=-100)
-               loss = loss_fct(softmax(logits.view(-1, logits.size(-1))), labels.view(-1))
+               vd_loss = loss_fct(softmax(vd_logits.view(-1, logits.size(-1))), labels.view(-1)) * 0
+               npd_loss = loss_fct(softmax(npd_logits.view(-1, logits.size(-1))), labels.view(-1)) * self.config.loss_weight
+               loss = npd_loss + vd_loss
+               if torch.cuda.current_device() == 0:
+                  print(f"NPD loss: {npd_loss}\tVD loss: {vd_loss} => Total Loss: {loss}")
             else:
                loss_fct = CrossEntropyLoss(ignore_index=-100)
                loss = loss_fct(logits.view(-1, logits.size(-1)), labels.view(-1)) #[bs*]

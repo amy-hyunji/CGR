@@ -5,7 +5,7 @@ from tqdm import tqdm
 
 ###########################
 model = "t5-large"
-corpus_path = "n_kilt_total_corpus.w_para.sub/idx_13.csv"
+corpus_path = "/data/project/rw/entailment_trees_emnlp2021_data_v3/dataset/task_2/idx_1.csv"
 ###########################
 print(f"corpus_path: {corpus_path}")
 

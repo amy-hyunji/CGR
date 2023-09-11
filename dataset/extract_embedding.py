@@ -6,9 +6,9 @@ import pandas as pd
 from argparse import ArgumentParser
 from transformers import AutoTokenizer, AutoModel, T5EncoderModel, T5Tokenizer
 from tqdm import tqdm
-
-from knockknock import slack_sender
-from slack import get_webhook_url, get_channel
+import re
+# from knockknock import slack_sender
+# from slack import get_webhook_url, get_channel
 
 def insert(d, k, v):
    if k not in d.keys():
@@ -118,7 +118,7 @@ def load_data(split):
       raise NotImplementedError('Check the split!')
    return df
 
-def construct_dataset(split):
+def construct_dataset(split,corpus2tokenList):
    df = load_data(split)
    save_dict = {'input': [], 'output': [], 'output_tokid': []}
    for _input, _output in zip(df['input'], df['output']):
@@ -132,7 +132,7 @@ def construct_dataset(split):
 
    return save_dict, f"gr_contextualized_{split}.pickle"
 
-def bi_construct_dataset(split, first_only=False):
+def bi_construct_dataset(split,corpus2tokenList ,first_only=False):
    df = load_data(split)
    save_dict = {'input': [], 'output': [], 'output_tokid': []}
    for _input, _output in zip(df["input"], df["output"]):
@@ -271,7 +271,7 @@ if __name__ == "__main__":
    parser.add_argument("--first_only", action='store_true')
    args = parser.parse_args()
 
-   assert not os.path.exists(args.save_path), f'{args.save_path} already exists!! Check if it is correct!'
+   # assert not os.path.exists(args.save_path), f'{args.save_path} already exists!! Check if it is correct!'
 
    if args.first_only and not args.bi: 
       assert False, f"First Only is only applied to bi-encoder for now!"
@@ -306,14 +306,22 @@ if __name__ == "__main__":
    if args.train_file is None:
       pass 
    else:
+      corpusId_tokenList_dict = pickle.load(open(os.path.join(args.save_path, "corpusId_tokenList_dict.pickle"), "rb"))
+
+      corpus2tokenList = {}
+      for corpusId, tokenList in corpusId_tokenList_dict.items():
+         context = corpus[corpusId]
+         m = re.match("<title>(.*?)<context>",context)
+         title = m.group(1).strip()
+         corpus2tokenList[title] = tokenList
       if args.bi:
-         train_dict, train_fname = bi_construct_dataset("train", first_only=args.first_only)
-         dev_dict, dev_fname = bi_construct_dataset("dev", first_only=args.first_only)
-         test_dict, test_fname = bi_construct_dataset("test", first_only=args.first_only)
+         train_dict, train_fname = bi_construct_dataset("train",corpus2tokenList ,first_only=args.first_only)
+         dev_dict, dev_fname = bi_construct_dataset("dev",corpus2tokenList, first_only=args.first_only)
+         test_dict, test_fname = bi_construct_dataset("test", corpus2tokenList,first_only=args.first_only)
       else:
-         train_dict, train_fname = construct_dataset('train')
-         dev_dict, dev_fname = construct_dataset('dev')
-         test_dict, test_fname = construct_dataset('test')
+         train_dict, train_fname = construct_dataset('train',corpus2tokenList)
+         dev_dict, dev_fname = construct_dataset('dev',corpus2tokenList)
+         test_dict, test_fname = construct_dataset('test',corpus2tokenList)
 
    """
    각 token은 하나씩 존재하고, GroupId를 가지고 있다. 

@@ -40,12 +40,12 @@ from collections import Counter
 from all_gather import my_all_gather, my_all_gather2
 from utils import *
 
-from azure.storage.blob import (
-    BlobServiceClient,
-    BlobClient,
-    ContainerClient,
-    __version__,
-)
+# from azure.storage.blob import (
+#     BlobServiceClient,
+#     BlobClient,
+#     ContainerClient,
+#     __version__,
+# )
 
 class FaissKMeans:
     def __init__(self, n_clusters=10, n_init=3, max_iter=50):
@@ -415,7 +415,7 @@ class T5grTuner(T5BaseClass):
         self.config.update({"fp16": self.hparams.fp16})
         self.config.update({"train_c_emb": self.hparams.train_c_emb}) 
         self.config.update({"do_test": self.hparams.do_test}) 
-        self.config.update({"tie_enc_dec_vocab": self.hparams.tie_enc_dec_vocab}) 
+        self.config.update({"tie_enc_dec_vocab": self.hparams.tie_vocab_emb}) 
         self.config.update(
             {"contextualized_emb_num": self.contextualized_emb_num}
         )
@@ -480,7 +480,6 @@ class T5grTuner(T5BaseClass):
         if self.hparams.save_model_only:
            self.convert_checkpoint("new_ckpt")
            print(f"Done saving checkpoint.. {self.current_epoch}")
-           sys.exit()
 
         em_score, recall_score = self._val_step(batch, batch_idx)
         self.em_score_list.extend(list(em_score))
@@ -5551,7 +5550,20 @@ class T5JointTuner(T5BaseClass):
             self.tokenizer = T5Tokenizer.from_pretrained(
                 self.hparams.tokenizer_name_or_path
             )
-            
+            self.tokId2tokText = pickle.load(open(os.path.join(self.hparams.dataset, self.hparams.tokId2tokText), "rb"))
+
+            # self.tokId2Emb = pickle.load(open(os.path.join(self.hparams.dataset, self.hparams.contextualized_file), "rb"))
+
+            # self.tokEmbList = [torch.tensor(emb).unsqueeze(0).to(self.device) for emb in self.tokId2Emb.values()]
+            # #self.tokEmbList = [np.expand_dims(emb, axis=0) for emb in self.tokId2Emb.values()]
+            # self.total_emb = torch.cat(self.tokEmbList, dim=0)
+
+            # if self.hparams.freeze_emb_enc:
+            # if self.print:
+            print(f"@@@ Freeze Embedding Encoder!")
+            for n, p in self.emb_enc.named_parameters():
+                p.requires_grad=False
+        
         if self.hparams.do_test:
 
             self.pad_tokenid = 0; self.end_tokenid = 1
@@ -5561,6 +5573,7 @@ class T5JointTuner(T5BaseClass):
             self.groupId2tokId = pickle.load(open(os.path.join(self.hparams.dataset, self.hparams.groupId2tokIdList), "rb"))
             self.tokId2groupId = pickle.load(open(os.path.join(self.hparams.dataset, self.hparams.tokId2groupId), "rb"))
             self.tokId2tokText = pickle.load(open(os.path.join(self.hparams.dataset, self.hparams.tokId2tokText), "rb"))
+            self.toktext2tokidlist = pickle.load(open("/data/project/rw/contextualized_GENRE/dataset/hotpot/title_context_overfit_200/tokText2tokIdList.pickle",'rb'))
 
             self.tokEmbList = [torch.tensor(emb).unsqueeze(0).to(self.device) for emb in self.tokId2Emb.values()]
             #self.tokEmbList = [np.expand_dims(emb, axis=0) for emb in self.tokId2Emb.values()]
@@ -5629,31 +5642,45 @@ class T5JointTuner(T5BaseClass):
         assert preds.shape == gts.shape
         # target_mask를 기반으로 pad token 아닌 애들만 냅두기
         preds, gts = self._remove_pad_tokens(batch['target_mask'], preds, gts, batch_idx)
+        # print(f"sim socres: {torch.inner(preds, gts)}")
         return torch.inner(preds, gts)
 
     def _remove_pad_tokens(self, target_mask, preds, gts, batch_idx):
         non_mask = torch.count_nonzero(target_mask, dim=1)
+        # print(f"non mask {non_mask}")
         assert non_mask.shape[0] == preds.shape[0] == gts.shape[0]
         pred_list = []; gt_list = []
+        # print(f"preds: {preds}")
+        # print("#"*50)
+        # print(f"gts: {gts}")
         for _non_mask, _pred, _gt in zip(non_mask, preds, gts):
+            # print(f'[Before] non_mask: {_non_mask}\tpred: {_pred}\tgt: {_gt}\n\n')
             _pred = _pred[:_non_mask, :]
             _gt = _gt[:_non_mask, :]
+            # print(f'[After] non_mask: {_non_mask}\tpred: {_pred}\tgt: {_gt}\n\n')
             pred_list.append(_pred); gt_list.append(_gt)
-        
+        # print("#"*50)
+        # print(f"preds_list {pred_list}")
+        # print("#"*50)
+        # print(f"gt_list: {gt_list}")
         pred_length = [len(pred) for pred in pred_list]
         gt_length = [len(gt) for gt in gt_list]
         if batch_idx == 0:
            self.file.write(f'After Removing Pad Tokens..\npred_length: {pred_length}\ngt_length: {gt_length}\n\n')
+        ## TODO 0번쨰 dim 사이즈 안맞는데 에러가 안나는지 확인 
+        # print(pred_length)
         
         preds = torch.cat(pred_list, dim=0)
+        # print(preds.shape)
         gts = torch.cat(gt_list, dim=0)
         assert preds.shape == gts.shape
-
+        # assert False
         return preds, gts 
 
     def _calculate_loss(self, batch, batch_idx, ret_em=False):
         sim = self._calculate_similarity(batch, batch_idx)
-        labels = torch.arange(sim.size(0)).long().to(self.device)
+        labels = torch.arange(sim.size(0)).long().to(self.device) ## [length of sim]
+        # print(labels.shape) 
         loss = self.loss_fct(sim, labels)
         if ret_em:
             sub_em = self._calculate_sub_em(sim, labels, batch_idx)
@@ -5695,6 +5722,7 @@ class T5JointTuner(T5BaseClass):
         # check number of tokens of title 
         _, _title_tok_list = self._tokenize(title)
         _title_tok_num = len(_title_tok_list)
+        # print(f"title_tok {_title_tok_num} ")
         assert _title_tok_list == _tok_decoder[:_title_tok_num]
         title_hidden_state = last_hidden_state[:_title_tok_num]
         assert len(title_hidden_state) == _title_tok_num 
@@ -5710,8 +5738,10 @@ class T5JointTuner(T5BaseClass):
         end_emb = self._get_end_tok_emb()
         for _title, _context in zip(batch['title'], batch['context']):
             tokText_emb = self._emb_enc_forward(_title, _context, end_emb)
+            # tokText_emb = self._emb_enc_forward(_title, "", end_emb)
             target_text = list(tokText_emb.keys())
             target_emb = list(tokText_emb.values())
+            # print(target_text)
             assert len(target_text) == len(target_emb)
             if len(target_text) <= self.hparams.max_output_length:
                 leftover = self.hparams.max_output_length-len(target_text)
@@ -5724,20 +5754,31 @@ class T5JointTuner(T5BaseClass):
                 target_emb = target_emb[:self.hparams.max_output_length]
             assert len(target_text) == len(target_emb) == len(target_mask)
 
-            target_emb = torch.cat(target_emb, dim=0).to(self.device) #[max_output_length, 768]
+            target_emb = torch.cat(target_emb, dim=0).to(self.device) #[max_output_length, 768] 
+            # print(f"5737: {target_emb.shape}")
             target_emb_list.append(target_emb.unsqueeze(0))
             target_mask_list.append(target_mask.unsqueeze(0))
-        target_emb = torch.cat(target_emb_list, dim=0)
-        target_mask = torch.cat(target_mask_list, dim=0)
+        target_emb = torch.cat(target_emb_list, dim=0) #모든 token 일자로 붙여서 한번에 넣어줌
+        # print(f"5738: {target_emb.shape}")
+        target_mask = torch.cat(target_mask_list, dim=0) # [batch_size, all token length ,1024]
+        # print(target_emb.shape)
+        # assert False
         return target_emb, target_mask
+    
 
     def _calculate_sub_em(self, sim, labels, batch_idx):
+        # print(f"sim: {sim.shape}") # [27,27]
         top_score = torch.topk(sim, 1)
         indices = top_score.indices.squeeze() 
         if batch_idx == 0:
            self.file.write(f'indices: {indices}\nlabels: {labels}\n\n')
-        correct = torch.eq(indices, labels).sum()
+        # print(f"indices: {indices}")
+        # print(f"labels: {labels}")        
+        correct = torch.eq(indices, labels)
+        # print(f"correct {correct}")
+        correct = correct.sum()
         total = len(indices)
+        # assert False
         return correct/total*100
 
     def training_step(self, batch, batch_idx):
@@ -5857,36 +5898,70 @@ class T5JointTuner(T5BaseClass):
 
     def _calculate_beam_score(self, scores, next_possible_tokens, _beam_score, _decoder_inputs_ids, leftover, first=False):
         t_df = {'ids': [], 'score': []}
+        # print(scores)
+        # print(len(next_possible_tokens[0]))
+        # assert len(scores) == len(next_possible_tokens), f"len of scores {scores}, next_possible_tokens {next_possible_tokens}"
         for batch_id, (_score, _n_tokens) in enumerate(zip(scores, next_possible_tokens)):
             _score = _score[_n_tokens]
+            # print(len(_score))
+            # print(len(_n_tokens))
+            # print(len(_score))
             assert len(_score) == len(_n_tokens) and len(_score) > 0
             top_scores = torch.topk(_score, min(len(_score), self.hparams.val_beam_size))
             p_beam_scores = _beam_score[batch_id]
             p_tokid = _decoder_inputs_ids[batch_id]
             for top_id, (_val, _ind) in enumerate(zip(top_scores.values, top_scores.indices)):
                 _tokId = _n_tokens[_ind.item()]
-                t_df['ids'].append(list(p_tokid)+list([_tokId]))
+                t_df['ids'].append(list(p_tokid)+list([_tokId])) ## list(p_tokid) ??? 
                 t_df['score'].append(p_beam_scores+_val.item())
-    
+        # print(t_df)
         t_df = pd.DataFrame(t_df).sort_values(by=['score'], ascending=False)[:leftover]
+        # print(t_df)
         return t_df
+
 
     def _test_step(self, batch, trie_dict):
         end_token = [False]*self.hparams.val_beam_size
         leftover = self.hparams.val_beam_size
         end_df = {'ids': [], 'beam_score': []}
 
-        # 처음에는 하나만 넣고 그 다음부터 val_beam_size 만큼 -> start를 pad로 하는 이유..?
+        ## training task는 잘한다 
+        target_emb, target_mask = self._get_target_embs(batch)
+        # print(f"target_emb {target_emb.shape}")
+        batch['target_emb'] = target_emb
+        batch['target_mask'] = target_mask 
+        loss, sub_em = self._calculate_loss(batch,0, ret_em=True)
+        # print(sub_em)
+
+        # 처음에는 하나만 넣고 그 다음부터 val_beam_size 만큼
         _decoder_inputs_embeds = [[self.pad_emb]]
         _decoder_inputs_ids = [[self.pad_tokenid]]
-        _beam_score = [0]
-        # print(len(_decoder_inputs_embeds))
-        # print(len(_decoder_inputs_embeds[0]))
-        # print(len(_decoder_inputs_embeds[0][0]))
+        #########
 
-        
-        _dec_input = torch.cat([torch.cat(embs, dim=0).unsqueeze(0).to(self.device) for embs in _decoder_inputs_embeds], dim=0) 
+
+        # _decoder_inputs_embeds = [[torch.tensor(self.tokId2Emb[self.tokId2groupId[tok['input_ids'][0][0]]]).unsqueeze(0).to(self.device)]]
+
+
+        ## with first token answer## -> decoding은 정확하게 함 (by trie)
+        # tok,tok_text = self._tokenize(batch['title'])
+        # _decoder_inputs_embeds = [[self.pad_emb],[self.pad_emb]]
+
+        # _decoder_inputs_embeds = [[self.pad_emb],[target_emb[0][0].unsqueeze(0).to(self.device)]]
+        # _decoder_inputs_ids = [[self.pad_tokenid,self.toktext2tokidlist[tok_text[0]][0]]]
+        ###########################
+        assert _decoder_inputs_embeds[0][0].shape == self.pad_emb.shape, f"{_decoder_inputs_embeds[0][0].shape} != {self.pad_emb.shape}"
+        # print(f"_decoer_inputs_embeds before {_decoder_inputs_embeds.shape}")
+        _beam_score = [0]
+
+        #original
+        # _dec_input = torch.cat([torch.cat(embs, dim=0).unsqueeze(0).to(self.device) for embs in _decoder_inputs_embeds], dim=0) ### 
+        #new
+        _dec_input = torch.cat([torch.cat(embs, dim=0).unsqueeze(0).to(self.device) for embs in _decoder_inputs_embeds], dim=1) ### 
+
+        # print(f"test dec_input: {_dec_input.shape}")
+        # print(f"before enc_input {batch['source_ids'].shape}")
         _enc_input = torch.cat([batch['source_ids']], dim=0)
+        # print(f"after enc_input {_enc_input.shape}")
         _enc_attention = torch.cat([batch['source_mask']], dim=0) 
         # print(_enc_input.size())
 
@@ -5895,14 +5970,21 @@ class T5JointTuner(T5BaseClass):
             input_ids=_enc_input,
             attention_mask=_enc_attention,
             decoder_inputs_embeds=_dec_input,
-        ).last_hidden_state # [bs, 1, 768]
+        ).last_hidden_state # [bs, 1, 1024]
+        # print(f"before: model output {model_output.shape}") 
+        model_output = model_output[:, -1:, :] # [bs, 1, 1024]
+        # print(f"after: model output {model_output.shape}")
 
-        model_output = model_output[:, -1:, :]
+
+
+
+
         scores = torch.inner(model_output.to(self.device), self.total_emb.to(self.device))
         scores = nn.functional.log_softmax(scores, dim=2)
         scores = scores.squeeze(1)
-        next_possible_tokens = np.array([self.get(ids, trie_dict) for ids in _decoder_inputs_ids]) ## 고정된 token 수가 들어가는게 맞는가? val_beam_size =1 이라서 그런가?  
-        # print(len(next_possible_tokens[0]))
+        next_possible_tokens = np.array([self.get(ids, trie_dict) for ids in _decoder_inputs_ids]) # 
+        # print(next_possible_tokens)
+        # print(scores)
     
         t_df = self._calculate_beam_score(scores, next_possible_tokens, _beam_score, _decoder_inputs_ids, leftover, first=True)
 
@@ -5980,8 +6062,10 @@ class T5JointTuner(T5BaseClass):
                     remove_tokId.append([self.tokId2groupId[el] for el in _ids])
             _upper_ids = []
             _trie_dict = self._remove_prev_from_trie(_trie_dict, remove_tokId)
-
+        
         preds = list(pd.DataFrame({'preds': preds, 'scores': scores}).sort_values(by=['scores'], ascending=False)[:self.hparams.val_beam_size]['preds'])
+        # print(pd.DataFrame({'preds': preds, 'scores': scores}).sort_values(by=['scores'], ascending=False)[:self.hparams.val_beam_size])
+
         assert len(batch['output']) ==len(batch['input'])== 1
         self.test_em_score_list.append(self._calculate_em(preds[0], batch['output'][0]))
         self.test_recall_score_list.append(self._calculate_recall(preds, batch['output'][0]))
@@ -6148,7 +6232,7 @@ class T5JointTuner_global(T5JointTuner):
 ############################################################################
         attention_mask_to_send = batch['target_mask'].detach()
         targets_to_send = batch['target_emb'].detach()
-        hidden_states = self._get_embedding(batch) ## npm dir mlm line 275 
+        hidden_states = self._get_embedding(batch) ## npm dir mㄷlm line 275 
         # print(f"target mask {attention_mask_to_send.unsqueeze(-1).shape}")
         # print(f"target emb {targets_to_send.shape}")
         # print(f"hidden state {hidden_states.shape}")
@@ -6162,13 +6246,13 @@ class T5JointTuner_global(T5JointTuner):
         out_tensor = my_all_gather2(out_tensor, in_tensor)
         out_tensor = torch.stack(out_tensor, 0) # [ws, bs, length, hidden+2]
         # print(f"out tensor {out_tensor.shape}")
-        if self.contrastive_negative_selection=="half":
+        if self.contrastive_negative_selection == "half":
             H = self.trainer.world_size // 2
             out_tensor = out_tensor[:H] if self.global_rank < H else out_tensor[H:]
             # local_rank = self.global_rank if self.global_rank < H else self.global_rank - H
             # world_size = world_size // 2
 
-        elif self.contrastive_negative_selection=="quarter":
+        elif self.contrastive_negative_selection == "quarter":
             H = self.trainer.world_size // 4
             if self.global_rank < H:
                 out_tensor = out_tensor[:H]
@@ -6218,8 +6302,12 @@ class T5JointTuner_global(T5JointTuner):
 #####################################################################################
         ## sim, label 구성 
         sim = self._calculate_similarity_global(batch, batch_idx)
+        # print(sim.size())
         labels = torch.arange(sim.size(0)).long().to(self.device) ## total batch 
+        # print(labels)
+        # assert False, f"{labels} \n {sim.size()} \n {sim.size(0)}"
         loss = self.loss_fct(sim, labels)
+
         if ret_em:
             sub_em = self._calculate_sub_em(sim, labels, batch_idx)
             if batch_idx == 0:
@@ -7553,11 +7641,8 @@ class T5Split(T5BaseClass):
             if self.print:
                print(f"Vanilla TokId List starts from .. {self.modelId2sharedId[3]} to {self.modelId2sharedId[32000]}")
             assert len(self.contextualized_tokid2emb) == self.modelId2sharedId[3], f"len(self.contextualized_tokid2emb): {len(self.contextualized_tokid2emb)}\nself.modelId2sharedId[3]: {self.modelId2sharedId[3]}"
-            self.vd_mask = [1,1,1]+[0]*(len(self.contextualized_tokid2emb)-3)+[1]*(len(self.tokenizer)-3-6)+[0]*6 # remove sp except for ee, es, ve, vs 
-            self.npd_mask = [1,1,1]+[1]*(len(self.contextualized_tokid2emb)-3)+[0]*(len(self.tokenizer)-3-6)+[0]*6 
             self.total_emb_num = len(self.shared_tokId2Emb.keys())
             self.contextualized_emb_num = len(self.contextualized_tokid2emb)-3
-            assert len(self.vd_mask) == len(self.npd_mask) == self.total_emb_num
             assert self.total_emb_num == len(self.tokenizer)+len(self.contextualized_tokid2emb)-3, f"Total Emb Num: {self.total_emb_num}\tlen(self.tokenizer): {len(self.tokenizer)}\tlen(self.contextualized_tokid2emb): {len(self.contextualized_tokid2emb)}\nadd => {len(self.tokenizer)+len(self.contextualized_tokid2emb)-3}"
        
         if self.hparams.dev_input2output is not None:
@@ -7570,8 +7655,15 @@ class T5Split(T5BaseClass):
         
         self.corpus_tokenList = pickle.load(open(os.path.join(self.hparams.dataset, self.hparams.corpus2tokIdList), "rb"))
         self.trie_dict = pickle.load(open(os.path.join(self.hparams.dataset, self.hparams.tree_path), "rb"))
-        
-        print(f"$$$$$$ # of embedding: {self.total_emb_num}")
+       
+        if 'log.txt' in os.listdir(self.hparams.output_dir):
+            print(f'+++ removing previous log file!')
+            os.system(f'rm {os.path.join(self.hparams.output_dir, "log.txt")}')
+        self.file = open(os.path.join(self.hparams.output_dir, "log.txt"), 'w') 
+        print(f'+++ Writing logs in {os.path.join(self.hparams.output_dir, "log.txt")}')
+ 
+
+        if self.print: print(f"$$$$$$ # of embedding: {self.total_emb_num}")
         self.config = T5Config.from_pretrained(self.hparams.model_name_or_path)
         self.config.update({"fp16": self.hparams.fp16})
         self.config.update({"train_c_emb": self.hparams.train_c_emb}) 
@@ -7594,6 +7686,7 @@ class T5Split(T5BaseClass):
         )
         self.config.update({"vanilla_emb_num": len(self.tokenizer)})
         self.config.update({"total_emb_num": self.total_emb_num})
+        self.config.update({'loss_weight': self.hparams.loss_weight})
         self.save_epoch = []
 
         # If in training mode, load ckpt for training
@@ -7616,33 +7709,18 @@ class T5Split(T5BaseClass):
             self.vs_f1_score_list = []
             self.es_f1_score_list = []
 
-
+            
         # If in testing mode, load ckpt for inference
         if self.hparams.do_test:
             self.model = entail_T5_split.from_pretrained(
                self.hparams.test_model_path, config=self.config#, ignore_mismatched_sizes=True
             )
-            
-            enc_vocab = {}; dec_vocab = {}; np_vocab = {}
-            dec_embeddings = self.model.decoder.np_embed_tokens.weight
-            for i in range(dec_embeddings.shape[0]):
-               np_vocab[i] = dec_embeddings[i]
-            dec_shared = self.model.decoder.embed_tokens.weight 
-            for i in range(dec_shared.shape[0]):
-               dec_vocab[i] = dec_shared[i]
-            enc_shared = self.model.encoder.embed_tokens.weight 
-            for i in range(enc_shared.shape[0]):
-               enc_vocab[i] = enc_shared[i]
-            sys.exit()
-
-            with open(os.path.join(self.hparams.output_dir, "np_emb.pickle"), "wb") as f:
-               pickle.dump(dec_vocab, f)
-
+           
             if self.print:
                 print(f"@@@ Loading Model from {self.hparams.test_model_path}")
           
             self.test_save_name = os.path.join(self.hparams.output_dir, f"{self.hparams.test_name}_{self.hparams.tree_type}_result_beam{self.hparams.val_beam_size}.json")               
-            print(f'@@@ Initialize Test!!')
+            if self.print: print(f'@@@ Initialize Test!!')
             self.test_input_list = []
             self.test_gt_list = []
             self.test_gt_tok_list = []
@@ -7661,7 +7739,38 @@ class T5Split(T5BaseClass):
                     p.requires_grad=False
         
         self.cnt_over = 0
+
+
+        if self.print:
+            print(f"*** Dump NP Embeddings")
+            dec_embeddings = self.model.decoder.np_embed_tokens.weight
+            np_vocab = np.memmap(os.path.join(self.hparams.output_dir, f"train_{self.hparams.do_train}_np_vocab.dat"), dtype="float32", mode="w+", shape=(dec_embeddings.shape[0], 1024))
+            for i in tqdm(range(dec_embeddings.shape[0])):
+               np_vocab[i][:] = dec_embeddings[i][:].detach().numpy()
+           
+            print(f"*** Dump Decoder Embeddings")
+            dec_shared = self.model.decoder.embed_tokens.weight 
+            dec_vocab = np.memmap(os.path.join(self.hparams.output_dir, f"train_{self.hparams.do_train}_dec_vocab.dat"), dtype="float32", mode="w+", shape=(dec_shared.shape[0], 1024))
+            for i in tqdm(range(dec_shared.shape[0])):
+               dec_vocab[i][:] = dec_shared[i][:].detach().numpy()
+           
+            print(f"*** Dump Encoder Embeddings")
+            enc_shared = self.model.encoder.embed_tokens.weight 
+            enc_vocab = np.memmap(os.path.join(self.hparams.output_dir, f"train_{self.hparams.do_train}_enc_vocab.dat"), dtype="float32", mode="w+", shape=(enc_shared.shape[0], 1024))
+            for i in tqdm(range(enc_shared.shape[0])):
+               enc_vocab[i][:] = enc_shared[i][:].detach().numpy()
+            # sys.exit()
+
+
+
+        vocab_num = self.model.config.vocab_size 
+        self.vd_mask = [1,1,1]+[0]*(len(self.contextualized_tokid2emb)-3)+[1]*(len(self.tokenizer)-3)+[0]*(vocab_num-len(self.tokenizer)) # remove sp except for ee, es, ve, vs 
+        ### TODO: npd mask에서 Ee, Es는 open 할지 말지 
+        self.npd_mask = [1,1,1]+[1]*(len(self.contextualized_tokid2emb)-3)+[0]*(len(self.tokenizer)-3-6)+[0]*(vocab_num-len(self.tokenizer)+6) 
+        assert len(self.vd_mask) == len(self.npd_mask) == len(self.contextualized_tokid2emb)-3+vocab_num 
+
         self.len_test_dataset = len(self.test_dataloader())
+
 
     def combine_tokid2emb(self):
         shared_tokId2Emb = copy.deepcopy(self.contextualized_tokid2emb)
@@ -7738,8 +7847,8 @@ class T5Split(T5BaseClass):
             tokenizer=self.tokenizer,
             split=split,
             hparams=self.hparams,
-            ee_tokid=self.sp_tokens_list[0][0],
-            es_tokid=self.sp_tokens_list[1][0],
+            ee_tokid=self.ee_tokid if self.np_only else self.sp_tokens_list[0][0],
+            es_tokid=self.es_tokid if self.np_only else self.sp_tokens_list[1][0],
             corpus_tokenList=self.corpus_tokenList,
             modelId2sharedId=self.modelId2sharedId,
             tokId2clusterId=self.tokId2clusterId,
@@ -7764,7 +7873,8 @@ class T5Split(T5BaseClass):
         self,
         input_ids,
         attention_mask,
-        loss_mask=None,
+        vd_loss_mask=None,
+        npd_loss_mask=None,
         decoder_attention_mask=None,
         decoder_input_ids=None,
         lm_labels=None,
@@ -7787,16 +7897,19 @@ class T5Split(T5BaseClass):
                 decoder_attention_mask=decoder_attention_mask,
                 labels=lm_labels,
                 return_dict=return_dict,
-                loss_mask=loss_mask
-            ) 
+                vd_loss_mask=vd_loss_mask,
+                npd_loss_mask=npd_loss_mask
+            )
+
     def _loss(self, batch):
         lm_labels = copy.deepcopy(batch["target_ids"])
         lm_labels[lm_labels[:, :] == self.tokenizer.pad_token_id] = -100
-        if self.hparams.split_loss:
+        if self.hparams.split_loss or self.hparams.loss_weight is not None:
            outputs = self(
                input_ids=batch["source_ids"],
                attention_mask=batch["source_mask"],
-               loss_mask=batch["target_loss_mask"],
+               vd_loss_mask=batch["target_vd_loss_mask"],
+               npd_loss_mask=batch["target_npd_loss_mask"],
                lm_labels=lm_labels,
                decoder_attention_mask=batch["target_mask"],
            )
@@ -7808,7 +7921,11 @@ class T5Split(T5BaseClass):
                decoder_attention_mask=batch["target_mask"]
            )
         loss = outputs[0]
+        logits = outputs[1]
+        if self.print:
+           self.file.write(f"Epoch: {self.current_epoch}\tStep: {self.global_step}\nlogits[:50]: {logits[:50]}\nlogits[-50:]: {logits[-50:]}\n\n")
         return loss
+
 
     def training_step(self, batch, batch_idx):
         loss = self._loss(batch)
@@ -7835,7 +7952,7 @@ class T5Split(T5BaseClass):
         return indices[0][-1]
 
     def _get_dec_status(self, input_ids):
-        if self.hparams.model_type == "hyper-mem-np-only":
+        if self.hparams.model_type in ["hyper-mem-np-only", "hyper-split-mem"]:
            assert self.es_tokid in input_ids
            es_idx = self._find_idx(input_ids, self.es_tokid)
            sub_input_ids = input_ids[es_idx+1:]
@@ -7873,35 +7990,40 @@ class T5Split(T5BaseClass):
         if len(input_ids) == 1:
             if self.hparams.model_type in ["hyper", "hyper-wo-vd", "hyper-split"]:
                ret = [self.because_tokid, self.and_tokid, self.infer_tokid]
-            elif self.hparams.model_type in ["hyper-mem", "hyper-mem-np-only"]:
+            elif self.hparams.model_type in ["hyper-mem", "hyper-mem-np-only", "hyper-split-mem"]:
                ret = [self.es_tokid]
             else:
                assert False
         elif input_ids[-1] in [self.ee_tokid]:
             if self.hparams.model_type in ["hyper", "hyper-wo-vd", "hyper-split"]:
                ret = [self.because_tokid, self.and_tokid, self.infer_tokid]
-            elif self.hparams.model_type in ["hyper-mem", "hyper-mem-np-only"]:
+            elif self.hparams.model_type in ["hyper-mem", "hyper-mem-np-only", "hyper-split-mem"]:
                ret = [1]
             else:
                assert False
         elif not self.hparams.model_type in ['hyper-mem-np-only'] and input_ids[-1] in [self.ve_tokid]:
+            assert self.hparams.model_type not in ['hyper-mem', 'hyper-split-mem']
             ret = [self.because_tokid, self.and_tokid, self.infer_tokid, 1]
         elif not self.hparams.model_type in ['hyper-mem-np-only'] and input_ids[-1] in [self.because_tokid, self.and_tokid, self.infer_tokid]:
+            assert self.hparams.model_type not in ['hyper-mem', 'hyper-split-mem']
             ret = [self.es_tokid, self.vs_tokid]
         else:
-            if self.hparams.model_type in ["hyper-mem", "hyper-mem-np-only"]:
+            if self.hparams.model_type in ["hyper-mem", "hyper-mem-np-only", "hyper-split-mem"]:
                dec_type, ids = self._get_dec_status(input_ids)
                assert dec_type == "npd"
                ret = self._get_from_trie(ids, self.trie_dict, 0)
             elif self.hparams.model_type in ["hyper", "hyper-wo-vd", "hyper-split"]:
                dec_type, ids = self._get_dec_status(input_ids)
+              
                if dec_type == "vanilla":
                   ret = self.vanilla_tokid_list+[self.ve_tokid]
                   assert 1 not in ret
                elif dec_type == "npd":
                   ret = self._get_from_trie(ids, self.trie_dict, 0)
+                  # ret = self.vanilla_tokid_list+[self.ee_tokid]
                else:
                   assert False
+
             else:
                assert False
 
@@ -7928,6 +8050,7 @@ class T5Split(T5BaseClass):
                 else:
                     return []
         elif self.hparams.tree_type == "nodeId":
+            assert False
             if input_ids[-1] == 1:
                 return []
             else:
@@ -7936,6 +8059,7 @@ class T5Split(T5BaseClass):
                 tokIdList = self._get_tokIdList_from_nodeIdList(next_nId_List, score)
                 return tokIdList
         elif self.hparams.tree_type == "clusterId":
+            assert False
             if len(input_ids) == 0:
                 return list(trie_dict.keys()) 
             else:
@@ -8128,6 +8252,9 @@ class T5Split(T5BaseClass):
             ].detach().cpu().numpy().tolist()
             for i in range(inum)
         ]
+        print(f"Text: {generated_text[0]}")
+        print(f"Ids: {generated_ids[0]}")
+        print(f"GT: {batch['output'][0]}")
         em_list, total_f1, vs_f1, es_f1 = self.calculate_scores(
             generated_text, batch["output"], batch["input"], batch_idx
         )

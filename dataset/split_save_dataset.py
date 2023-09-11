@@ -10,8 +10,8 @@ from argparse import ArgumentParser
 from transformers import AutoTokenizer, AutoModel, T5EncoderModel, T5Tokenizer
 from tqdm import tqdm
 
-from knockknock import slack_sender
-from slack import get_webhook_url, get_channel
+# from knockknock import slack_sender
+# from slack import get_webhook_url, get_channel
 
 def load_data(split):
    if split == "train":
@@ -283,7 +283,7 @@ if __name__ == "__main__":
                      group.create_dataset("emb", data=t_emb)
                      #tokId_emb[t_id] = torch.tensor(t_emb).half() 
 
-    if args.bi:
+   if args.bi:
       print(f'=== Construct Bi Train Dataset')
       train_dict, train_fname = bi_construct_dataset('train')
       dump(train_fname, train_dict)

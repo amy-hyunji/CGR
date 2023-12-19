@@ -11,6 +11,7 @@ dataset/kilt_trex
 dataset/kilt_nq
 dataset/*.json
 dataset/*.csv
+src/config/*
 slack.py
 *.pickle
 outputs

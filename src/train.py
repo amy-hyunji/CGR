@@ -38,36 +38,6 @@ def set_seed(seed):
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
 
-class PeriFlowCallback(Callback):
-    def on_train_batch_start(self,
-                             trainer: pl.Trainer,
-                             pl_module: pl.LightningModule,
-                             batch: Any,
-                             batch_idx: int,
-                             unused: int = 0) -> None:
-        pf.start_step()
-
-    def on_train_batch_end(self,
-                           trainer: pl.Trainer,
-                           pl_module: pl.LightningModule,
-                           outputs: STEP_OUTPUT,
-                           batch: Any,
-                           batch_idx: int,
-                           unused: int = 0) -> None:
-        loss = float(outputs['loss'])
-        pf.metric({
-            "iteration": trainer.global_step,
-            "loss": loss,
-        })
-        pf.end_step()
-
-class PeriFlowTrainer(Trainer):
-    def save_checkpoint(self,
-                        filepath: Union[str, Path],
-                        weights_only: bool = False,
-                        storage_options: Optional[Any] = None) -> None:
-        super().save_checkpoint(filepath, weights_only=weights_only, storage_options=storage_options)
-        pf.upload_checkpoint()
 
 # @slack_sender(webhook_url=get_webhook_url(), channel=get_channel())
 def main(args, train_params):
@@ -118,22 +88,7 @@ def main(args, train_params):
         print('='*80)
     """
 
-    if args.periflow:
-        print(f'Using Periflow..')
-        periflow_callback = PeriFlowCallback()
-        train_params["callbacks"] = [periflow_callback, checkpoint_callback]
-        train_params["enable_checkpointing"] = isinstance(checkpoint_callback, ModelCheckpoint)
-
-        datalen = len(pd.DataFrame(pickle.load(open(os.path.join(args.dataset, args.train_file), "rb"))))
-        num_steps_per_epoch = math.ceil(datalen / args.num_train_epochs)
-        pf.init(total_train_steps=args.num_train_epochs * num_steps_per_epoch)
-
-        trainer = PeriFlowTrainer(
-            **train_params
-        )
-
-    else:
-        trainer = pl.Trainer(**train_params)
+    trainer = pl.Trainer(**train_params)
 
     if args.do_train:
         if torch.cuda.current_device() == 0:
@@ -313,57 +268,30 @@ if __name__ == "__main__":
         print("#" * 80)
 
     callbacks = []
-    if args.periflow:
-        if args.periflow_dir is not None:
-            # When use PeriFlow with PyTorch Lightning, do not save the checkpoint twice (i.e., save_top_k > 0 && save_last = True)
-            checkpoint_callback = ModelCheckpoint(
-                dirpath=args.periflow_dir,
-                filename="checkpoint-{step:07d}",
-                save_last=False,
-                every_n_epochs=1,
-                save_top_k=1,
-            )
-            pattern = re.compile(r"step=(\d+)")
-            checkpoint_iter = None
-            for ckpt_path in Path(args.periflow_dir).glob("**/*"):
-                step = int(pattern.findall(ckpt_path.name)[0])
-                if checkpoint_iter is None:
-                    checkpoint_iter = step
-                else:
-                    checkpoint_iter = max(checkpoint_iter, step)
-
-            if checkpoint_iter is not None:
-                ckpt_path = checkpoint_callback.format_checkpoint_name(dict(step=checkpoint_iter))
-            else:
-                ckpt_path = None
-        else:
-            checkpoint_callback = Callback()
-            ckpt_path = None
-    else:
-        if args.model_type in ["hyper", "hyper-split", 'hyper-split-mem']:
-            checkpoint_callback = ModelCheckpoint(
-               monitor="val_total_f1",
-               mode="max",
-               dirpath=args.output_dir,
-               filename="{epoch:02d}-{val_em:.2f}-{val_total_f1:.2f}-{val_vs_f1:.2f}-{val_es_f1:.2f}",
-               save_top_k=5
-            ) 
-        elif args.model_type in ["hyper-mem", "hyper-mem-np-only", "hyper-wo-vd"]:
-               checkpoint_callback = ModelCheckpoint(
-               monitor="val_es_f1",
-               mode="max",
-               dirpath=args.output_dir,
-               filename="{epoch:02d}-{val_em:.2f}-{val_total_f1:.2f}-{val_es_f1:.2f}",
-               save_top_k=5
-            )  
-        else:
+    if args.model_type in ["hyper", "hyper-split", 'hyper-split-mem']:
+        checkpoint_callback = ModelCheckpoint(
+           monitor="val_total_f1",
+           mode="max",
+           dirpath=args.output_dir,
+           filename="{epoch:02d}-{val_em:.2f}-{val_total_f1:.2f}-{val_vs_f1:.2f}-{val_es_f1:.2f}",
+           save_top_k=5
+        ) 
+    elif args.model_type in ["hyper-mem", "hyper-mem-np-only", "hyper-wo-vd"]:
            checkpoint_callback = ModelCheckpoint(
-               monitor="val_em",
-               mode="max",
-               dirpath=args.output_dir,
-               filename="{epoch:02d}-{val_em:.2f}",
-               save_top_k=5,
-           )
+           monitor="val_es_f1",
+           mode="max",
+           dirpath=args.output_dir,
+           filename="{epoch:02d}-{val_em:.2f}-{val_total_f1:.2f}-{val_es_f1:.2f}",
+           save_top_k=5
+        )  
+    else:
+       checkpoint_callback = ModelCheckpoint(
+           monitor="val_em",
+           mode="max",
+           dirpath=args.output_dir,
+           filename="{epoch:02d}-{val_em:.2f}",
+           save_top_k=5,
+       )
     
     callbacks.append(checkpoint_callback)
 
